@@ -28,6 +28,95 @@ export type JobModule =
   | 'Tax Payment Monitor'
   | 'Correspondence';
 
+export const JOB_TYPES = [
+  'Form C',
+  'Form B',
+  'Form BE',
+  'Form M',
+  'Form P',
+  'Form E',
+  'CP204',
+  'CP204A',
+  'CP204B',
+  'MITRS',
+  'Tax Audit',
+  'RPGT / CKHT',
+  'Tax Appeal',
+  'Tax Refund',
+  'Tax Residency',
+  'Other',
+] as const;
+
+export type JobType = (typeof JOB_TYPES)[number];
+
+export const INDIVIDUAL_BATCH_JOB_TYPES: JobType[] = [
+  'Form B',
+  'Form BE',
+  'Form M',
+  'RPGT / CKHT',
+  'Tax Appeal',
+  'Tax Refund',
+  'Tax Residency',
+  'Other',
+];
+
+export const CORPORATE_BATCH_JOB_TYPES: JobType[] = [
+  'Form C',
+  'Form E',
+  'Form P',
+  'CP204',
+  'CP204A',
+  'CP204B',
+  'MITRS',
+  'Tax Audit',
+  'RPGT / CKHT',
+  'Tax Appeal',
+  'Tax Refund',
+  'Tax Residency',
+  'Other',
+];
+
+export const COMPLIANCE_CHECKLIST_STEPS = [
+  'Documents Received',
+  'Accounts Received',
+  'Tax Computation Prepared',
+  'Internal Review Completed',
+  'Client Approval Obtained',
+  'Tax Return Submitted',
+  'Submission Acknowledgement Received',
+] as const;
+
+export type ChecklistStepStatus = 'Pending' | 'Completed' | 'Not Applicable';
+
+export interface ComplianceChecklistItem {
+  step: string;
+  status: ChecklistStepStatus;
+  completedDate?: string;
+  remarks?: string;
+}
+
+export interface DocumentFollowupItem {
+  id: string;
+  documentRequired: string;
+  dateRequested: string;
+  followUpDate: string;
+  dateReceived: string;
+  pic: string;
+  status: string;
+  remarks: string;
+}
+
+export interface JobHistoryEntry {
+  id: string;
+  timestamp?: Timestamp;
+  jobId: string;
+  action: string;
+  oldStatus: string;
+  newStatus: string;
+  user: string;
+  remarks: string;
+}
+
 export type ClientCategory = 'Corporate' | 'Individual' | 'Other';
 
 export const CLIENT_STATUS_OPTIONS = [
@@ -179,6 +268,7 @@ export interface TaxJob {
   id: string;
   jobCode: string;
   module: JobModule;
+  jobType?: JobType;
   clientDocId?: string;
   clientId: string;
   clientName: string;
@@ -191,12 +281,59 @@ export interface TaxJob {
   priority?: string;
   dueDate?: string;
   completedDate?: string;
+  // Deadlines & EOTs
+  internalDeadline?: string;
+  originalStatutoryDeadline?: string;
+  ssmEot1?: string;
+  ssmEot2?: string;
+  ssmEot3?: string;
+  lhdnEot1?: string;
+  lhdnEot2?: string;
+  lhdnEot3?: string;
+  finalApplicableDeadline?: string;
+  // Form C & MITRS
+  auditBookInDate?: string;
+  auditReportReceivedDate?: string;
+  formCStatus?: string;
+  formCDueDate?: string;
+  formCSubmissionDate?: string;
+  formCSubmissionReference?: string;
+  mitrsStatus?: string;
+  mitrsDueDate?: string;
+  mitrsSubmissionDate?: string;
+  mitrsSubmissionReference?: string;
+  // Workflow & Accounts
+  dateDocumentsRequested?: string;
+  dateDocumentsReceived?: string;
+  draftDate?: string;
+  reviewDate?: string;
+  clientConfirmationDate?: string;
+  yaStatus?: string;
+  auditor?: string;
+  accountsStatus?: string;
+  accountBookInDate?: string;
+  accountReturnDate?: string;
+  accountReturnStatus?: string;
+  submissionStatus?: string;
+  submissionReference?: string;
+  personNo?: string;
+  yaSequence?: string;
+  finalTaxPayable?: number;
+  finalTaxPayableDate?: string;
+  // Form E sub-statuses
+  formEStatus?: string;
+  cp8dStatus?: string;
+  formEaStatus?: string;
+  // Embedded arrays
+  complianceChecklist?: ComplianceChecklistItem[];
+  documentFollowups?: DocumentFollowupItem[];
+  // Finance / Billing
   feeAmount?: number;
   billedAmount?: number;
   billingStatus?: string;
   hoursSpent?: number;
   remarks?: string;
-  // Corporate / Individual / Form E
+  // Legacy / Specialized module fields
   formType?: string;
   submissionDate?: string;
   eFilingAckNo?: string;
@@ -266,9 +403,6 @@ export interface ColumnDef {
   align?: 'left' | 'right' | 'center';
 }
 
-/**
- * Clamp strings strictly to firebase-blueprint.json maxLength limits prior to write.
- */
 export function clampStr(val: string | undefined | null, maxLen: number): string {
   return (val ?? '').trim().slice(0, maxLen);
 }

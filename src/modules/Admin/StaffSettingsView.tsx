@@ -960,13 +960,14 @@ export const StaffSettingsView: React.FC = () => {
                 </div>
                 <div>
                   <label className="block text-[11px] font-medium text-slate-600 mb-1">
-                    Module *
+                    Module (Optional)
                   </label>
                   <select
                     value={settingForm.module}
                     onChange={(e) => setSettingForm({ ...settingForm, module: e.target.value })}
                     className="w-full px-2.5 py-1.5 text-xs border border-slate-200 rounded-md"
                   >
+                    <option value="">— None / General —</option>
                     {SETTING_MODULES.map((m) => (
                       <option key={m} value={m}>
                         {m}

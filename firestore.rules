@@ -123,7 +123,7 @@ service cloud.firestore {
         && data.group is string && data.group.size() >= 1 && data.group.size() <= 64
         && data.code is string && data.code.size() >= 1 && data.code.size() <= 64
         && data.displayName is string && data.displayName.size() >= 1 && data.displayName.size() <= 120
-        && data.module is string && data.module.size() >= 1 && data.module.size() <= 64
+        && data.module is string && data.module.size() >= 0 && data.module.size() <= 64
         && data.badgeColor is string && data.badgeColor.size() == 7 && data.badgeColor.matches('^#[0-9a-fA-F]{6}$')
         && data.active is bool
         && data.sortOrder is number && data.sortOrder >= 0 && data.sortOrder <= 9999
@@ -195,20 +195,40 @@ service cloud.firestore {
         && data.updatedAt is timestamp;
     }
 
-    function isValidJob(data) {
+    function isValidJobCore(data) {
       return data.keys().hasAll(['jobCode', 'module', 'clientId', 'clientName', 'status', 'createdBy', 'createdAt', 'updatedAt'])
         && data.keys().hasOnly([
-          'jobCode', 'module', 'clientDocId', 'clientId', 'clientName', 'groupId', 'fye', 'ya',
-          'taxPic', 'reviewer', 'status', 'priority', 'dueDate', 'completedDate', 'feeAmount',
-          'billedAmount', 'billingStatus', 'hoursSpent', 'remarks', 'formType', 'submissionDate',
-          'eFilingAckNo', 'taxPayable', 'taxRefundable', 'cp204Estimate', 'cp204Revised6th',
-          'cp204Revised9th', 'cp204Revised11th', 'cp204InstallmentStart', 'paymentType',
-          'installmentNo', 'amountDue', 'amountPaid', 'paymentDate', 'receiptNo',
-          'correspondenceType', 'letterRefNo', 'letterDate', 'responseDueDate',
-          'responseSentDate', 'createdBy', 'updatedBy', 'createdAt', 'updatedAt'
+          'jobCode', 'module', 'jobType', 'clientDocId', 'clientId', 'clientName', 'groupId',
+          'fye', 'ya', 'taxPic', 'reviewer', 'status', 'priority', 'dueDate', 'completedDate',
+          'internalDeadline', 'originalStatutoryDeadline',
+          'ssmEot1', 'ssmEot2', 'ssmEot3',
+          'lhdnEot1', 'lhdnEot2', 'lhdnEot3',
+          'finalApplicableDeadline',
+          'auditBookInDate', 'auditReportReceivedDate',
+          'formCStatus', 'formCDueDate', 'formCSubmissionDate', 'formCSubmissionReference',
+          'mitrsStatus', 'mitrsDueDate', 'mitrsSubmissionDate', 'mitrsSubmissionReference',
+          'dateDocumentsRequested', 'dateDocumentsReceived',
+          'draftDate', 'reviewDate', 'clientConfirmationDate',
+          'yaStatus', 'auditor', 'accountsStatus',
+          'accountBookInDate', 'accountReturnDate', 'accountReturnStatus',
+          'submissionStatus', 'submissionReference',
+          'personNo', 'yaSequence', 'finalTaxPayable', 'finalTaxPayableDate',
+          'formEStatus', 'cp8dStatus', 'formEaStatus',
+          'complianceChecklist', 'documentFollowups',
+          'feeAmount', 'billedAmount', 'billingStatus', 'hoursSpent', 'remarks',
+          'formType', 'submissionDate', 'eFilingAckNo', 'taxPayable', 'taxRefundable',
+          'cp204Estimate', 'cp204Revised6th', 'cp204Revised9th', 'cp204Revised11th', 'cp204InstallmentStart',
+          'paymentType', 'installmentNo', 'amountDue', 'amountPaid', 'paymentDate', 'receiptNo',
+          'correspondenceType', 'letterRefNo', 'letterDate', 'responseDueDate', 'responseSentDate',
+          'createdBy', 'updatedBy', 'createdAt', 'updatedAt'
         ])
         && data.jobCode is string && data.jobCode.size() >= 1 && data.jobCode.size() <= 40
         && data.module in ['CP204', 'Corporate', 'Individual', 'Ad Hoc', 'Form E', 'Tax Payment Monitor', 'Correspondence']
+        && (!('jobType' in data) || data.jobType in [
+          'Form C', 'Form B', 'Form BE', 'Form M', 'Form P', 'Form E',
+          'CP204', 'CP204A', 'CP204B', 'MITRS', 'Tax Audit',
+          'RPGT / CKHT', 'Tax Appeal', 'Tax Refund', 'Tax Residency', 'Other'
+        ])
         && data.clientId is string && data.clientId.size() >= 1 && data.clientId.size() <= 40
         && data.clientName is string && data.clientName.size() >= 1 && data.clientName.size() <= 200
         && data.status is string && data.status.size() >= 1 && data.status.size() <= 60
@@ -223,7 +243,59 @@ service cloud.firestore {
         && optStr(data, 'priority', 30)
         && optStr(data, 'dueDate', 20)
         && optStr(data, 'completedDate', 20)
-        && optNum(data, 'feeAmount')
+        && data.createdAt is timestamp
+        && data.updatedAt is timestamp;
+    }
+
+    function isValidJobDeadlines(data) {
+      return optStr(data, 'internalDeadline', 20)
+        && optStr(data, 'originalStatutoryDeadline', 20)
+        && optStr(data, 'ssmEot1', 20)
+        && optStr(data, 'ssmEot2', 20)
+        && optStr(data, 'ssmEot3', 20)
+        && optStr(data, 'lhdnEot1', 20)
+        && optStr(data, 'lhdnEot2', 20)
+        && optStr(data, 'lhdnEot3', 20)
+        && optStr(data, 'finalApplicableDeadline', 20)
+        && optStr(data, 'auditBookInDate', 20)
+        && optStr(data, 'auditReportReceivedDate', 20)
+        && optStr(data, 'formCStatus', 60)
+        && optStr(data, 'formCDueDate', 20)
+        && optStr(data, 'formCSubmissionDate', 20)
+        && optStr(data, 'formCSubmissionReference', 80)
+        && optStr(data, 'mitrsStatus', 60)
+        && optStr(data, 'mitrsDueDate', 20)
+        && optStr(data, 'mitrsSubmissionDate', 20)
+        && optStr(data, 'mitrsSubmissionReference', 80);
+    }
+
+    function isValidJobWorkflow(data) {
+      return optStr(data, 'dateDocumentsRequested', 20)
+        && optStr(data, 'dateDocumentsReceived', 20)
+        && optStr(data, 'draftDate', 20)
+        && optStr(data, 'reviewDate', 20)
+        && optStr(data, 'clientConfirmationDate', 20)
+        && optStr(data, 'yaStatus', 60)
+        && optStr(data, 'auditor', 120)
+        && optStr(data, 'accountsStatus', 60)
+        && optStr(data, 'accountBookInDate', 20)
+        && optStr(data, 'accountReturnDate', 20)
+        && optStr(data, 'accountReturnStatus', 60)
+        && optStr(data, 'submissionStatus', 60)
+        && optStr(data, 'submissionReference', 80)
+        && optStr(data, 'personNo', 60)
+        && optStr(data, 'yaSequence', 40)
+        && optNum(data, 'finalTaxPayable')
+        && optStr(data, 'finalTaxPayableDate', 20)
+        && optStr(data, 'formEStatus', 60)
+        && optStr(data, 'cp8dStatus', 60)
+        && optStr(data, 'formEaStatus', 60)
+        && optBoundedMapList(data, 'complianceChecklist', 20)
+        && optBoundedMapList(data, 'documentFollowups', 50);
+    }
+
+    function isValidJobSpecialized(data) {
+      return optNum(data, 'feeAmount')
         && optNum(data, 'billedAmount')
         && optStr(data, 'billingStatus', 40)
         && optNum(data, 'hoursSpent')
@@ -248,9 +320,26 @@ service cloud.firestore {
         && optStr(data, 'letterRefNo', 80)
         && optStr(data, 'letterDate', 20)
         && optStr(data, 'responseDueDate', 20)
-        && optStr(data, 'responseSentDate', 20)
-        && data.createdAt is timestamp
-        && data.updatedAt is timestamp;
+        && optStr(data, 'responseSentDate', 20);
+    }
+
+    function isValidJob(data) {
+      return isValidJobCore(data)
+        && isValidJobDeadlines(data)
+        && isValidJobWorkflow(data)
+        && isValidJobSpecialized(data);
+    }
+
+    function isValidHistory(data) {
+      return data.keys().hasAll(['timestamp', 'jobId', 'action', 'oldStatus', 'newStatus', 'user', 'remarks'])
+        && data.keys().hasOnly(['timestamp', 'jobId', 'action', 'oldStatus', 'newStatus', 'user', 'remarks'])
+        && data.timestamp is timestamp
+        && data.jobId is string && data.jobId.size() >= 1 && data.jobId.size() <= 128
+        && data.action is string && data.action.size() >= 1 && data.action.size() <= 64
+        && data.oldStatus is string && data.oldStatus.size() <= 60
+        && data.newStatus is string && data.newStatus.size() <= 60
+        && data.user is string && data.user.size() >= 1 && data.user.size() <= 160
+        && data.remarks is string && data.remarks.size() <= 1000;
     }
 
     function isValidCalendarEvent(data) {
@@ -393,20 +482,47 @@ service cloud.firestore {
           (isWorkingStaff()
             && existing().status != 'Completed'
             && incoming().diff(existing()).affectedKeys().hasOnly([
-              'jobCode', 'module', 'clientDocId', 'clientId', 'clientName', 'groupId', 'fye', 'ya',
-              'taxPic', 'reviewer', 'status', 'priority', 'dueDate', 'completedDate', 'feeAmount',
-              'billedAmount', 'billingStatus', 'hoursSpent', 'remarks', 'formType', 'submissionDate',
-              'eFilingAckNo', 'taxPayable', 'taxRefundable', 'cp204Estimate', 'cp204Revised6th',
-              'cp204Revised9th', 'cp204Revised11th', 'cp204InstallmentStart', 'paymentType',
-              'installmentNo', 'amountDue', 'amountPaid', 'paymentDate', 'receiptNo',
-              'correspondenceType', 'letterRefNo', 'letterDate', 'responseDueDate',
-              'responseSentDate', 'updatedBy', 'updatedAt'
+              'jobCode', 'module', 'jobType', 'clientDocId', 'clientId', 'clientName', 'groupId',
+              'fye', 'ya', 'taxPic', 'reviewer', 'status', 'priority', 'dueDate', 'completedDate',
+              'internalDeadline', 'originalStatutoryDeadline',
+              'ssmEot1', 'ssmEot2', 'ssmEot3',
+              'lhdnEot1', 'lhdnEot2', 'lhdnEot3',
+              'finalApplicableDeadline',
+              'auditBookInDate', 'auditReportReceivedDate',
+              'formCStatus', 'formCDueDate', 'formCSubmissionDate', 'formCSubmissionReference',
+              'mitrsStatus', 'mitrsDueDate', 'mitrsSubmissionDate', 'mitrsSubmissionReference',
+              'dateDocumentsRequested', 'dateDocumentsReceived',
+              'draftDate', 'reviewDate', 'clientConfirmationDate',
+              'yaStatus', 'auditor', 'accountsStatus',
+              'accountBookInDate', 'accountReturnDate', 'accountReturnStatus',
+              'submissionStatus', 'submissionReference',
+              'personNo', 'yaSequence', 'finalTaxPayable', 'finalTaxPayableDate',
+              'formEStatus', 'cp8dStatus', 'formEaStatus',
+              'complianceChecklist', 'documentFollowups',
+              'feeAmount', 'billedAmount', 'billingStatus', 'hoursSpent', 'remarks',
+              'formType', 'submissionDate', 'eFilingAckNo', 'taxPayable', 'taxRefundable',
+              'cp204Estimate', 'cp204Revised6th', 'cp204Revised9th', 'cp204Revised11th', 'cp204InstallmentStart',
+              'paymentType', 'installmentNo', 'amountDue', 'amountPaid', 'paymentDate', 'receiptNo',
+              'correspondenceType', 'letterRefNo', 'letterDate', 'responseDueDate', 'responseSentDate',
+              'updatedBy', 'updatedAt'
             ]))
         );
       allow delete: if isVerifiedUser() && isValidId(jobId) && isManagerOrAdmin();
     }
 
-    // 5. Team Calendar Events
+    // 5. Immutable Job Audit History
+    match /history/{historyId} {
+      allow get: if isActiveStaff() && isValidId(historyId);
+      allow list: if isActiveStaff();
+      allow create: if isVerifiedUser()
+        && isValidId(historyId)
+        && isValidHistory(incoming())
+        && incoming().timestamp == request.time
+        && isWorkingStaff();
+      allow update, delete: if false;
+    }
+
+    // 6. Team Calendar Events
     match /calendarEvents/{eventId} {
       allow get: if isActiveStaff() && isValidId(eventId);
       allow list: if isActiveStaff();
@@ -434,7 +550,7 @@ service cloud.firestore {
       allow delete: if isVerifiedUser() && isValidId(eventId) && isManagerOrAdmin();
     }
 
-    // 6. Notifications (Announcements & Staff Suggestions)
+    // 7. Notifications (Announcements & Staff Suggestions)
     match /notifications/{notificationId} {
       allow get: if isActiveStaff() && isValidId(notificationId);
       allow list: if isActiveStaff();

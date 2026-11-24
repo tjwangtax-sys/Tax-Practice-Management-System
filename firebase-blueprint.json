@@ -27,7 +27,7 @@
         "group": { "type": "string", "maxLength": 64, "description": "Setting group identifier" },
         "code": { "type": "string", "maxLength": 64, "description": "Machine code" },
         "displayName": { "type": "string", "maxLength": 120, "description": "Human-readable label" },
-        "module": { "type": "string", "maxLength": 64, "description": "Target TPMS module" },
+        "module": { "type": "string", "minLength": 0, "maxLength": 64, "description": "Target TPMS module (optional)" },
         "badgeColor": { "type": "string", "maxLength": 16, "pattern": "^#[0-9a-fA-F]{6}$", "description": "Hex color for status badge" },
         "active": { "type": "boolean" },
         "sortOrder": { "type": "number" },
@@ -94,11 +94,15 @@
     },
     "TaxJob": {
       "title": "TaxJob",
-      "description": "Tax compliance job across CP204, Corporate, Individual, Ad Hoc, Form E, Tax Payment Monitor, and Correspondence.",
+      "description": "Malaysian tax compliance job with statutory deadline formulas, EOTs, Form C/MITRS, Form E, checklist, and document follow-ups.",
       "type": "object",
       "properties": {
         "jobCode": { "type": "string", "maxLength": 40 },
         "module": { "type": "string", "enum": ["CP204", "Corporate", "Individual", "Ad Hoc", "Form E", "Tax Payment Monitor", "Correspondence"] },
+        "jobType": {
+          "type": "string",
+          "enum": ["Form C", "Form B", "Form BE", "Form M", "Form P", "Form E", "CP204", "CP204A", "CP204B", "MITRS", "Tax Audit", "RPGT / CKHT", "Tax Appeal", "Tax Refund", "Tax Residency", "Other"]
+        },
         "clientDocId": { "type": "string", "maxLength": 128 },
         "clientId": { "type": "string", "maxLength": 40 },
         "clientName": { "type": "string", "maxLength": 200 },
@@ -111,6 +115,47 @@
         "priority": { "type": "string", "maxLength": 30 },
         "dueDate": { "type": "string", "maxLength": 20 },
         "completedDate": { "type": "string", "maxLength": 20 },
+        "internalDeadline": { "type": "string", "maxLength": 20 },
+        "originalStatutoryDeadline": { "type": "string", "maxLength": 20 },
+        "ssmEot1": { "type": "string", "maxLength": 20 },
+        "ssmEot2": { "type": "string", "maxLength": 20 },
+        "ssmEot3": { "type": "string", "maxLength": 20 },
+        "lhdnEot1": { "type": "string", "maxLength": 20 },
+        "lhdnEot2": { "type": "string", "maxLength": 20 },
+        "lhdnEot3": { "type": "string", "maxLength": 20 },
+        "finalApplicableDeadline": { "type": "string", "maxLength": 20 },
+        "auditBookInDate": { "type": "string", "maxLength": 20 },
+        "auditReportReceivedDate": { "type": "string", "maxLength": 20 },
+        "formCStatus": { "type": "string", "maxLength": 60 },
+        "formCDueDate": { "type": "string", "maxLength": 20 },
+        "formCSubmissionDate": { "type": "string", "maxLength": 20 },
+        "formCSubmissionReference": { "type": "string", "maxLength": 80 },
+        "mitrsStatus": { "type": "string", "maxLength": 60 },
+        "mitrsDueDate": { "type": "string", "maxLength": 20 },
+        "mitrsSubmissionDate": { "type": "string", "maxLength": 20 },
+        "mitrsSubmissionReference": { "type": "string", "maxLength": 80 },
+        "dateDocumentsRequested": { "type": "string", "maxLength": 20 },
+        "dateDocumentsReceived": { "type": "string", "maxLength": 20 },
+        "draftDate": { "type": "string", "maxLength": 20 },
+        "reviewDate": { "type": "string", "maxLength": 20 },
+        "clientConfirmationDate": { "type": "string", "maxLength": 20 },
+        "yaStatus": { "type": "string", "maxLength": 60 },
+        "auditor": { "type": "string", "maxLength": 120 },
+        "accountsStatus": { "type": "string", "maxLength": 60 },
+        "accountBookInDate": { "type": "string", "maxLength": 20 },
+        "accountReturnDate": { "type": "string", "maxLength": 20 },
+        "accountReturnStatus": { "type": "string", "maxLength": 60 },
+        "submissionStatus": { "type": "string", "maxLength": 60 },
+        "submissionReference": { "type": "string", "maxLength": 80 },
+        "personNo": { "type": "string", "maxLength": 60 },
+        "yaSequence": { "type": "string", "maxLength": 40 },
+        "finalTaxPayable": { "type": "number" },
+        "finalTaxPayableDate": { "type": "string", "maxLength": 20 },
+        "formEStatus": { "type": "string", "maxLength": 60 },
+        "cp8dStatus": { "type": "string", "maxLength": 60 },
+        "formEaStatus": { "type": "string", "maxLength": 60 },
+        "complianceChecklist": { "type": "array" },
+        "documentFollowups": { "type": "array" },
         "feeAmount": { "type": "number" },
         "billedAmount": { "type": "number" },
         "billingStatus": { "type": "string", "maxLength": 40 },
@@ -143,6 +188,21 @@
         "updatedAt": { "type": "string", "format": "date-time" }
       },
       "required": ["jobCode", "module", "clientId", "clientName", "status", "createdBy", "createdAt", "updatedAt"]
+    },
+    "JobHistoryEntry": {
+      "title": "JobHistoryEntry",
+      "description": "Immutable audit history record for tax job creation, updates, and status changes.",
+      "type": "object",
+      "properties": {
+        "timestamp": { "type": "string", "format": "date-time" },
+        "jobId": { "type": "string", "maxLength": 128 },
+        "action": { "type": "string", "maxLength": 64 },
+        "oldStatus": { "type": "string", "maxLength": 60 },
+        "newStatus": { "type": "string", "maxLength": 60 },
+        "user": { "type": "string", "maxLength": 160 },
+        "remarks": { "type": "string", "maxLength": 1000 }
+      },
+      "required": ["timestamp", "jobId", "action", "oldStatus", "newStatus", "user", "remarks"]
     },
     "CalendarEvent": {
       "title": "CalendarEvent",
@@ -198,7 +258,11 @@
     },
     "/jobs/{jobId}": {
       "schema": { "$ref": "#/entities/TaxJob" },
-      "description": "Unified compliance job register across all 7 tax job modules."
+      "description": "Unified Malaysian tax compliance job register with statutory deadlines, EOTs, Form C/MITRS, Form E, checklist, and document follow-ups."
+    },
+    "/history/{historyId}": {
+      "schema": { "$ref": "#/entities/JobHistoryEntry" },
+      "description": "Immutable job audit history entries logged on create, update, and status change."
     },
     "/calendarEvents/{eventId}": {
       "schema": { "$ref": "#/entities/CalendarEvent" },

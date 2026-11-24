@@ -11,10 +11,12 @@ import {
 } from 'firebase/firestore';
 import { db, emailToStaffKey, handleFirestoreError, OperationType } from '../lib/firebase';
 import { DEFAULT_MALAYSIAN_TAX_SETTINGS } from '../lib/defaultSettings';
+import { applyMalaysianJobRules } from '../lib/deadlineUtils';
 import {
   CalendarEvent,
   clampStr,
   ClientRecord,
+  JobHistoryEntry,
   NotificationItem,
   safeNum,
   sanitizeDocId,
@@ -24,11 +26,17 @@ import {
 } from '../types/tpms';
 import { useAuth } from './AuthContext';
 
+export type JobSavePayload = Omit<
+  TaxJob,
+  'id' | 'createdBy' | 'updatedBy' | 'createdAt' | 'updatedAt'
+>;
+
 interface DataContextValue {
   staff: StaffMember[];
   settings: SettingValue[];
   clients: ClientRecord[];
   jobs: TaxJob[];
+  history: JobHistoryEntry[];
   calendarEvents: CalendarEvent[];
   notifications: NotificationItem[];
   loading: boolean;
@@ -40,8 +48,12 @@ interface DataContextValue {
     label: string;
     color: string;
   };
+  getHistoryForJob: (jobId: string) => JobHistoryEntry[];
   // Staff CRUD (Admin)
-  saveStaffMember: (member: Omit<StaffMember, 'id' | 'createdAt' | 'updatedAt'>, isEdit?: boolean) => Promise<void>;
+  saveStaffMember: (
+    member: Omit<StaffMember, 'id' | 'createdAt' | 'updatedAt'>,
+    isEdit?: boolean
+  ) => Promise<void>;
   deleteStaffMember: (id: string) => Promise<void>;
   // Settings CRUD (Admin)
   saveSetting: (setting: Omit<SettingValue, 'createdAt' | 'updatedAt'>, isEdit?: boolean) => Promise<void>;
@@ -55,11 +67,9 @@ interface DataContextValue {
   inactivateClient: (clientId: string, dateOfResigned: string) => Promise<void>;
   reactivateClient: (clientId: string) => Promise<void>;
   deleteClient: (clientId: string) => Promise<void>;
-  // Jobs CRUD
-  saveJob: (
-    job: Omit<TaxJob, 'id' | 'createdBy' | 'updatedBy' | 'createdAt' | 'updatedAt'>,
-    existingId?: string
-  ) => Promise<string>;
+  // Jobs CRUD + Batch Add + Audit History
+  saveJob: (job: JobSavePayload, existingId?: string, auditRemarks?: string) => Promise<string>;
+  batchCreateJobs: (items: JobSavePayload[]) => Promise<{ createdCount: number; skippedCount: number }>;
   deleteJob: (jobId: string) => Promise<void>;
   // Calendar Events CRUD
   saveCalendarEvent: (
@@ -68,7 +78,11 @@ interface DataContextValue {
   ) => Promise<string>;
   deleteCalendarEvent: (eventId: string) => Promise<void>;
   // Notifications
-  publishAnnouncement: (title: string, message: string, targetRole?: 'ALL' | 'Admin' | 'Manager-HOD') => Promise<void>;
+  publishAnnouncement: (
+    title: string,
+    message: string,
+    targetRole?: 'ALL' | 'Admin' | 'Manager-HOD'
+  ) => Promise<void>;
   sendSuggestion: (title: string, message: string) => Promise<void>;
   markNotificationRead: (notificationId: string) => Promise<void>;
   markAllNotificationsRead: () => Promise<void>;
@@ -79,6 +93,110 @@ const DataContext = createContext<DataContextValue | null>(null);
 
 const LOCAL_READ_STORAGE_KEY = 'tpms_local_read_notifications_v1';
 
+function buildSanitizedJobDocument(
+  rawJob: JobSavePayload,
+  actorEmail: string
+) {
+  const computed = applyMalaysianJobRules(rawJob);
+
+  return {
+    computedStatus: clampStr(computed.status || 'Not Started', 60),
+    payload: {
+      jobCode: clampStr(computed.jobCode, 40),
+      module: computed.module,
+      ...(computed.jobType ? { jobType: computed.jobType } : {}),
+      clientDocId: clampStr(computed.clientDocId, 128),
+      clientId: clampStr(computed.clientId, 40),
+      clientName: clampStr(computed.clientName, 200),
+      groupId: clampStr(computed.groupId, 60),
+      fye: clampStr(computed.fye, 10),
+      ya: clampStr(computed.ya, 16),
+      taxPic: clampStr(computed.taxPic, 120),
+      reviewer: clampStr(computed.reviewer, 120),
+      status: clampStr(computed.status || 'Not Started', 60),
+      priority: clampStr(computed.priority || 'Normal', 30),
+      dueDate: clampStr(computed.dueDate, 20),
+      completedDate: clampStr(computed.completedDate, 20),
+      // Deadlines & EOTs
+      internalDeadline: clampStr(computed.internalDeadline, 20),
+      originalStatutoryDeadline: clampStr(computed.originalStatutoryDeadline, 20),
+      ssmEot1: clampStr(computed.ssmEot1, 20),
+      ssmEot2: clampStr(computed.ssmEot2, 20),
+      ssmEot3: clampStr(computed.ssmEot3, 20),
+      lhdnEot1: clampStr(computed.lhdnEot1, 20),
+      lhdnEot2: clampStr(computed.lhdnEot2, 20),
+      lhdnEot3: clampStr(computed.lhdnEot3, 20),
+      finalApplicableDeadline: clampStr(computed.finalApplicableDeadline, 20),
+      // Form C & MITRS
+      auditBookInDate: clampStr(computed.auditBookInDate, 20),
+      auditReportReceivedDate: clampStr(computed.auditReportReceivedDate, 20),
+      formCStatus: clampStr(computed.formCStatus, 60),
+      formCDueDate: clampStr(computed.formCDueDate, 20),
+      formCSubmissionDate: clampStr(computed.formCSubmissionDate, 20),
+      formCSubmissionReference: clampStr(computed.formCSubmissionReference, 80),
+      mitrsStatus: clampStr(computed.mitrsStatus, 60),
+      mitrsDueDate: clampStr(computed.mitrsDueDate, 20),
+      mitrsSubmissionDate: clampStr(computed.mitrsSubmissionDate, 20),
+      mitrsSubmissionReference: clampStr(computed.mitrsSubmissionReference, 80),
+      // Workflow & Accounts
+      dateDocumentsRequested: clampStr(computed.dateDocumentsRequested, 20),
+      dateDocumentsReceived: clampStr(computed.dateDocumentsReceived, 20),
+      draftDate: clampStr(computed.draftDate, 20),
+      reviewDate: clampStr(computed.reviewDate, 20),
+      clientConfirmationDate: clampStr(computed.clientConfirmationDate, 20),
+      yaStatus: clampStr(computed.yaStatus, 60),
+      auditor: clampStr(computed.auditor, 120),
+      accountsStatus: clampStr(computed.accountsStatus, 60),
+      accountBookInDate: clampStr(computed.accountBookInDate, 20),
+      accountReturnDate: clampStr(computed.accountReturnDate, 20),
+      accountReturnStatus: clampStr(computed.accountReturnStatus, 60),
+      submissionStatus: clampStr(computed.submissionStatus, 60),
+      submissionReference: clampStr(computed.submissionReference, 80),
+      personNo: clampStr(computed.personNo, 60),
+      yaSequence: clampStr(computed.yaSequence, 40),
+      finalTaxPayable: safeNum(computed.finalTaxPayable),
+      finalTaxPayableDate: clampStr(computed.finalTaxPayableDate, 20),
+      // Form E sub-statuses
+      formEStatus: clampStr(computed.formEStatus, 60),
+      cp8dStatus: clampStr(computed.cp8dStatus, 60),
+      formEaStatus: clampStr(computed.formEaStatus, 60),
+      // Embedded arrays
+      complianceChecklist: (computed.complianceChecklist || []).slice(0, 20),
+      documentFollowups: (computed.documentFollowups || []).slice(0, 50),
+      // Finance & Remarks
+      feeAmount: safeNum(computed.feeAmount),
+      billedAmount: safeNum(computed.billedAmount),
+      billingStatus: clampStr(computed.billingStatus || 'Unbilled WIP', 40),
+      hoursSpent: safeNum(computed.hoursSpent),
+      remarks: clampStr(computed.remarks, 2000),
+      // Specialized module fields
+      formType: clampStr(computed.formType || computed.jobType || '', 40),
+      submissionDate: clampStr(computed.submissionDate, 20),
+      eFilingAckNo: clampStr(computed.eFilingAckNo, 80),
+      taxPayable: safeNum(computed.taxPayable),
+      taxRefundable: safeNum(computed.taxRefundable),
+      cp204Estimate: safeNum(computed.cp204Estimate),
+      cp204Revised6th: safeNum(computed.cp204Revised6th),
+      cp204Revised9th: safeNum(computed.cp204Revised9th),
+      cp204Revised11th: safeNum(computed.cp204Revised11th),
+      cp204InstallmentStart: clampStr(computed.cp204InstallmentStart, 20),
+      paymentType: clampStr(computed.paymentType, 60),
+      installmentNo: clampStr(computed.installmentNo, 20),
+      amountDue: safeNum(computed.amountDue),
+      amountPaid: safeNum(computed.amountPaid),
+      paymentDate: clampStr(computed.paymentDate, 20),
+      receiptNo: clampStr(computed.receiptNo, 80),
+      correspondenceType: clampStr(computed.correspondenceType, 80),
+      letterRefNo: clampStr(computed.letterRefNo, 80),
+      letterDate: clampStr(computed.letterDate, 20),
+      responseDueDate: clampStr(computed.responseDueDate, 20),
+      responseSentDate: clampStr(computed.responseSentDate, 20),
+      updatedBy: actorEmail,
+      updatedAt: serverTimestamp(),
+    },
+  };
+}
+
 export const DataProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
   const { user, staffProfile, accessStatus, isReadOnly } = useAuth();
 
@@ -86,6 +204,7 @@ export const DataProvider: React.FC<{ children: React.ReactNode }> = ({ children
   const [settings, setSettings] = useState<SettingValue[]>([]);
   const [clients, setClients] = useState<ClientRecord[]>([]);
   const [jobs, setJobs] = useState<TaxJob[]>([]);
+  const [history, setHistory] = useState<JobHistoryEntry[]>([]);
   const [calendarEvents, setCalendarEvents] = useState<CalendarEvent[]>([]);
   const [notifications, setNotifications] = useState<NotificationItem[]>([]);
   const [loading, setLoading] = useState(true);
@@ -107,6 +226,7 @@ export const DataProvider: React.FC<{ children: React.ReactNode }> = ({ children
       setSettings([]);
       setClients([]);
       setJobs([]);
+      setHistory([]);
       setCalendarEvents([]);
       setNotifications([]);
       setLoading(false);
@@ -117,7 +237,7 @@ export const DataProvider: React.FC<{ children: React.ReactNode }> = ({ children
     let settledCount = 0;
     const markSettled = () => {
       settledCount += 1;
-      if (settledCount >= 6) {
+      if (settledCount >= 7) {
         setLoading(false);
         setRefreshing(false);
         setLastRefreshedAt(new Date());
@@ -165,11 +285,31 @@ export const DataProvider: React.FC<{ children: React.ReactNode }> = ({ children
       (snap) => {
         const list = snap.docs
           .map((d) => ({ id: d.id, ...(d.data() as Omit<TaxJob, 'id'>) }))
-          .sort((a, b) => (a.dueDate || '9999-12-31').localeCompare(b.dueDate || '9999-12-31'));
+          .sort((a, b) =>
+            (a.finalApplicableDeadline || a.dueDate || '9999-12-31').localeCompare(
+              b.finalApplicableDeadline || b.dueDate || '9999-12-31'
+            )
+          );
         setJobs(list);
         markSettled();
       },
       (err) => handleFirestoreError(err, OperationType.LIST, 'jobs')
+    );
+
+    const unsubHistory = onSnapshot(
+      collection(db, 'history'),
+      (snap) => {
+        const list = snap.docs
+          .map((d) => ({ id: d.id, ...(d.data() as Omit<JobHistoryEntry, 'id'>) }))
+          .sort((a, b) => {
+            const ta = a.timestamp?.toMillis?.() ?? 0;
+            const tb = b.timestamp?.toMillis?.() ?? 0;
+            return tb - ta;
+          });
+        setHistory(list);
+        markSettled();
+      },
+      (err) => handleFirestoreError(err, OperationType.LIST, 'history')
     );
 
     const unsubCalendar = onSnapshot(
@@ -205,6 +345,7 @@ export const DataProvider: React.FC<{ children: React.ReactNode }> = ({ children
       unsubSettings();
       unsubClients();
       unsubJobs();
+      unsubHistory();
       unsubCalendar();
       unsubNotifications();
     };
@@ -241,29 +382,54 @@ export const DataProvider: React.FC<{ children: React.ReactNode }> = ({ children
       if (!raw) return { label: '—', color: '#64748B' };
       const key = raw.toLowerCase();
       const matched =
-        settingsIndex.get(`${group}::${key}`) ??
-        settingsIndex.get(`ANY::${key}`);
+        settingsIndex.get(`${group}::${key}`) ?? settingsIndex.get(`ANY::${key}`);
 
       if (matched) {
         return { label: matched.displayName, color: matched.badgeColor };
       }
 
-      // Deterministic fallback colors if settings not yet seeded
-      if (key.includes('active') || key.includes('completed') || key.includes('paid') || key.includes('filed') || key.includes('appointed') || key.includes('collected')) {
+      if (
+        key.includes('active') ||
+        key.includes('completed') ||
+        key.includes('paid') ||
+        key.includes('filed') ||
+        key.includes('submitted') ||
+        key.includes('appointed') ||
+        key.includes('collected') ||
+        key.includes('received')
+      ) {
         return { label: raw, color: '#15803D' };
       }
-      if (key.includes('resigned') || key.includes('overdue') || key.includes('urgent') || key.includes('cancel') || key.includes('revoked') || key.includes('hold')) {
+      if (
+        key.includes('resigned') ||
+        key.includes('overdue') ||
+        key.includes('urgent') ||
+        key.includes('cancel') ||
+        key.includes('revoked') ||
+        key.includes('hold')
+      ) {
         return { label: raw, color: '#B91C1C' };
       }
-      if (key.includes('pending') || key.includes('winding') || key.includes('unpaid') || key.includes('open') || key.includes('high')) {
+      if (
+        key.includes('pending') ||
+        key.includes('winding') ||
+        key.includes('unpaid') ||
+        key.includes('open') ||
+        key.includes('high')
+      ) {
         return { label: raw, color: '#B45309' };
       }
-      if (key.includes('progress') || key.includes('submit') || key.includes('review') || key.includes('draft')) {
+      if (key.includes('progress') || key.includes('review') || key.includes('draft')) {
         return { label: raw, color: '#0369A1' };
       }
       return { label: raw, color: '#475569' };
     },
     [settingsIndex]
+  );
+
+  const getHistoryForJob = useCallback(
+    (jobId: string) => history.filter((h) => h.jobId === jobId),
+    [history]
   );
 
   // ---------------------- STAFF CRUD ----------------------
@@ -301,7 +467,11 @@ export const DataProvider: React.FC<{ children: React.ReactNode }> = ({ children
           });
         }
       } catch (err) {
-        handleFirestoreError(err, isEdit ? OperationType.UPDATE : OperationType.CREATE, `staff/${docId}`);
+        handleFirestoreError(
+          err,
+          isEdit ? OperationType.UPDATE : OperationType.CREATE,
+          `staff/${docId}`
+        );
       }
     },
     []
@@ -325,7 +495,7 @@ export const DataProvider: React.FC<{ children: React.ReactNode }> = ({ children
         group: clampStr(setting.group.toUpperCase(), 64),
         code: clampStr(setting.code.toUpperCase(), 64),
         displayName: clampStr(setting.displayName, 120),
-        module: clampStr(setting.module, 64),
+        module: clampStr(setting.module, 64), // allows empty ""
         badgeColor: hex,
         active: Boolean(setting.active),
         sortOrder: Math.max(0, Math.min(9999, Math.round(safeNum(setting.sortOrder)))),
@@ -338,7 +508,11 @@ export const DataProvider: React.FC<{ children: React.ReactNode }> = ({ children
           await setDoc(ref, { ...payload, createdAt: serverTimestamp() });
         }
       } catch (err) {
-        handleFirestoreError(err, isEdit ? OperationType.UPDATE : OperationType.CREATE, `settings/${docId}`);
+        handleFirestoreError(
+          err,
+          isEdit ? OperationType.UPDATE : OperationType.CREATE,
+          `settings/${docId}`
+        );
       }
     },
     []
@@ -441,7 +615,6 @@ export const DataProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
       try {
         if (existingId) {
-          // For Staff role, omit clientStatus & dateOfResigned if unchanged so rules affectedKeys passes
           if (staffProfile?.role === 'Staff') {
             const { clientStatus: _cs, dateOfResigned: _dr, ...staffAllowed } = basePayload;
             await updateDoc(ref, staffAllowed);
@@ -457,7 +630,11 @@ export const DataProvider: React.FC<{ children: React.ReactNode }> = ({ children
         }
         return docId;
       } catch (err) {
-        handleFirestoreError(err, existingId ? OperationType.UPDATE : OperationType.CREATE, `clients/${docId}`);
+        handleFirestoreError(
+          err,
+          existingId ? OperationType.UPDATE : OperationType.CREATE,
+          `clients/${docId}`
+        );
       }
     },
     [user, staffProfile]
@@ -505,86 +682,162 @@ export const DataProvider: React.FC<{ children: React.ReactNode }> = ({ children
     }
   }, []);
 
-  // ---------------------- JOBS CRUD ----------------------
+  // ---------------------- JOBS CRUD + AUDIT HISTORY ----------------------
   const saveJob = useCallback(
-    async (
-      job: Omit<TaxJob, 'id' | 'createdBy' | 'updatedBy' | 'createdAt' | 'updatedAt'>,
-      existingId?: string
-    ): Promise<string> => {
+    async (job: JobSavePayload, existingId?: string, auditRemarks?: string): Promise<string> => {
       const actorEmail = clampStr(user?.email || '', 160);
+      const actorLabel = clampStr(
+        staffProfile ? `${staffProfile.staffName} (${actorEmail})` : actorEmail,
+        160
+      );
       const docId = existingId || sanitizeDocId(`JOB_${job.jobCode}_${Date.now().toString(36)}`);
-      const ref = doc(db, 'jobs', docId);
+      const existingJob = existingId ? jobs.find((j) => j.id === existingId) : undefined;
+      const oldStatus = existingJob?.status ?? '';
 
-      const basePayload = {
-        jobCode: clampStr(job.jobCode, 40),
-        module: job.module,
-        clientDocId: clampStr(job.clientDocId, 128),
-        clientId: clampStr(job.clientId, 40),
-        clientName: clampStr(job.clientName, 200),
-        groupId: clampStr(job.groupId, 60),
-        fye: clampStr(job.fye, 10),
-        ya: clampStr(job.ya, 16),
-        taxPic: clampStr(job.taxPic, 120),
-        reviewer: clampStr(job.reviewer, 120),
-        status: clampStr(job.status || 'Not Started', 60),
-        priority: clampStr(job.priority || 'Normal', 30),
-        dueDate: clampStr(job.dueDate, 20),
-        completedDate: clampStr(job.completedDate, 20),
-        feeAmount: safeNum(job.feeAmount),
-        billedAmount: safeNum(job.billedAmount),
-        billingStatus: clampStr(job.billingStatus || 'Unbilled WIP', 40),
-        hoursSpent: safeNum(job.hoursSpent),
-        remarks: clampStr(job.remarks, 2000),
-        formType: clampStr(job.formType, 40),
-        submissionDate: clampStr(job.submissionDate, 20),
-        eFilingAckNo: clampStr(job.eFilingAckNo, 80),
-        taxPayable: safeNum(job.taxPayable),
-        taxRefundable: safeNum(job.taxRefundable),
-        cp204Estimate: safeNum(job.cp204Estimate),
-        cp204Revised6th: safeNum(job.cp204Revised6th),
-        cp204Revised9th: safeNum(job.cp204Revised9th),
-        cp204Revised11th: safeNum(job.cp204Revised11th),
-        cp204InstallmentStart: clampStr(job.cp204InstallmentStart, 20),
-        paymentType: clampStr(job.paymentType, 60),
-        installmentNo: clampStr(job.installmentNo, 20),
-        amountDue: safeNum(job.amountDue),
-        amountPaid: safeNum(job.amountPaid),
-        paymentDate: clampStr(job.paymentDate, 20),
-        receiptNo: clampStr(job.receiptNo, 80),
-        correspondenceType: clampStr(job.correspondenceType, 80),
-        letterRefNo: clampStr(job.letterRefNo, 80),
-        letterDate: clampStr(job.letterDate, 20),
-        responseDueDate: clampStr(job.responseDueDate, 20),
-        responseSentDate: clampStr(job.responseSentDate, 20),
-        updatedBy: actorEmail,
-        updatedAt: serverTimestamp(),
-      };
+      const { payload, computedStatus } = buildSanitizedJobDocument(job, actorEmail);
+
+      const action = !existingId
+        ? 'CREATED'
+        : oldStatus !== computedStatus
+        ? 'STATUS_CHANGED'
+        : 'UPDATED';
+
+      const defaultRemark = !existingId
+        ? `Created ${payload.jobType || payload.module} job (${payload.jobCode}) for ${payload.clientName}`
+        : oldStatus !== computedStatus
+        ? `Status updated from "${oldStatus}" to "${computedStatus}"`
+        : `Updated job fields for ${payload.jobCode}`;
+
+      const historyDocId = sanitizeDocId(
+        `HIST_${docId}_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 5)}`
+      );
 
       try {
+        const batch = writeBatch(db);
+        const jobRef = doc(db, 'jobs', docId);
         if (existingId) {
-          await updateDoc(ref, basePayload);
+          batch.update(jobRef, payload);
         } else {
-          await setDoc(ref, {
-            ...basePayload,
+          batch.set(jobRef, {
+            ...payload,
             createdBy: actorEmail,
             createdAt: serverTimestamp(),
           });
         }
+
+        batch.set(doc(db, 'history', historyDocId), {
+          timestamp: serverTimestamp(),
+          jobId: docId,
+          action,
+          oldStatus: clampStr(oldStatus, 60),
+          newStatus: clampStr(computedStatus, 60),
+          user: actorLabel,
+          remarks: clampStr(auditRemarks || defaultRemark, 1000),
+        });
+
+        await batch.commit();
         return docId;
       } catch (err) {
-        handleFirestoreError(err, existingId ? OperationType.UPDATE : OperationType.CREATE, `jobs/${docId}`);
+        handleFirestoreError(
+          err,
+          existingId ? OperationType.UPDATE : OperationType.CREATE,
+          `jobs/${docId}`
+        );
       }
     },
-    [user]
+    [user, staffProfile, jobs]
   );
 
-  const deleteJob = useCallback(async (jobId: string) => {
-    try {
-      await deleteDoc(doc(db, 'jobs', jobId));
-    } catch (err) {
-      handleFirestoreError(err, OperationType.DELETE, `jobs/${jobId}`);
-    }
-  }, []);
+  const batchCreateJobs = useCallback(
+    async (items: JobSavePayload[]): Promise<{ createdCount: number; skippedCount: number }> => {
+      const actorEmail = clampStr(user?.email || '', 160);
+      const actorLabel = clampStr(
+        staffProfile ? `${staffProfile.staffName} (${actorEmail})` : actorEmail,
+        160
+      );
+
+      // Build existing duplicate signature set: clientId + ya + jobType
+      const existingKeys = new Set<string>();
+      for (const j of jobs) {
+        const key = `${(j.clientId || '').trim().toLowerCase()}::${(j.ya || '')
+          .trim()
+          .toLowerCase()}::${(j.jobType || j.formType || j.module).trim().toLowerCase()}`;
+        existingKeys.add(key);
+      }
+
+      const toCreate: JobSavePayload[] = [];
+      let skippedCount = 0;
+
+      for (const item of items) {
+        const key = `${(item.clientId || '').trim().toLowerCase()}::${(item.ya || '')
+          .trim()
+          .toLowerCase()}::${(item.jobType || item.formType || item.module).trim().toLowerCase()}`;
+        if (existingKeys.has(key)) {
+          skippedCount += 1;
+          continue;
+        }
+        existingKeys.add(key);
+        toCreate.push(item);
+      }
+
+      if (toCreate.length === 0) {
+        return { createdCount: 0, skippedCount };
+      }
+
+      // Firestore writeBatch supports up to 500 writes; each job = 2 writes (job + history) => chunk by 200
+      const CHUNK_SIZE = 200;
+      let createdCount = 0;
+      try {
+        for (let i = 0; i < toCreate.length; i += CHUNK_SIZE) {
+          const slice = toCreate.slice(i, i + CHUNK_SIZE);
+          const batch = writeBatch(db);
+          for (let idx = 0; idx < slice.length; idx++) {
+            const item = slice[idx];
+            const nonce = `${Date.now().toString(36)}_${(i + idx).toString(36)}`;
+            const docId = sanitizeDocId(`JOB_${item.jobCode}_${nonce}`);
+            const { payload, computedStatus } = buildSanitizedJobDocument(item, actorEmail);
+
+            batch.set(doc(db, 'jobs', docId), {
+              ...payload,
+              createdBy: actorEmail,
+              createdAt: serverTimestamp(),
+            });
+
+            const histId = sanitizeDocId(`HIST_${docId}_${idx}`);
+            batch.set(doc(db, 'history', histId), {
+              timestamp: serverTimestamp(),
+              jobId: docId,
+              action: 'BATCH_CREATED',
+              oldStatus: '',
+              newStatus: clampStr(computedStatus, 60),
+              user: actorLabel,
+              remarks: clampStr(
+                `Batch created ${payload.jobType || payload.module} (${payload.ya || ''}) for ${payload.clientName}`,
+                1000
+              ),
+            });
+            createdCount += 1;
+          }
+          await batch.commit();
+        }
+        return { createdCount, skippedCount };
+      } catch (err) {
+        handleFirestoreError(err, OperationType.WRITE, 'jobs/batch_create');
+      }
+    },
+    [user, staffProfile, jobs]
+  );
+
+  const deleteJob = useCallback(
+    async (jobId: string) => {
+      try {
+        await deleteDoc(doc(db, 'jobs', jobId));
+      } catch (err) {
+        handleFirestoreError(err, OperationType.DELETE, `jobs/${jobId}`);
+      }
+    },
+    []
+  );
 
   // ---------------------- CALENDAR EVENTS CRUD ----------------------
   const saveCalendarEvent = useCallback(
@@ -693,7 +946,6 @@ export const DataProvider: React.FC<{ children: React.ReactNode }> = ({ children
   const markNotificationRead = useCallback(
     async (notificationId: string) => {
       if (!user?.email) return;
-      // Report Viewers remain strictly read-only in Firestore; track read state locally
       if (isReadOnly) {
         setLocalReadIds((prev) => {
           if (prev.includes(notificationId)) return prev;
@@ -764,6 +1016,7 @@ export const DataProvider: React.FC<{ children: React.ReactNode }> = ({ children
         settings,
         clients,
         jobs,
+        history,
         calendarEvents,
         notifications,
         loading,
@@ -772,6 +1025,7 @@ export const DataProvider: React.FC<{ children: React.ReactNode }> = ({ children
         refreshAll,
         getSettingsByGroup,
         resolveSettingBadge,
+        getHistoryForJob,
         saveStaffMember,
         deleteStaffMember,
         saveSetting,
@@ -782,6 +1036,7 @@ export const DataProvider: React.FC<{ children: React.ReactNode }> = ({ children
         reactivateClient,
         deleteClient,
         saveJob,
+        batchCreateJobs,
         deleteJob,
         saveCalendarEvent,
         deleteCalendarEvent,

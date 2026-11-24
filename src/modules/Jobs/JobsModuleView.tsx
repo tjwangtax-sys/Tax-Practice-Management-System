@@ -1,6 +1,13 @@
 import React, { useMemo, useState } from 'react';
-import { Plus, Pencil, Eye, Trash2, Briefcase } from 'lucide-react';
-import { ColumnDef, formatCurrencyRM, FYE_MONTHS, JobModule, TaxJob } from '../../types/tpms';
+import { Plus, Pencil, Eye, Trash2, Briefcase, Layers, UserPlus } from 'lucide-react';
+import {
+  ColumnDef,
+  formatCurrencyRM,
+  FYE_MONTHS,
+  JOB_TYPES,
+  JobModule,
+  TaxJob,
+} from '../../types/tpms';
 import { useAuth } from '../../context/AuthContext';
 import { useData } from '../../context/DataContext';
 import { useColumnVisibility } from '../../hooks/useColumnVisibility';
@@ -8,6 +15,7 @@ import { RegisterToolbar } from '../../components/RegisterToolbar';
 import { StatusPill } from '../../components/StatusPill';
 import { exportToExcel, printRegisterHtml } from '../../lib/exportUtils';
 import { JobModal } from './JobModal';
+import { BatchAddJobsModal, BatchModalVariant } from './BatchAddJobsModal';
 
 interface JobsModuleViewProps {
   mode: 'ALL' | JobModule;
@@ -17,6 +25,7 @@ function getColumnsForMode(mode: 'ALL' | JobModule): ColumnDef[] {
   const base: ColumnDef[] = [
     { key: 'jobCode', label: 'Job Code', defaultVisible: true },
     ...(mode === 'ALL' ? [{ key: 'module', label: 'Module', defaultVisible: true }] : []),
+    { key: 'jobType', label: 'Job Type', defaultVisible: true },
     { key: 'clientId', label: 'Client ID', defaultVisible: true },
     { key: 'clientName', label: 'Client Name', defaultVisible: true },
     { key: 'groupId', label: 'Group ID', defaultVisible: false, optional: true },
@@ -25,13 +34,74 @@ function getColumnsForMode(mode: 'ALL' | JobModule): ColumnDef[] {
     { key: 'taxPic', label: 'TAX PIC', defaultVisible: true },
     { key: 'reviewer', label: 'Reviewer', defaultVisible: false, optional: true },
     { key: 'status', label: 'Status', defaultVisible: true },
-    { key: 'priority', label: 'Priority', defaultVisible: true, optional: true },
-    { key: 'dueDate', label: 'Due Date', defaultVisible: true },
+    { key: 'priority', label: 'Priority', defaultVisible: false, optional: true },
   ];
+
+  if (mode === 'Corporate') {
+    return [
+      ...base,
+      { key: 'originalStatutoryDeadline', label: 'Orig. Statutory (+7m)', defaultVisible: false },
+      { key: 'formCDueDate', label: 'Form C Due (+8m)', defaultVisible: true },
+      { key: 'lhdnEot1', label: 'LHDN EOT 1', defaultVisible: false },
+      { key: 'finalApplicableDeadline', label: 'Final Deadline', defaultVisible: true },
+      { key: 'formCStatus', label: 'Form C Status', defaultVisible: true },
+      { key: 'mitrsDueDate', label: 'MITRS Due (+30d)', defaultVisible: true },
+      { key: 'mitrsStatus', label: 'MITRS Status', defaultVisible: true },
+      { key: 'accountsStatus', label: 'Accounts Status', defaultVisible: false },
+      { key: 'auditReportReceivedDate', label: 'Audit Report Recv', defaultVisible: false },
+      { key: 'finalTaxPayable', label: 'Final Tax Payable', defaultVisible: false, align: 'right' },
+      { key: 'checklistProgress', label: 'Checklist', defaultVisible: true },
+      { key: 'remarks', label: 'Remarks', defaultVisible: false },
+    ];
+  }
+
+  if (mode === 'Form E') {
+    return [
+      ...base,
+      { key: 'originalStatutoryDeadline', label: 'Orig. Statutory', defaultVisible: true },
+      { key: 'lhdnEot1', label: 'LHDN EOT 1', defaultVisible: false },
+      { key: 'finalApplicableDeadline', label: 'Final Deadline', defaultVisible: true },
+      { key: 'formEStatus', label: 'Form E Status', defaultVisible: true },
+      { key: 'cp8dStatus', label: 'C.P.8D Status', defaultVisible: true },
+      { key: 'formEaStatus', label: 'Form EA Status', defaultVisible: true },
+      { key: 'submissionReference', label: 'Submission Ref', defaultVisible: false },
+      { key: 'checklistProgress', label: 'Checklist', defaultVisible: true },
+      { key: 'remarks', label: 'Remarks', defaultVisible: false },
+    ];
+  }
+
+  if (mode === 'Individual') {
+    return [
+      ...base,
+      { key: 'personNo', label: 'Person No.', defaultVisible: false },
+      { key: 'originalStatutoryDeadline', label: 'Orig. Statutory', defaultVisible: true },
+      { key: 'lhdnEot1', label: 'LHDN EOT 1', defaultVisible: false },
+      { key: 'finalApplicableDeadline', label: 'Final Deadline', defaultVisible: true },
+      { key: 'submissionStatus', label: 'Submission Status', defaultVisible: true },
+      { key: 'submissionDate', label: 'Submission Date', defaultVisible: true },
+      { key: 'finalTaxPayable', label: 'Final Tax Payable', defaultVisible: true, align: 'right' },
+      { key: 'checklistProgress', label: 'Checklist', defaultVisible: true },
+      { key: 'remarks', label: 'Remarks', defaultVisible: false },
+    ];
+  }
+
+  if (mode === 'Ad Hoc') {
+    return [
+      ...base,
+      { key: 'internalDeadline', label: 'Internal Deadline', defaultVisible: true },
+      { key: 'finalApplicableDeadline', label: 'Final Deadline', defaultVisible: true },
+      { key: 'dateDocumentsReceived', label: 'Docs Received', defaultVisible: false },
+      { key: 'submissionStatus', label: 'Submission Status', defaultVisible: true },
+      { key: 'feeAmount', label: 'Fee (RM)', defaultVisible: true, align: 'right' },
+      { key: 'checklistProgress', label: 'Checklist', defaultVisible: true },
+      { key: 'remarks', label: 'Remarks', defaultVisible: false },
+    ];
+  }
 
   if (mode === 'CP204') {
     return [
       ...base,
+      { key: 'finalApplicableDeadline', label: 'Final Deadline', defaultVisible: true },
       { key: 'cp204Estimate', label: 'Initial CP204', defaultVisible: true, align: 'right' },
       { key: 'cp204Revised6th', label: '6th Mth Rev', defaultVisible: true, align: 'right' },
       { key: 'cp204Revised9th', label: '9th Mth Rev', defaultVisible: true, align: 'right' },
@@ -44,6 +114,7 @@ function getColumnsForMode(mode: 'ALL' | JobModule): ColumnDef[] {
   if (mode === 'Tax Payment Monitor') {
     return [
       ...base,
+      { key: 'dueDate', label: 'Due Date', defaultVisible: true },
       { key: 'paymentType', label: 'Payment Type', defaultVisible: true },
       { key: 'installmentNo', label: 'Inst. No.', defaultVisible: true },
       { key: 'amountDue', label: 'Amount Due', defaultVisible: true, align: 'right' },
@@ -66,12 +137,18 @@ function getColumnsForMode(mode: 'ALL' | JobModule): ColumnDef[] {
     ];
   }
 
+  // ALL JOBS
   return [
     ...base,
-    { key: 'formType', label: 'Form Type', defaultVisible: true },
-    { key: 'submissionDate', label: 'Submission Date', defaultVisible: true },
-    { key: 'eFilingAckNo', label: 'e-Filing Ack No.', defaultVisible: false },
-    { key: 'taxPayable', label: 'Tax Payable', defaultVisible: true, align: 'right' },
+    { key: 'originalStatutoryDeadline', label: 'Orig. Statutory', defaultVisible: false },
+    { key: 'internalDeadline', label: 'Internal Deadline', defaultVisible: false },
+    { key: 'finalApplicableDeadline', label: 'Final Deadline', defaultVisible: true },
+    { key: 'formCStatus', label: 'Form C', defaultVisible: false },
+    { key: 'mitrsStatus', label: 'MITRS', defaultVisible: false },
+    { key: 'formEStatus', label: 'Form E', defaultVisible: false },
+    { key: 'submissionStatus', label: 'Submission Status', defaultVisible: true },
+    { key: 'finalTaxPayable', label: 'Final Tax Payable', defaultVisible: true, align: 'right' },
+    { key: 'checklistProgress', label: 'Checklist', defaultVisible: true },
     { key: 'feeAmount', label: 'Fee (RM)', defaultVisible: false, align: 'right' },
     { key: 'billingStatus', label: 'Billing Status', defaultVisible: false },
     { key: 'remarks', label: 'Remarks', defaultVisible: false },
@@ -79,40 +156,69 @@ function getColumnsForMode(mode: 'ALL' | JobModule): ColumnDef[] {
 }
 
 const MODULE_DESCRIPTIONS: Record<'ALL' | JobModule, string> = {
-  ALL: 'Unified register across all Malaysian tax compliance engagements',
+  ALL: 'Unified Malaysian tax compliance register with automated statutory deadlines and audit trail',
   CP204: 'Corporate tax estimate filings (CP204) and 6th / 9th / 11th month revisions (CP204A)',
-  Corporate: 'Form C corporate income tax returns, tax computations, and LHDN e-Filing',
-  Individual: 'Form B / Form BE / Form P individual and partnership income tax filings',
-  'Ad Hoc': 'Tax advisory, RPGT, withholding tax, tax clearance, and special assignments',
-  'Form E': 'Annual employer return of remuneration (Form E & EA) statutory register',
+  Corporate: 'Form C (FYE+7m statutory, +8m e-Filing) & MITRS (+30d) corporate compliance register',
+  Individual: 'Form B / Form BE / Form M / Form P individual income tax filings & LHDN EOTs',
+  'Ad Hoc': 'Tax Audit, RPGT / CKHT, Tax Appeal, Tax Refund, Tax Residency & special engagements',
+  'Form E': 'Employer remuneration return register (Form E, C.P.8D, Form EA sub-statuses)',
   'Tax Payment Monitor': 'CP204 / CP500 installments, balance tax, and ByrHASiL payment tracking',
   Correspondence: 'LHDN desk/field audits, Section 78/81 queries, and Form Q appeals',
 };
+
+function matchesJobView(job: TaxJob, mode: 'ALL' | JobModule): boolean {
+  if (mode === 'ALL') return true;
+  if (job.module === mode) return true;
+  if (mode === 'Corporate' && (job.jobType === 'Form C' || job.jobType === 'MITRS')) return true;
+  if (
+    mode === 'Individual' &&
+    ['Form B', 'Form BE', 'Form M', 'Form P'].includes(job.jobType || '')
+  ) {
+    return true;
+  }
+  if (mode === 'Form E' && job.jobType === 'Form E') return true;
+  if (
+    mode === 'Ad Hoc' &&
+    ['Tax Audit', 'RPGT / CKHT', 'Tax Appeal', 'Tax Refund', 'Tax Residency', 'Other'].includes(
+      job.jobType || ''
+    ) &&
+    job.module !== 'Individual'
+  ) {
+    return true;
+  }
+  return false;
+}
 
 export const JobsModuleView: React.FC<JobsModuleViewProps> = ({ mode }) => {
   const { isReadOnly, isManagerOrAdmin } = useAuth();
   const { jobs, loading, deleteJob } = useData();
 
   const columns = useMemo(() => getColumnsForMode(mode), [mode]);
-  const colKey = `jobs_${mode.toLowerCase().replace(/\s+/g, '_')}`;
+  const colKey = `jobs_v2_${mode.toLowerCase().replace(/\s+/g, '_')}`;
   const { visibleColumns, toggleColumn, resetColumns } = useColumnVisibility(colKey, columns);
 
   const [search, setSearch] = useState('');
   const [moduleFilter, setModuleFilter] = useState('');
+  const [jobTypeFilter, setJobTypeFilter] = useState('');
   const [yaFilter, setYaFilter] = useState('');
   const [fyeFilter, setFyeFilter] = useState('');
   const [picFilter, setPicFilter] = useState('');
   const [statusFilter, setStatusFilter] = useState('');
+
   const [modalOpen, setModalOpen] = useState(false);
   const [editingJob, setEditingJob] = useState<TaxJob | null>(null);
+  const [batchModalVariant, setBatchModalVariant] = useState<BatchModalVariant | null>(null);
 
-  const scopedJobs = useMemo(() => {
-    if (mode === 'ALL') return jobs;
-    return jobs.filter((j) => j.module === mode);
-  }, [jobs, mode]);
+  const scopedJobs = useMemo(
+    () => jobs.filter((j) => matchesJobView(j, mode)),
+    [jobs, mode]
+  );
 
   const distinctYAs = useMemo(
-    () => Array.from(new Set(scopedJobs.map((j) => j.ya).filter(Boolean) as string[])).sort().reverse(),
+    () =>
+      Array.from(new Set(scopedJobs.map((j) => j.ya).filter(Boolean) as string[]))
+        .sort()
+        .reverse(),
     [scopedJobs]
   );
   const distinctPics = useMemo(
@@ -128,6 +234,7 @@ export const JobsModuleView: React.FC<JobsModuleViewProps> = ({ mode }) => {
     const q = search.trim().toLowerCase();
     return scopedJobs.filter((j) => {
       if (mode === 'ALL' && moduleFilter && j.module !== moduleFilter) return false;
+      if (jobTypeFilter && (j.jobType || j.formType) !== jobTypeFilter) return false;
       if (yaFilter && j.ya !== yaFilter) return false;
       if (fyeFilter && j.fye !== fyeFilter) return false;
       if (picFilter && j.taxPic !== picFilter) return false;
@@ -135,11 +242,15 @@ export const JobsModuleView: React.FC<JobsModuleViewProps> = ({ mode }) => {
       if (q) {
         const hay = [
           j.jobCode,
+          j.jobType,
           j.clientId,
           j.clientName,
           j.groupId,
           j.taxPic,
           j.formType,
+          j.formCSubmissionReference,
+          j.mitrsSubmissionReference,
+          j.submissionReference,
           j.letterRefNo,
           j.receiptNo,
           j.eFilingAckNo,
@@ -150,11 +261,21 @@ export const JobsModuleView: React.FC<JobsModuleViewProps> = ({ mode }) => {
       }
       return true;
     });
-  }, [scopedJobs, mode, moduleFilter, yaFilter, fyeFilter, picFilter, statusFilter, search]);
+  }, [
+    scopedJobs,
+    mode,
+    moduleFilter,
+    jobTypeFilter,
+    yaFilter,
+    fyeFilter,
+    picFilter,
+    statusFilter,
+    search,
+  ]);
 
   const activeCols = columns.filter((c) => visibleColumns[c.key]);
   const hasActiveFilters = Boolean(
-    search || moduleFilter || yaFilter || fyeFilter || picFilter || statusFilter
+    search || moduleFilter || jobTypeFilter || yaFilter || fyeFilter || picFilter || statusFilter
   );
 
   const statusBadgeGroup =
@@ -166,10 +287,18 @@ export const JobsModuleView: React.FC<JobsModuleViewProps> = ({ mode }) => {
       ? 'CORRESPONDENCE_STATUS'
       : 'JOB_STATUS';
 
+  const getChecklistSummary = (j: TaxJob) => {
+    const list = j.complianceChecklist || [];
+    if (list.length === 0) return '0/7';
+    const done = list.filter((x) => x.status === 'Completed').length;
+    return `${done}/${list.length}`;
+  };
+
   const exportRows = () =>
     filteredJobs.map((j) => ({
       jobCode: j.jobCode,
       module: j.module,
+      jobType: j.jobType || j.formType || '',
       clientId: j.clientId,
       clientName: j.clientName,
       groupId: j.groupId ?? '',
@@ -179,11 +308,27 @@ export const JobsModuleView: React.FC<JobsModuleViewProps> = ({ mode }) => {
       reviewer: j.reviewer ?? '',
       status: j.status,
       priority: j.priority ?? '',
-      dueDate: j.dueDate ?? '',
-      formType: j.formType ?? '',
+      internalDeadline: j.internalDeadline ?? '',
+      originalStatutoryDeadline: j.originalStatutoryDeadline ?? '',
+      formCDueDate: j.formCDueDate ?? '',
+      lhdnEot1: j.lhdnEot1 ?? '',
+      finalApplicableDeadline: j.finalApplicableDeadline || j.dueDate || '',
+      mitrsDueDate: j.mitrsDueDate ?? '',
+      formCStatus: j.formCStatus ?? '',
+      mitrsStatus: j.mitrsStatus ?? '',
+      formEStatus: j.formEStatus ?? '',
+      cp8dStatus: j.cp8dStatus ?? '',
+      formEaStatus: j.formEaStatus ?? '',
+      accountsStatus: j.accountsStatus ?? '',
+      auditReportReceivedDate: j.auditReportReceivedDate ?? '',
+      dateDocumentsReceived: j.dateDocumentsReceived ?? '',
+      submissionStatus: j.submissionStatus ?? '',
+      submissionReference: j.submissionReference ?? '',
       submissionDate: j.submissionDate ?? '',
-      eFilingAckNo: j.eFilingAckNo ?? '',
-      taxPayable: j.taxPayable ?? 0,
+      personNo: j.personNo ?? '',
+      finalTaxPayable: j.finalTaxPayable ?? j.taxPayable ?? 0,
+      checklistProgress: getChecklistSummary(j),
+      dueDate: j.dueDate ?? '',
       feeAmount: j.feeAmount ?? 0,
       billingStatus: j.billingStatus ?? '',
       cp204Estimate: j.cp204Estimate ?? 0,
@@ -210,19 +355,22 @@ export const JobsModuleView: React.FC<JobsModuleViewProps> = ({ mode }) => {
 
   return (
     <div className="space-y-4">
-      <div>
-        <h2 className="font-display font-bold text-lg text-slate-900">{title}</h2>
-        <p className="text-xs text-slate-500">{MODULE_DESCRIPTIONS[mode]}</p>
+      <div className="flex flex-wrap items-end justify-between gap-2">
+        <div>
+          <h2 className="font-display font-bold text-lg text-slate-900">{title}</h2>
+          <p className="text-xs text-slate-500">{MODULE_DESCRIPTIONS[mode]}</p>
+        </div>
       </div>
 
       <RegisterToolbar
         searchValue={search}
         onSearchChange={setSearch}
-        searchPlaceholder={`Search ${title} by Job Code, Client ID, Name, PIC, Ref No...`}
+        searchPlaceholder={`Search ${title} by Job Code, Type, Client ID, Name, PIC, Ref No...`}
         hasActiveFilters={hasActiveFilters}
         onResetFilters={() => {
           setSearch('');
           setModuleFilter('');
+          setJobTypeFilter('');
           setYaFilter('');
           setFyeFilter('');
           setPicFilter('');
@@ -279,6 +427,18 @@ export const JobsModuleView: React.FC<JobsModuleViewProps> = ({ mode }) => {
               </select>
             )}
             <select
+              value={jobTypeFilter}
+              onChange={(e) => setJobTypeFilter(e.target.value)}
+              className="px-2.5 py-1.5 text-xs bg-slate-50 border border-slate-200 rounded-md text-slate-700"
+            >
+              <option value="">All Job Types</option>
+              {JOB_TYPES.map((jt) => (
+                <option key={jt} value={jt}>
+                  {jt}
+                </option>
+              ))}
+            </select>
+            <select
               value={yaFilter}
               onChange={(e) => setYaFilter(e.target.value)}
               className="px-2.5 py-1.5 text-xs bg-slate-50 border border-slate-200 rounded-md text-slate-700 font-mono"
@@ -330,17 +490,39 @@ export const JobsModuleView: React.FC<JobsModuleViewProps> = ({ mode }) => {
         }
         primaryAction={
           !isReadOnly ? (
-            <button
-              type="button"
-              onClick={() => {
-                setEditingJob(null);
-                setModalOpen(true);
-              }}
-              className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold text-white bg-teal-700 hover:bg-teal-800 rounded-md whitespace-nowrap"
-            >
-              <Plus className="w-3.5 h-3.5" />
-              Add {mode === 'ALL' ? 'Job' : mode}
-            </button>
+            <div className="flex flex-wrap items-center gap-1.5">
+              {mode !== 'Individual' && (
+                <button
+                  type="button"
+                  onClick={() => setBatchModalVariant('general')}
+                  className="inline-flex items-center gap-1.5 px-2.5 py-1.5 text-xs font-medium text-teal-800 bg-teal-50 border border-teal-200 hover:bg-teal-100 rounded-md whitespace-nowrap"
+                >
+                  <Layers className="w-3.5 h-3.5" />
+                  Batch Add Jobs
+                </button>
+              )}
+              {(mode === 'ALL' || mode === 'Individual' || mode === 'Ad Hoc') && (
+                <button
+                  type="button"
+                  onClick={() => setBatchModalVariant('individual')}
+                  className="inline-flex items-center gap-1.5 px-2.5 py-1.5 text-xs font-medium text-indigo-800 bg-indigo-50 border border-indigo-200 hover:bg-indigo-100 rounded-md whitespace-nowrap"
+                >
+                  <UserPlus className="w-3.5 h-3.5" />
+                  Individual Batch Add
+                </button>
+              )}
+              <button
+                type="button"
+                onClick={() => {
+                  setEditingJob(null);
+                  setModalOpen(true);
+                }}
+                className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold text-white bg-teal-700 hover:bg-teal-800 rounded-md whitespace-nowrap"
+              >
+                <Plus className="w-3.5 h-3.5" />
+                Add {mode === 'ALL' ? 'Job' : mode}
+              </button>
+            </div>
           ) : undefined
         }
       />
@@ -381,16 +563,17 @@ export const JobsModuleView: React.FC<JobsModuleViewProps> = ({ mode }) => {
                     <p className="text-xs font-semibold text-slate-700">No {title} records found</p>
                     <p className="text-[11px] text-slate-500 mt-0.5">
                       {scopedJobs.length === 0
-                        ? `Create your first ${title} record to track LHDN deadlines and billings.`
+                        ? `Create a single ${title} job or use Batch Add to generate jobs from Client Master.`
                         : 'Clear active filters to view all records.'}
                     </p>
                   </td>
                 </tr>
               ) : (
                 filteredJobs.map((j) => {
+                  const effectiveDeadline = j.finalApplicableDeadline || j.dueDate || '';
                   const isOverdue =
-                    Boolean(j.dueDate) &&
-                    j.dueDate! < todayStr &&
+                    Boolean(effectiveDeadline) &&
+                    effectiveDeadline < todayStr &&
                     j.status !== 'Completed' &&
                     j.status !== 'Paid (FPX / ByrHASiL)' &&
                     j.status !== 'Closed / Resolved';
@@ -401,8 +584,18 @@ export const JobsModuleView: React.FC<JobsModuleViewProps> = ({ mode }) => {
                         const key = col.key;
                         if (key === 'jobCode') {
                           return (
-                            <td key={key} className="px-3 py-2 font-mono font-medium text-slate-900 whitespace-nowrap">
+                            <td
+                              key={key}
+                              className="px-3 py-2 font-mono font-medium text-slate-900 whitespace-nowrap"
+                            >
                               {j.jobCode}
+                            </td>
+                          );
+                        }
+                        if (key === 'jobType') {
+                          return (
+                            <td key={key} className="px-3 py-2 text-slate-700 font-medium whitespace-nowrap">
+                              {j.jobType || j.formType || '—'}
                             </td>
                           );
                         }
@@ -429,6 +622,21 @@ export const JobsModuleView: React.FC<JobsModuleViewProps> = ({ mode }) => {
                             </td>
                           );
                         }
+                        if (
+                          key === 'formCStatus' ||
+                          key === 'mitrsStatus' ||
+                          key === 'formEStatus' ||
+                          key === 'cp8dStatus' ||
+                          key === 'formEaStatus' ||
+                          key === 'submissionStatus' ||
+                          key === 'accountsStatus'
+                        ) {
+                          return (
+                            <td key={key} className="px-3 py-2 whitespace-nowrap">
+                              <StatusPill group="JOB_STATUS" value={j[key]} />
+                            </td>
+                          );
+                        }
                         if (key === 'priority') {
                           return (
                             <td key={key} className="px-3 py-2 whitespace-nowrap">
@@ -443,16 +651,27 @@ export const JobsModuleView: React.FC<JobsModuleViewProps> = ({ mode }) => {
                             </td>
                           );
                         }
-                        if (key === 'dueDate') {
+                        if (key === 'finalApplicableDeadline' || key === 'dueDate') {
+                          const dVal =
+                            key === 'finalApplicableDeadline'
+                              ? j.finalApplicableDeadline || j.dueDate
+                              : j.dueDate;
                           return (
                             <td
                               key={key}
                               className={`px-3 py-2 font-mono whitespace-nowrap ${
-                                isOverdue ? 'text-rose-700 font-semibold' : 'text-slate-700'
+                                isOverdue ? 'text-rose-700 font-semibold' : 'text-slate-800 font-medium'
                               }`}
                             >
-                              {j.dueDate || '—'}
+                              {dVal || '—'}
                               {isOverdue && <span className="ml-1 text-[10px]">(Overdue)</span>}
+                            </td>
+                          );
+                        }
+                        if (key === 'checklistProgress') {
+                          return (
+                            <td key={key} className="px-3 py-2 font-mono text-slate-600 whitespace-nowrap">
+                              {getChecklistSummary(j)}
                             </td>
                           );
                         }
@@ -462,16 +681,21 @@ export const JobsModuleView: React.FC<JobsModuleViewProps> = ({ mode }) => {
                           key === 'cp204Revised9th' ||
                           key === 'cp204Revised11th' ||
                           key === 'taxPayable' ||
+                          key === 'finalTaxPayable' ||
                           key === 'feeAmount' ||
                           key === 'amountDue' ||
                           key === 'amountPaid'
                         ) {
+                          const num =
+                            key === 'finalTaxPayable'
+                              ? j.finalTaxPayable ?? j.taxPayable ?? 0
+                              : (j[key] as number | undefined) ?? 0;
                           return (
                             <td
                               key={key}
                               className="px-3 py-2 font-mono text-right text-slate-800 whitespace-nowrap"
                             >
-                              {formatCurrencyRM(j[key])}
+                              {formatCurrencyRM(num)}
                             </td>
                           );
                         }
@@ -481,7 +705,16 @@ export const JobsModuleView: React.FC<JobsModuleViewProps> = ({ mode }) => {
                           'groupId',
                           'ya',
                           'fye',
+                          'personNo',
+                          'originalStatutoryDeadline',
+                          'formCDueDate',
+                          'mitrsDueDate',
+                          'internalDeadline',
+                          'lhdnEot1',
+                          'auditReportReceivedDate',
+                          'dateDocumentsReceived',
                           'submissionDate',
+                          'submissionReference',
                           'eFilingAckNo',
                           'cp204InstallmentStart',
                           'installmentNo',
@@ -550,6 +783,15 @@ export const JobsModuleView: React.FC<JobsModuleViewProps> = ({ mode }) => {
         lockModule={mode !== 'ALL'}
         onClose={() => setModalOpen(false)}
       />
+
+      {batchModalVariant && (
+        <BatchAddJobsModal
+          open={true}
+          variant={batchModalVariant}
+          defaultModule={mode === 'ALL' ? undefined : mode}
+          onClose={() => setBatchModalVariant(null)}
+        />
+      )}
     </div>
   );
 };
