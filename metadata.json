@@ -1,0 +1,6 @@
+{
+  "name": "Tax Practice Management System",
+  "description": "Full-stack Malaysian Tax Practice Management System (TPMS) for client master records, LHDN compliance job tracking, team scheduling, practice finance, and role-based administration.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

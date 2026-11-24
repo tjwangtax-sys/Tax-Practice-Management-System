@@ -1,0 +1,212 @@
+{
+  "entities": {
+    "StaffMember": {
+      "title": "StaffMember",
+      "description": "Authorized practice staff member and RBAC role assignment.",
+      "type": "object",
+      "properties": {
+        "staffId": { "type": "string", "maxLength": 32, "description": "Unique staff code e.g. STF-001" },
+        "staffName": { "type": "string", "maxLength": 120, "description": "Full display name" },
+        "email": { "type": "string", "format": "email", "maxLength": 160, "description": "Staff sign-in email" },
+        "role": { "type": "string", "enum": ["Admin", "Manager-HOD", "Staff", "Report Viewer"], "description": "RBAC role" },
+        "active": { "type": "boolean", "description": "Whether staff account is active" },
+        "department": { "type": "string", "maxLength": 80, "description": "Tax department" },
+        "designation": { "type": "string", "maxLength": 80, "description": "Job title" },
+        "phone": { "type": "string", "maxLength": 40, "description": "Contact phone" },
+        "uid": { "type": "string", "maxLength": 128, "description": "Linked Firebase Auth UID" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["staffId", "staffName", "email", "role", "active", "createdAt", "updatedAt"]
+    },
+    "SettingValue": {
+      "title": "SettingValue",
+      "description": "Controlled lookup value and status badge color for TPMS modules.",
+      "type": "object",
+      "properties": {
+        "group": { "type": "string", "maxLength": 64, "description": "Setting group identifier" },
+        "code": { "type": "string", "maxLength": 64, "description": "Machine code" },
+        "displayName": { "type": "string", "maxLength": 120, "description": "Human-readable label" },
+        "module": { "type": "string", "maxLength": 64, "description": "Target TPMS module" },
+        "badgeColor": { "type": "string", "maxLength": 16, "pattern": "^#[0-9a-fA-F]{6}$", "description": "Hex color for status badge" },
+        "active": { "type": "boolean" },
+        "sortOrder": { "type": "number" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["group", "code", "displayName", "module", "badgeColor", "active", "sortOrder", "createdAt", "updatedAt"]
+    },
+    "ClientRecord": {
+      "title": "ClientRecord",
+      "description": "Malaysian tax practice client master record with 40 fields and relational schedules.",
+      "type": "object",
+      "properties": {
+        "clientId": { "type": "string", "maxLength": 40 },
+        "clientName": { "type": "string", "maxLength": 200 },
+        "companyNo": { "type": "string", "maxLength": 60 },
+        "tin": { "type": "string", "maxLength": 60 },
+        "fye": { "type": "string", "maxLength": 10 },
+        "taxPic": { "type": "string", "maxLength": 120 },
+        "category": { "type": "string", "enum": ["Corporate", "Individual", "Other"] },
+        "clientStatus": { "type": "string", "maxLength": 60 },
+        "smeStatus": { "type": "string", "maxLength": 40 },
+        "taxAgent": { "type": "string", "maxLength": 120 },
+        "myTaxAppointment": { "type": "string", "maxLength": 60 },
+        "eInvoiceStatus": { "type": "string", "maxLength": 60 },
+        "sstRegistered": { "type": "string", "maxLength": 20 },
+        "sstNo": { "type": "string", "maxLength": 60 },
+        "email": { "type": "string", "maxLength": 160 },
+        "phone": { "type": "string", "maxLength": 60 },
+        "dateOfIncorporation": { "type": "string", "maxLength": 20 },
+        "dateOfCommencementBusiness": { "type": "string", "maxLength": 20 },
+        "dateOfEngagement": { "type": "string", "maxLength": 20 },
+        "dateOfResigned": { "type": "string", "maxLength": 20 },
+        "auditor": { "type": "string", "maxLength": 120 },
+        "account": { "type": "string", "maxLength": 120 },
+        "eNumber": { "type": "string", "maxLength": 60 },
+        "specialRemarks": { "type": "string", "maxLength": 2000 },
+        "personNo": { "type": "string", "maxLength": 60 },
+        "relationship": { "type": "string", "maxLength": 80 },
+        "engagementStatus": { "type": "string", "maxLength": 60 },
+        "businessName": { "type": "string", "maxLength": 200 },
+        "businessType": { "type": "string", "maxLength": 80 },
+        "businessSsmNo": { "type": "string", "maxLength": 60 },
+        "businessENumber": { "type": "string", "maxLength": 60 },
+        "businessStartDate": { "type": "string", "maxLength": 20 },
+        "businessStatus": { "type": "string", "maxLength": 60 },
+        "firstYa": { "type": "string", "maxLength": 20 },
+        "firstYaStatus": { "type": "string", "maxLength": 60 },
+        "secondYa": { "type": "string", "maxLength": 20 },
+        "secondYaStatus": { "type": "string", "maxLength": 60 },
+        "groupId": { "type": "string", "maxLength": 60 },
+        "companySecretary": { "type": "string", "maxLength": 120 },
+        "registeredAddress": { "type": "string", "maxLength": 500 },
+        "businessHistory": { "type": "array" },
+        "relatedPersons": { "type": "array" },
+        "partnershipPartners": { "type": "array" },
+        "yaMonitoring": { "type": "array" },
+        "createdBy": { "type": "string", "maxLength": 160 },
+        "updatedBy": { "type": "string", "maxLength": 160 },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["clientId", "clientName", "category", "clientStatus", "createdBy", "createdAt", "updatedAt"]
+    },
+    "TaxJob": {
+      "title": "TaxJob",
+      "description": "Tax compliance job across CP204, Corporate, Individual, Ad Hoc, Form E, Tax Payment Monitor, and Correspondence.",
+      "type": "object",
+      "properties": {
+        "jobCode": { "type": "string", "maxLength": 40 },
+        "module": { "type": "string", "enum": ["CP204", "Corporate", "Individual", "Ad Hoc", "Form E", "Tax Payment Monitor", "Correspondence"] },
+        "clientDocId": { "type": "string", "maxLength": 128 },
+        "clientId": { "type": "string", "maxLength": 40 },
+        "clientName": { "type": "string", "maxLength": 200 },
+        "groupId": { "type": "string", "maxLength": 60 },
+        "fye": { "type": "string", "maxLength": 10 },
+        "ya": { "type": "string", "maxLength": 16 },
+        "taxPic": { "type": "string", "maxLength": 120 },
+        "reviewer": { "type": "string", "maxLength": 120 },
+        "status": { "type": "string", "maxLength": 60 },
+        "priority": { "type": "string", "maxLength": 30 },
+        "dueDate": { "type": "string", "maxLength": 20 },
+        "completedDate": { "type": "string", "maxLength": 20 },
+        "feeAmount": { "type": "number" },
+        "billedAmount": { "type": "number" },
+        "billingStatus": { "type": "string", "maxLength": 40 },
+        "hoursSpent": { "type": "number" },
+        "remarks": { "type": "string", "maxLength": 2000 },
+        "formType": { "type": "string", "maxLength": 40 },
+        "submissionDate": { "type": "string", "maxLength": 20 },
+        "eFilingAckNo": { "type": "string", "maxLength": 80 },
+        "taxPayable": { "type": "number" },
+        "taxRefundable": { "type": "number" },
+        "cp204Estimate": { "type": "number" },
+        "cp204Revised6th": { "type": "number" },
+        "cp204Revised9th": { "type": "number" },
+        "cp204Revised11th": { "type": "number" },
+        "cp204InstallmentStart": { "type": "string", "maxLength": 20 },
+        "paymentType": { "type": "string", "maxLength": 60 },
+        "installmentNo": { "type": "string", "maxLength": 20 },
+        "amountDue": { "type": "number" },
+        "amountPaid": { "type": "number" },
+        "paymentDate": { "type": "string", "maxLength": 20 },
+        "receiptNo": { "type": "string", "maxLength": 80 },
+        "correspondenceType": { "type": "string", "maxLength": 80 },
+        "letterRefNo": { "type": "string", "maxLength": 80 },
+        "letterDate": { "type": "string", "maxLength": 20 },
+        "responseDueDate": { "type": "string", "maxLength": 20 },
+        "responseSentDate": { "type": "string", "maxLength": 20 },
+        "createdBy": { "type": "string", "maxLength": 160 },
+        "updatedBy": { "type": "string", "maxLength": 160 },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["jobCode", "module", "clientId", "clientName", "status", "createdBy", "createdAt", "updatedAt"]
+    },
+    "CalendarEvent": {
+      "title": "CalendarEvent",
+      "description": "Team calendar entry for statutory milestones, audits, meetings, and leave.",
+      "type": "object",
+      "properties": {
+        "title": { "type": "string", "maxLength": 160 },
+        "eventType": { "type": "string", "maxLength": 40 },
+        "startDate": { "type": "string", "maxLength": 20 },
+        "endDate": { "type": "string", "maxLength": 20 },
+        "assignedTo": { "type": "string", "maxLength": 120 },
+        "clientId": { "type": "string", "maxLength": 40 },
+        "clientName": { "type": "string", "maxLength": 200 },
+        "notes": { "type": "string", "maxLength": 1000 },
+        "createdBy": { "type": "string", "maxLength": 160 },
+        "updatedBy": { "type": "string", "maxLength": 160 },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["title", "eventType", "startDate", "endDate", "createdBy", "createdAt", "updatedAt"]
+    },
+    "NotificationItem": {
+      "title": "NotificationItem",
+      "description": "Practice announcements, staff suggestions, and system notifications.",
+      "type": "object",
+      "properties": {
+        "type": { "type": "string", "enum": ["announcement", "suggestion", "system"] },
+        "title": { "type": "string", "maxLength": 160 },
+        "message": { "type": "string", "maxLength": 2000 },
+        "authorEmail": { "type": "string", "maxLength": 160 },
+        "authorName": { "type": "string", "maxLength": 120 },
+        "authorRole": { "type": "string", "maxLength": 40 },
+        "targetRole": { "type": "string", "enum": ["ALL", "Admin", "Manager-HOD"] },
+        "readBy": { "type": "array" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["type", "title", "message", "authorEmail", "authorName", "authorRole", "targetRole", "readBy", "createdAt", "updatedAt"]
+    }
+  },
+  "firestore": {
+    "/staff/{staffKey}": {
+      "schema": { "$ref": "#/entities/StaffMember" },
+      "description": "Active and inactive practice staff records keyed by normalized email."
+    },
+    "/settings/{settingId}": {
+      "schema": { "$ref": "#/entities/SettingValue" },
+      "description": "Controlled lookup values and badge colors across TPMS modules."
+    },
+    "/clients/{clientDocId}": {
+      "schema": { "$ref": "#/entities/ClientRecord" },
+      "description": "Client Master register containing 40 core fields and 4 relational schedules."
+    },
+    "/jobs/{jobId}": {
+      "schema": { "$ref": "#/entities/TaxJob" },
+      "description": "Unified compliance job register across all 7 tax job modules."
+    },
+    "/calendarEvents/{eventId}": {
+      "schema": { "$ref": "#/entities/CalendarEvent" },
+      "description": "Team calendar schedules and milestones."
+    },
+    "/notifications/{notificationId}": {
+      "schema": { "$ref": "#/entities/NotificationItem" },
+      "description": "Announcements and staff suggestions for the Notification Center."
+    }
+  }
+}
