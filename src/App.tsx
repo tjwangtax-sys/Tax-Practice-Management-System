@@ -10,6 +10,9 @@ import { DashboardView } from './modules/Dashboard/DashboardView';
 import { TeamCalendarView } from './modules/Calendar/TeamCalendarView';
 import { ClientMasterView } from './modules/ClientMaster/ClientMasterView';
 import { JobsModuleView } from './modules/Jobs/JobsModuleView';
+import { Cp204ModuleView } from './modules/CP204/Cp204ModuleView';
+import { TaxPaymentMonitorView } from './modules/Payments/TaxPaymentMonitorView';
+import { CorrespondenceView } from './modules/Correspondence/CorrespondenceView';
 import { WorkDoneFinanceView } from './modules/Operations/WorkDoneFinanceView';
 import { BasicReportsView } from './modules/Operations/BasicReportsView';
 import { KpiPerformanceView } from './modules/Operations/KpiPerformanceView';
@@ -44,7 +47,7 @@ const AppWorkspace: React.FC = () => {
       case 'all-jobs':
         return <JobsModuleView mode="ALL" />;
       case 'cp204':
-        return <JobsModuleView mode="CP204" />;
+        return <Cp204ModuleView />;
       case 'corporate':
         return <JobsModuleView mode="Corporate" />;
       case 'individual':
@@ -54,9 +57,9 @@ const AppWorkspace: React.FC = () => {
       case 'form-e':
         return <JobsModuleView mode="Form E" />;
       case 'tax-payment-monitor':
-        return <JobsModuleView mode="Tax Payment Monitor" />;
+        return <TaxPaymentMonitorView />;
       case 'correspondence':
-        return <JobsModuleView mode="Correspondence" />;
+        return <CorrespondenceView />;
       case 'work-done-finance':
         return <WorkDoneFinanceView />;
       case 'basic-reports':

@@ -28,6 +28,7 @@ interface RegisterToolbarProps {
   primaryAction?: React.ReactNode;
   recordCount: number;
   totalCount: number;
+  summaryText?: string;
 }
 
 export const RegisterToolbar: React.FC<RegisterToolbarProps> = ({
@@ -47,6 +48,7 @@ export const RegisterToolbar: React.FC<RegisterToolbarProps> = ({
   primaryAction,
   recordCount,
   totalCount,
+  summaryText,
 }) => {
   const [colMenuOpen, setColMenuOpen] = useState(false);
   const [exportMenuOpen, setExportMenuOpen] = useState(false);
@@ -211,7 +213,8 @@ export const RegisterToolbar: React.FC<RegisterToolbarProps> = ({
       <div className="flex flex-wrap items-center justify-between gap-2 pt-2 border-t border-slate-100">
         <div className="flex flex-wrap items-center gap-2">{filters}</div>
         <div className="text-[11px] text-slate-500 font-mono tabular-nums whitespace-nowrap">
-          Showing {recordCount.toLocaleString()} of {totalCount.toLocaleString()} records
+          {summaryText ??
+            `Showing ${recordCount.toLocaleString()} of ${totalCount.toLocaleString()} records`}
         </div>
       </div>
     </div>

@@ -241,6 +241,106 @@
         "updatedAt": { "type": "string", "format": "date-time" }
       },
       "required": ["type", "title", "message", "authorEmail", "authorName", "authorRole", "targetRole", "readBy", "createdAt", "updatedAt"]
+    },
+    "Cp204Record": {
+      "title": "Cp204Record",
+      "description": "Corporate CP204 initial tax estimate, CP204A 6th/9th/11th month revisions, and monthly instalments tracker.",
+      "type": "object",
+      "properties": {
+        "cp204Id": { "type": "string", "maxLength": 40 },
+        "clientId": { "type": "string", "maxLength": 40 },
+        "clientName": { "type": "string", "maxLength": 200 },
+        "ya": { "type": "string", "maxLength": 16 },
+        "fye": { "type": "string", "maxLength": 10 },
+        "basisPeriodStart": { "type": "string", "maxLength": 20 },
+        "basisPeriodEnd": { "type": "string", "maxLength": 20 },
+        "originalEstimatedTax": { "type": "number" },
+        "originalSubmissionDate": { "type": "string", "maxLength": 20 },
+        "currentEstimatedTax": { "type": "number" },
+        "statutoryCp204DueDate": { "type": "string", "maxLength": 20 },
+        "pic": { "type": "string", "maxLength": 120 },
+        "reviewer": { "type": "string", "maxLength": 120 },
+        "status": {
+          "type": "string",
+          "enum": ["In Progress", "Pending Review", "Submitted", "Self-submit by Client", "Completed", "On Hold"]
+        },
+        "acknowledgementUrl": { "type": "string", "maxLength": 500 },
+        "remarks": { "type": "string", "maxLength": 2000 },
+        "revisions": { "type": "array" },
+        "instalments": { "type": "array" },
+        "createdBy": { "type": "string", "maxLength": 160 },
+        "updatedBy": { "type": "string", "maxLength": 160 },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["cp204Id", "clientId", "clientName", "ya", "status", "originalEstimatedTax", "currentEstimatedTax", "createdBy", "createdAt", "updatedAt"]
+    },
+    "TaxPaymentRecord": {
+      "title": "TaxPaymentRecord",
+      "description": "Standalone tax payment monitoring and receipt verification record.",
+      "type": "object",
+      "properties": {
+        "paymentId": { "type": "string", "maxLength": 40 },
+        "clientId": { "type": "string", "maxLength": 40 },
+        "clientName": { "type": "string", "maxLength": 200 },
+        "paymentType": {
+          "type": "string",
+          "enum": ["CP204 Instalment", "Final Tax", "Form C Balance", "Tax Audit Settlement", "Compound / Penalty", "CP500 Instalment", "RPGT / CKHT", "Withholding Tax", "Other Tax Payment"]
+        },
+        "ya": { "type": "string", "maxLength": 16 },
+        "referenceCaseNo": { "type": "string", "maxLength": 80 },
+        "dueDate": { "type": "string", "maxLength": 20 },
+        "amountDue": { "type": "number" },
+        "amountPaid": { "type": "number" },
+        "outstandingAmount": { "type": "number" },
+        "paymentDate": { "type": "string", "maxLength": 20 },
+        "paymentReference": { "type": "string", "maxLength": 80 },
+        "verificationStatus": {
+          "type": "string",
+          "enum": ["Not Verified", "Pending Verification", "Verified", "Rejected / Mismatch"]
+        },
+        "followUpStatus": {
+          "type": "string",
+          "enum": ["Pending", "Partially Paid", "Paid - Pending Verification", "Verified Paid", "Overdue", "On Hold"]
+        },
+        "remarks": { "type": "string", "maxLength": 2000 },
+        "createdBy": { "type": "string", "maxLength": 160 },
+        "updatedBy": { "type": "string", "maxLength": 160 },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["paymentId", "clientId", "clientName", "paymentType", "amountDue", "amountPaid", "outstandingAmount", "verificationStatus", "followUpStatus", "createdBy", "createdAt", "updatedAt"]
+    },
+    "CorrespondenceRecord": {
+      "title": "CorrespondenceRecord",
+      "description": "LHDN, SSM, Client, and Auditor correspondence register with action tracking.",
+      "type": "object",
+      "properties": {
+        "correspondenceId": { "type": "string", "maxLength": 40 },
+        "clientId": { "type": "string", "maxLength": 40 },
+        "clientName": { "type": "string", "maxLength": 200 },
+        "ya": { "type": "string", "maxLength": 16 },
+        "jobId": { "type": "string", "maxLength": 128 },
+        "dateReceived": { "type": "string", "maxLength": 20 },
+        "methodReceived": { "type": "string", "enum": ["Email", "Post", "Portal", "Hand Delivered", "Other"] },
+        "category": { "type": "string", "enum": ["LHDN", "SSM", "Client", "Auditor", "Other"] },
+        "letterType": { "type": "string", "enum": ["Notice", "Query", "Assessment", "Audit", "Appeal", "Reminder", "Other"] },
+        "letterSubject": { "type": "string", "maxLength": 200 },
+        "letterReferenceNo": { "type": "string", "maxLength": 100 },
+        "detailedInformation": { "type": "string", "maxLength": 3000 },
+        "dueDate": { "type": "string", "maxLength": 20 },
+        "actionRequired": { "type": "string", "maxLength": 500 },
+        "pic": { "type": "string", "maxLength": 120 },
+        "actionStatus": { "type": "string", "enum": ["Pending", "In Progress", "Completed", "No Action Required", "Cancelled"] },
+        "actionDate": { "type": "string", "maxLength": 20 },
+        "remarks": { "type": "string", "maxLength": 2000 },
+        "attachmentUrl": { "type": "string", "maxLength": 500 },
+        "createdBy": { "type": "string", "maxLength": 160 },
+        "updatedBy": { "type": "string", "maxLength": 160 },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["correspondenceId", "clientId", "clientName", "dateReceived", "methodReceived", "category", "letterType", "letterSubject", "actionStatus", "createdBy", "createdAt", "updatedAt"]
     }
   },
   "firestore": {
@@ -271,6 +371,18 @@
     "/notifications/{notificationId}": {
       "schema": { "$ref": "#/entities/NotificationItem" },
       "description": "Announcements and staff suggestions for the Notification Center."
+    },
+    "/cp204/{cp204DocId}": {
+      "schema": { "$ref": "#/entities/Cp204Record" },
+      "description": "Corporate CP204 initial estimates, CP204A revisions, and monthly instalment trackers."
+    },
+    "/taxPayments/{paymentDocId}": {
+      "schema": { "$ref": "#/entities/TaxPaymentRecord" },
+      "description": "Standalone tax payment monitoring and payment receipt verification records."
+    },
+    "/correspondence/{correspondenceDocId}": {
+      "schema": { "$ref": "#/entities/CorrespondenceRecord" },
+      "description": "Correspondence register for LHDN, SSM, Client, and Auditor communications."
     }
   }
 }

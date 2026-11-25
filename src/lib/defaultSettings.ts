@@ -102,9 +102,10 @@ export const DEFAULT_MALAYSIAN_TAX_SETTINGS: SeedSettingTemplate[] = [
   { id: 'JS_IN_PROGRESS', group: 'JOB_STATUS', code: 'IN_PROGRESS', displayName: 'In Progress', module: 'All Jobs', badgeColor: '#0369A1', active: true, sortOrder: 3 },
   { id: 'JS_REVIEW', group: 'JOB_STATUS', code: 'MANAGER_REVIEW', displayName: 'Manager Review', module: 'All Jobs', badgeColor: '#7C3AED', active: true, sortOrder: 4 },
   { id: 'JS_CLIENT_APP', group: 'JOB_STATUS', code: 'CLIENT_APPROVAL', displayName: 'Client Approval', module: 'All Jobs', badgeColor: '#C2410C', active: true, sortOrder: 5 },
-  { id: 'JS_SUBMITTED', group: 'JOB_STATUS', code: 'SUBMITTED_LHDN', displayName: 'Submitted to LHDN', module: 'All Jobs', badgeColor: '#0F766E', active: true, sortOrder: 6 },
-  { id: 'JS_COMPLETED', group: 'JOB_STATUS', code: 'COMPLETED', displayName: 'Completed', module: 'All Jobs', badgeColor: '#15803D', active: true, sortOrder: 7 },
-  { id: 'JS_ON_HOLD', group: 'JOB_STATUS', code: 'ON_HOLD', displayName: 'On Hold', module: 'All Jobs', badgeColor: '#B91C1C', active: true, sortOrder: 8 },
+  { id: 'JS_PENDING_MITRS', group: 'JOB_STATUS', code: 'PENDING_MITRS', displayName: 'Pending MITRS', module: 'All Jobs', badgeColor: '#0284C7', active: true, sortOrder: 6 },
+  { id: 'JS_SUBMITTED', group: 'JOB_STATUS', code: 'SUBMITTED_LHDN', displayName: 'Submitted to LHDN', module: 'All Jobs', badgeColor: '#0F766E', active: true, sortOrder: 7 },
+  { id: 'JS_COMPLETED', group: 'JOB_STATUS', code: 'COMPLETED', displayName: 'Completed', module: 'All Jobs', badgeColor: '#CA8A04', active: true, sortOrder: 8 },
+  { id: 'JS_ON_HOLD', group: 'JOB_STATUS', code: 'ON_HOLD', displayName: 'On Hold', module: 'All Jobs', badgeColor: '#B91C1C', active: true, sortOrder: 9 },
 
   // CP204_STATUS
   { id: 'CP_DRAFT', group: 'CP204_STATUS', code: 'ESTIMATE_DRAFT', displayName: 'Estimate Drafted', module: 'CP204', badgeColor: '#0369A1', active: true, sortOrder: 1 },

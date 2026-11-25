@@ -365,6 +365,223 @@ export interface TaxJob {
   updatedAt?: Timestamp;
 }
 
+// =============================================================================
+// CP204 Monitoring (cp204 collection)
+// =============================================================================
+export const CP204_STATUS_OPTIONS = [
+  'In Progress',
+  'Pending Review',
+  'Submitted',
+  'Self-submit by Client',
+  'Completed',
+  'On Hold',
+] as const;
+
+export type Cp204Status = (typeof CP204_STATUS_OPTIONS)[number];
+
+export const CP204_REVISION_MONTHS = ['6', '9', '11'] as const;
+export type Cp204RevisionMonth = (typeof CP204_REVISION_MONTHS)[number];
+
+export const CP204_REVISION_STATUS_OPTIONS = [
+  'In Progress',
+  'Pending Review',
+  'Approved',
+  'Submitted',
+  'Completed',
+  'On Hold',
+  'Client Self-Submit',
+] as const;
+
+export type Cp204RevisionStatus = (typeof CP204_REVISION_STATUS_OPTIONS)[number];
+
+export interface Cp204Revision {
+  revisionId: string;
+  revisionMonth: Cp204RevisionMonth;
+  previousEstimatedTax: number;
+  proposedEstimatedTax: number;
+  variance: number;
+  reason: string;
+  reviewStatus: Cp204RevisionStatus;
+  pic: string;
+  reviewer: string;
+  submissionDeadline: string;
+  submissionDate: string;
+  acknowledgementUrl: string;
+  remarks: string;
+}
+
+export interface Cp204Instalment {
+  instalmentId: string;
+  instalmentNo: number;
+  dueDate: string;
+  amountDue: number;
+  amountPaid: number;
+  paymentDate: string;
+  paymentReference: string;
+  paymentVerified: 'Yes' | 'No';
+  outstandingAmount: number;
+  followUpStatus: string;
+  remarks: string;
+}
+
+export interface Cp204Record {
+  id: string;
+  cp204Id: string;
+  clientId: string;
+  clientName: string;
+  ya: string;
+  fye: string;
+  basisPeriodStart: string;
+  basisPeriodEnd: string;
+  originalEstimatedTax: number;
+  originalSubmissionDate: string;
+  currentEstimatedTax: number;
+  statutoryCp204DueDate: string;
+  pic: string;
+  reviewer: string;
+  status: Cp204Status;
+  acknowledgementUrl: string;
+  remarks: string;
+  revisions: Cp204Revision[];
+  instalments: Cp204Instalment[];
+  createdBy: string;
+  updatedBy?: string;
+  createdAt?: Timestamp;
+  updatedAt?: Timestamp;
+}
+
+// =============================================================================
+// Tax Payment Monitor (taxPayments collection)
+// =============================================================================
+export const TAX_PAYMENT_TYPES = [
+  'CP204 Instalment',
+  'Final Tax',
+  'Form C Balance',
+  'Tax Audit Settlement',
+  'Compound / Penalty',
+  'CP500 Instalment',
+  'RPGT / CKHT',
+  'Withholding Tax',
+  'Other Tax Payment',
+] as const;
+
+export type TaxPaymentType = (typeof TAX_PAYMENT_TYPES)[number];
+
+export const TAX_PAYMENT_VERIFICATION_STATUSES = [
+  'Not Verified',
+  'Pending Verification',
+  'Verified',
+  'Rejected / Mismatch',
+] as const;
+
+export type TaxPaymentVerificationStatus = (typeof TAX_PAYMENT_VERIFICATION_STATUSES)[number];
+
+export const TAX_PAYMENT_FOLLOWUP_STATUSES = [
+  'Pending',
+  'Partially Paid',
+  'Paid - Pending Verification',
+  'Verified Paid',
+  'Overdue',
+  'On Hold',
+] as const;
+
+export type TaxPaymentFollowUpStatus = (typeof TAX_PAYMENT_FOLLOWUP_STATUSES)[number];
+
+export interface TaxPaymentRecord {
+  id: string;
+  paymentId: string;
+  clientId: string;
+  clientName: string;
+  paymentType: TaxPaymentType;
+  ya: string;
+  referenceCaseNo: string;
+  dueDate: string;
+  amountDue: number;
+  amountPaid: number;
+  outstandingAmount: number;
+  paymentDate: string;
+  paymentReference: string;
+  verificationStatus: TaxPaymentVerificationStatus;
+  followUpStatus: TaxPaymentFollowUpStatus;
+  remarks: string;
+  createdBy: string;
+  updatedBy?: string;
+  createdAt?: Timestamp;
+  updatedAt?: Timestamp;
+}
+
+// =============================================================================
+// Correspondence (correspondence collection)
+// =============================================================================
+export const CORRESPONDENCE_METHODS = [
+  'Email',
+  'Post',
+  'Portal',
+  'Hand Delivered',
+  'Other',
+] as const;
+
+export type CorrespondenceMethod = (typeof CORRESPONDENCE_METHODS)[number];
+
+export const CORRESPONDENCE_CATEGORIES = [
+  'LHDN',
+  'SSM',
+  'Client',
+  'Auditor',
+  'Other',
+] as const;
+
+export type CorrespondenceCategory = (typeof CORRESPONDENCE_CATEGORIES)[number];
+
+export const CORRESPONDENCE_LETTER_TYPES = [
+  'Notice',
+  'Query',
+  'Assessment',
+  'Audit',
+  'Appeal',
+  'Reminder',
+  'Other',
+] as const;
+
+export type CorrespondenceLetterType = (typeof CORRESPONDENCE_LETTER_TYPES)[number];
+
+export const CORRESPONDENCE_ACTION_STATUSES = [
+  'Pending',
+  'In Progress',
+  'Completed',
+  'No Action Required',
+  'Cancelled',
+] as const;
+
+export type CorrespondenceActionStatus = (typeof CORRESPONDENCE_ACTION_STATUSES)[number];
+
+export interface CorrespondenceRecord {
+  id: string;
+  correspondenceId: string;
+  clientId: string;
+  clientName: string;
+  ya: string;
+  jobId: string;
+  dateReceived: string;
+  methodReceived: CorrespondenceMethod;
+  category: CorrespondenceCategory;
+  letterType: CorrespondenceLetterType;
+  letterSubject: string;
+  letterReferenceNo: string;
+  detailedInformation: string;
+  dueDate: string;
+  actionRequired: string;
+  pic: string;
+  actionStatus: CorrespondenceActionStatus;
+  actionDate: string;
+  remarks: string;
+  attachmentUrl: string;
+  createdBy: string;
+  updatedBy?: string;
+  createdAt?: Timestamp;
+  updatedAt?: Timestamp;
+}
+
 export interface CalendarEvent {
   id: string;
   title: string;

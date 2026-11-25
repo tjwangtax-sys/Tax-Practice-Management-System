@@ -2,6 +2,7 @@ import React, { createContext, useContext, useEffect, useState, useCallback, use
 import {
   collection,
   deleteDoc,
+  deleteField,
   doc,
   onSnapshot,
   serverTimestamp,
@@ -13,9 +14,18 @@ import { db, emailToStaffKey, handleFirestoreError, OperationType } from '../lib
 import { DEFAULT_MALAYSIAN_TAX_SETTINGS } from '../lib/defaultSettings';
 import { applyMalaysianJobRules } from '../lib/deadlineUtils';
 import {
+  computeCp204CurrentEstimatedTax,
+  generateNextSequentialId,
+  normalizeCp204Instalments,
+  normalizeCp204Revisions,
+  validateCp204Instalments,
+} from '../modules/CP204/cp204Utils';
+import {
   CalendarEvent,
   clampStr,
   ClientRecord,
+  CorrespondenceRecord,
+  Cp204Record,
   JobHistoryEntry,
   NotificationItem,
   safeNum,
@@ -23,6 +33,7 @@ import {
   SettingValue,
   StaffMember,
   TaxJob,
+  TaxPaymentRecord,
 } from '../types/tpms';
 import { useAuth } from './AuthContext';
 
@@ -30,6 +41,21 @@ export type JobSavePayload = Omit<
   TaxJob,
   'id' | 'createdBy' | 'updatedBy' | 'createdAt' | 'updatedAt'
 >;
+
+export type Cp204SavePayload = Omit<
+  Cp204Record,
+  'id' | 'cp204Id' | 'createdBy' | 'updatedBy' | 'createdAt' | 'updatedAt'
+> & { cp204Id?: string };
+
+export type TaxPaymentSavePayload = Omit<
+  TaxPaymentRecord,
+  'id' | 'paymentId' | 'outstandingAmount' | 'createdBy' | 'updatedBy' | 'createdAt' | 'updatedAt'
+> & { paymentId?: string };
+
+export type CorrespondenceSavePayload = Omit<
+  CorrespondenceRecord,
+  'id' | 'correspondenceId' | 'createdBy' | 'updatedBy' | 'createdAt' | 'updatedAt'
+> & { correspondenceId?: string };
 
 interface DataContextValue {
   staff: StaffMember[];
@@ -39,6 +65,9 @@ interface DataContextValue {
   history: JobHistoryEntry[];
   calendarEvents: CalendarEvent[];
   notifications: NotificationItem[];
+  cp204Records: Cp204Record[];
+  taxPayments: TaxPaymentRecord[];
+  correspondenceRecords: CorrespondenceRecord[];
   loading: boolean;
   refreshing: boolean;
   lastRefreshedAt: Date | null;
@@ -77,6 +106,18 @@ interface DataContextValue {
     existingId?: string
   ) => Promise<string>;
   deleteCalendarEvent: (eventId: string) => Promise<void>;
+  // CP204 Monitoring CRUD
+  saveCp204: (record: Cp204SavePayload, existingId?: string) => Promise<string>;
+  batchCreateCp204: (
+    items: Cp204SavePayload[]
+  ) => Promise<{ createdCount: number; skippedCount: number }>;
+  deleteCp204: (id: string) => Promise<void>;
+  // Tax Payment Monitor CRUD
+  saveTaxPayment: (record: TaxPaymentSavePayload, existingId?: string) => Promise<string>;
+  deleteTaxPayment: (id: string) => Promise<void>;
+  // Correspondence CRUD
+  saveCorrespondence: (record: CorrespondenceSavePayload, existingId?: string) => Promise<string>;
+  deleteCorrespondence: (id: string) => Promise<void>;
   // Notifications
   publishAnnouncement: (
     title: string,
@@ -93,107 +134,226 @@ const DataContext = createContext<DataContextValue | null>(null);
 
 const LOCAL_READ_STORAGE_KEY = 'tpms_local_read_notifications_v1';
 
+const REQUIRED_CLIENT_KEYS = new Set([
+  'clientId',
+  'clientName',
+  'category',
+  'clientStatus',
+  'createdBy',
+  'updatedBy',
+  'createdAt',
+  'updatedAt',
+]);
+
+const REQUIRED_JOB_KEYS = new Set([
+  'jobCode',
+  'module',
+  'clientId',
+  'clientName',
+  'status',
+  'createdBy',
+  'updatedBy',
+  'createdAt',
+  'updatedAt',
+]);
+
+/**
+ * Omits empty optional strings/zeros/arrays on create (and converts them to
+ * deleteField() on update) so Firestore documents stay compact and security
+ * rules skip unused field buckets well within the 1,000-expression CEL limit.
+ */
+function compactOptionalPayload(
+  raw: Record<string, unknown>,
+  requiredKeys: Set<string>,
+  isUpdate: boolean,
+  omitZeroNumbers = false
+): Record<string, unknown> {
+  const result: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries(raw)) {
+    if (requiredKeys.has(key)) {
+      result[key] = value;
+      continue;
+    }
+    const isEmptyStr = typeof value === 'string' && value.length === 0;
+    const isEmptyArr = Array.isArray(value) && value.length === 0;
+    const isZeroNum = omitZeroNumbers && typeof value === 'number' && value === 0;
+
+    if (value === undefined || isEmptyStr || isEmptyArr || isZeroNum) {
+      if (isUpdate) {
+        result[key] = deleteField();
+      }
+      continue;
+    }
+    result[key] = value;
+  }
+  return result;
+}
+
+function hydrateClientRecord(id: string, raw: Partial<ClientRecord>): ClientRecord {
+  return {
+    id,
+    clientId: raw.clientId ?? '',
+    clientName: raw.clientName ?? '',
+    companyNo: raw.companyNo ?? '',
+    tin: raw.tin ?? '',
+    fye: raw.fye ?? '',
+    taxPic: raw.taxPic ?? '',
+    category: raw.category ?? 'Corporate',
+    clientStatus: raw.clientStatus ?? 'Active',
+    smeStatus: raw.smeStatus ?? '',
+    taxAgent: raw.taxAgent ?? '',
+    myTaxAppointment: raw.myTaxAppointment ?? '',
+    eInvoiceStatus: raw.eInvoiceStatus ?? '',
+    sstRegistered: raw.sstRegistered ?? '',
+    sstNo: raw.sstNo ?? '',
+    email: raw.email ?? '',
+    phone: raw.phone ?? '',
+    dateOfIncorporation: raw.dateOfIncorporation ?? '',
+    dateOfCommencementBusiness: raw.dateOfCommencementBusiness ?? '',
+    dateOfEngagement: raw.dateOfEngagement ?? '',
+    dateOfResigned: raw.dateOfResigned ?? '',
+    auditor: raw.auditor ?? '',
+    account: raw.account ?? '',
+    eNumber: raw.eNumber ?? '',
+    specialRemarks: raw.specialRemarks ?? '',
+    personNo: raw.personNo ?? '',
+    relationship: raw.relationship ?? '',
+    engagementStatus: raw.engagementStatus ?? '',
+    businessName: raw.businessName ?? '',
+    businessType: raw.businessType ?? '',
+    businessSsmNo: raw.businessSsmNo ?? '',
+    businessENumber: raw.businessENumber ?? '',
+    businessStartDate: raw.businessStartDate ?? '',
+    businessStatus: raw.businessStatus ?? '',
+    firstYa: raw.firstYa ?? '',
+    firstYaStatus: raw.firstYaStatus ?? '',
+    secondYa: raw.secondYa ?? '',
+    secondYaStatus: raw.secondYaStatus ?? '',
+    groupId: raw.groupId ?? '',
+    companySecretary: raw.companySecretary ?? '',
+    registeredAddress: raw.registeredAddress ?? '',
+    businessHistory: Array.isArray(raw.businessHistory) ? raw.businessHistory : [],
+    relatedPersons: Array.isArray(raw.relatedPersons) ? raw.relatedPersons : [],
+    partnershipPartners: Array.isArray(raw.partnershipPartners) ? raw.partnershipPartners : [],
+    yaMonitoring: Array.isArray(raw.yaMonitoring) ? raw.yaMonitoring : [],
+    createdBy: raw.createdBy ?? '',
+    updatedBy: raw.updatedBy ?? '',
+    createdAt: raw.createdAt,
+    updatedAt: raw.updatedAt,
+  };
+}
+
 function buildSanitizedJobDocument(
   rawJob: JobSavePayload,
-  actorEmail: string
+  actorEmail: string,
+  isUpdate: boolean
 ) {
   const computed = applyMalaysianJobRules(rawJob);
 
+  const rawPayload: Record<string, unknown> = {
+    jobCode: clampStr(computed.jobCode, 40),
+    module: computed.module,
+    ...(computed.jobType ? { jobType: computed.jobType } : {}),
+    clientDocId: clampStr(computed.clientDocId, 128),
+    clientId: clampStr(computed.clientId, 40),
+    clientName: clampStr(computed.clientName, 200),
+    groupId: clampStr(computed.groupId, 60),
+    fye: clampStr(computed.fye, 10),
+    ya: clampStr(computed.ya, 16),
+    taxPic: clampStr(computed.taxPic, 120),
+    reviewer: clampStr(computed.reviewer, 120),
+    status: clampStr(computed.status || 'Not Started', 60),
+    priority: clampStr(computed.priority || 'Normal', 30),
+    dueDate: clampStr(computed.dueDate, 20),
+    completedDate: clampStr(computed.completedDate, 20),
+    // Deadlines & EOTs
+    internalDeadline: clampStr(computed.internalDeadline, 20),
+    originalStatutoryDeadline: clampStr(computed.originalStatutoryDeadline, 20),
+    ssmEot1: clampStr(computed.ssmEot1, 20),
+    ssmEot2: clampStr(computed.ssmEot2, 20),
+    ssmEot3: clampStr(computed.ssmEot3, 20),
+    lhdnEot1: clampStr(computed.lhdnEot1, 20),
+    lhdnEot2: clampStr(computed.lhdnEot2, 20),
+    lhdnEot3: clampStr(computed.lhdnEot3, 20),
+    finalApplicableDeadline: clampStr(computed.finalApplicableDeadline, 20),
+    // Form C & MITRS
+    auditBookInDate: clampStr(computed.auditBookInDate, 20),
+    auditReportReceivedDate: clampStr(computed.auditReportReceivedDate, 20),
+    formCStatus: clampStr(computed.formCStatus, 60),
+    formCDueDate: clampStr(computed.formCDueDate, 20),
+    formCSubmissionDate: clampStr(computed.formCSubmissionDate, 20),
+    formCSubmissionReference: clampStr(computed.formCSubmissionReference, 80),
+    mitrsStatus: clampStr(computed.mitrsStatus, 60),
+    mitrsDueDate: clampStr(computed.mitrsDueDate, 20),
+    mitrsSubmissionDate: clampStr(computed.mitrsSubmissionDate, 20),
+    mitrsSubmissionReference: clampStr(computed.mitrsSubmissionReference, 80),
+    // Workflow & Accounts
+    dateDocumentsRequested: clampStr(computed.dateDocumentsRequested, 20),
+    dateDocumentsReceived: clampStr(computed.dateDocumentsReceived, 20),
+    draftDate: clampStr(computed.draftDate, 20),
+    reviewDate: clampStr(computed.reviewDate, 20),
+    clientConfirmationDate: clampStr(computed.clientConfirmationDate, 20),
+    yaStatus: clampStr(computed.yaStatus, 60),
+    auditor: clampStr(computed.auditor, 120),
+    accountsStatus: clampStr(computed.accountsStatus, 60),
+    accountBookInDate: clampStr(computed.accountBookInDate, 20),
+    accountReturnDate: clampStr(computed.accountReturnDate, 20),
+    accountReturnStatus: clampStr(computed.accountReturnStatus, 60),
+    submissionStatus: clampStr(computed.submissionStatus, 60),
+    submissionReference: clampStr(computed.submissionReference, 80),
+    personNo: clampStr(computed.personNo, 60),
+    yaSequence: clampStr(computed.yaSequence, 40),
+    finalTaxPayable: safeNum(computed.finalTaxPayable),
+    finalTaxPayableDate: clampStr(computed.finalTaxPayableDate, 20),
+    // Form E sub-statuses
+    formEStatus: clampStr(computed.formEStatus, 60),
+    cp8dStatus: clampStr(computed.cp8dStatus, 60),
+    formEaStatus: clampStr(computed.formEaStatus, 60),
+    // Embedded arrays
+    complianceChecklist: (computed.complianceChecklist || []).slice(0, 20),
+    documentFollowups: (computed.documentFollowups || []).slice(0, 50),
+    // Finance & Remarks
+    feeAmount: safeNum(computed.feeAmount),
+    billedAmount: safeNum(computed.billedAmount),
+    billingStatus: clampStr(computed.billingStatus || 'Unbilled WIP', 40),
+    hoursSpent: safeNum(computed.hoursSpent),
+    remarks: clampStr(computed.remarks, 2000),
+    // Specialized module fields
+    formType: clampStr(computed.formType || computed.jobType || '', 40),
+    submissionDate: clampStr(computed.submissionDate, 20),
+    eFilingAckNo: clampStr(computed.eFilingAckNo, 80),
+    taxPayable: safeNum(computed.taxPayable),
+    taxRefundable: safeNum(computed.taxRefundable),
+    cp204Estimate: safeNum(computed.cp204Estimate),
+    cp204Revised6th: safeNum(computed.cp204Revised6th),
+    cp204Revised9th: safeNum(computed.cp204Revised9th),
+    cp204Revised11th: safeNum(computed.cp204Revised11th),
+    cp204InstallmentStart: clampStr(computed.cp204InstallmentStart, 20),
+    paymentType: clampStr(computed.paymentType, 60),
+    installmentNo: clampStr(computed.installmentNo, 20),
+    amountDue: safeNum(computed.amountDue),
+    amountPaid: safeNum(computed.amountPaid),
+    paymentDate: clampStr(computed.paymentDate, 20),
+    receiptNo: clampStr(computed.receiptNo, 80),
+    correspondenceType: clampStr(computed.correspondenceType, 80),
+    letterRefNo: clampStr(computed.letterRefNo, 80),
+    letterDate: clampStr(computed.letterDate, 20),
+    responseDueDate: clampStr(computed.responseDueDate, 20),
+    responseSentDate: clampStr(computed.responseSentDate, 20),
+    updatedBy: actorEmail,
+    updatedAt: serverTimestamp(),
+  };
+
   return {
     computedStatus: clampStr(computed.status || 'Not Started', 60),
-    payload: {
+    meta: {
       jobCode: clampStr(computed.jobCode, 40),
+      jobType: computed.jobType || '',
       module: computed.module,
-      ...(computed.jobType ? { jobType: computed.jobType } : {}),
-      clientDocId: clampStr(computed.clientDocId, 128),
-      clientId: clampStr(computed.clientId, 40),
-      clientName: clampStr(computed.clientName, 200),
-      groupId: clampStr(computed.groupId, 60),
-      fye: clampStr(computed.fye, 10),
       ya: clampStr(computed.ya, 16),
-      taxPic: clampStr(computed.taxPic, 120),
-      reviewer: clampStr(computed.reviewer, 120),
-      status: clampStr(computed.status || 'Not Started', 60),
-      priority: clampStr(computed.priority || 'Normal', 30),
-      dueDate: clampStr(computed.dueDate, 20),
-      completedDate: clampStr(computed.completedDate, 20),
-      // Deadlines & EOTs
-      internalDeadline: clampStr(computed.internalDeadline, 20),
-      originalStatutoryDeadline: clampStr(computed.originalStatutoryDeadline, 20),
-      ssmEot1: clampStr(computed.ssmEot1, 20),
-      ssmEot2: clampStr(computed.ssmEot2, 20),
-      ssmEot3: clampStr(computed.ssmEot3, 20),
-      lhdnEot1: clampStr(computed.lhdnEot1, 20),
-      lhdnEot2: clampStr(computed.lhdnEot2, 20),
-      lhdnEot3: clampStr(computed.lhdnEot3, 20),
-      finalApplicableDeadline: clampStr(computed.finalApplicableDeadline, 20),
-      // Form C & MITRS
-      auditBookInDate: clampStr(computed.auditBookInDate, 20),
-      auditReportReceivedDate: clampStr(computed.auditReportReceivedDate, 20),
-      formCStatus: clampStr(computed.formCStatus, 60),
-      formCDueDate: clampStr(computed.formCDueDate, 20),
-      formCSubmissionDate: clampStr(computed.formCSubmissionDate, 20),
-      formCSubmissionReference: clampStr(computed.formCSubmissionReference, 80),
-      mitrsStatus: clampStr(computed.mitrsStatus, 60),
-      mitrsDueDate: clampStr(computed.mitrsDueDate, 20),
-      mitrsSubmissionDate: clampStr(computed.mitrsSubmissionDate, 20),
-      mitrsSubmissionReference: clampStr(computed.mitrsSubmissionReference, 80),
-      // Workflow & Accounts
-      dateDocumentsRequested: clampStr(computed.dateDocumentsRequested, 20),
-      dateDocumentsReceived: clampStr(computed.dateDocumentsReceived, 20),
-      draftDate: clampStr(computed.draftDate, 20),
-      reviewDate: clampStr(computed.reviewDate, 20),
-      clientConfirmationDate: clampStr(computed.clientConfirmationDate, 20),
-      yaStatus: clampStr(computed.yaStatus, 60),
-      auditor: clampStr(computed.auditor, 120),
-      accountsStatus: clampStr(computed.accountsStatus, 60),
-      accountBookInDate: clampStr(computed.accountBookInDate, 20),
-      accountReturnDate: clampStr(computed.accountReturnDate, 20),
-      accountReturnStatus: clampStr(computed.accountReturnStatus, 60),
-      submissionStatus: clampStr(computed.submissionStatus, 60),
-      submissionReference: clampStr(computed.submissionReference, 80),
-      personNo: clampStr(computed.personNo, 60),
-      yaSequence: clampStr(computed.yaSequence, 40),
-      finalTaxPayable: safeNum(computed.finalTaxPayable),
-      finalTaxPayableDate: clampStr(computed.finalTaxPayableDate, 20),
-      // Form E sub-statuses
-      formEStatus: clampStr(computed.formEStatus, 60),
-      cp8dStatus: clampStr(computed.cp8dStatus, 60),
-      formEaStatus: clampStr(computed.formEaStatus, 60),
-      // Embedded arrays
-      complianceChecklist: (computed.complianceChecklist || []).slice(0, 20),
-      documentFollowups: (computed.documentFollowups || []).slice(0, 50),
-      // Finance & Remarks
-      feeAmount: safeNum(computed.feeAmount),
-      billedAmount: safeNum(computed.billedAmount),
-      billingStatus: clampStr(computed.billingStatus || 'Unbilled WIP', 40),
-      hoursSpent: safeNum(computed.hoursSpent),
-      remarks: clampStr(computed.remarks, 2000),
-      // Specialized module fields
-      formType: clampStr(computed.formType || computed.jobType || '', 40),
-      submissionDate: clampStr(computed.submissionDate, 20),
-      eFilingAckNo: clampStr(computed.eFilingAckNo, 80),
-      taxPayable: safeNum(computed.taxPayable),
-      taxRefundable: safeNum(computed.taxRefundable),
-      cp204Estimate: safeNum(computed.cp204Estimate),
-      cp204Revised6th: safeNum(computed.cp204Revised6th),
-      cp204Revised9th: safeNum(computed.cp204Revised9th),
-      cp204Revised11th: safeNum(computed.cp204Revised11th),
-      cp204InstallmentStart: clampStr(computed.cp204InstallmentStart, 20),
-      paymentType: clampStr(computed.paymentType, 60),
-      installmentNo: clampStr(computed.installmentNo, 20),
-      amountDue: safeNum(computed.amountDue),
-      amountPaid: safeNum(computed.amountPaid),
-      paymentDate: clampStr(computed.paymentDate, 20),
-      receiptNo: clampStr(computed.receiptNo, 80),
-      correspondenceType: clampStr(computed.correspondenceType, 80),
-      letterRefNo: clampStr(computed.letterRefNo, 80),
-      letterDate: clampStr(computed.letterDate, 20),
-      responseDueDate: clampStr(computed.responseDueDate, 20),
-      responseSentDate: clampStr(computed.responseSentDate, 20),
-      updatedBy: actorEmail,
-      updatedAt: serverTimestamp(),
+      clientName: clampStr(computed.clientName, 200),
     },
+    payload: compactOptionalPayload(rawPayload, REQUIRED_JOB_KEYS, isUpdate, true),
   };
 }
 
@@ -207,6 +367,9 @@ export const DataProvider: React.FC<{ children: React.ReactNode }> = ({ children
   const [history, setHistory] = useState<JobHistoryEntry[]>([]);
   const [calendarEvents, setCalendarEvents] = useState<CalendarEvent[]>([]);
   const [notifications, setNotifications] = useState<NotificationItem[]>([]);
+  const [cp204Records, setCp204Records] = useState<Cp204Record[]>([]);
+  const [taxPayments, setTaxPayments] = useState<TaxPaymentRecord[]>([]);
+  const [correspondenceRecords, setCorrespondenceRecords] = useState<CorrespondenceRecord[]>([]);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [refreshNonce, setRefreshNonce] = useState(0);
@@ -229,6 +392,9 @@ export const DataProvider: React.FC<{ children: React.ReactNode }> = ({ children
       setHistory([]);
       setCalendarEvents([]);
       setNotifications([]);
+      setCp204Records([]);
+      setTaxPayments([]);
+      setCorrespondenceRecords([]);
       setLoading(false);
       return;
     }
@@ -237,7 +403,7 @@ export const DataProvider: React.FC<{ children: React.ReactNode }> = ({ children
     let settledCount = 0;
     const markSettled = () => {
       settledCount += 1;
-      if (settledCount >= 7) {
+      if (settledCount >= 10) {
         setLoading(false);
         setRefreshing(false);
         setLastRefreshedAt(new Date());
@@ -272,7 +438,7 @@ export const DataProvider: React.FC<{ children: React.ReactNode }> = ({ children
       collection(db, 'clients'),
       (snap) => {
         const list = snap.docs
-          .map((d) => ({ id: d.id, ...(d.data() as Omit<ClientRecord, 'id'>) }))
+          .map((d) => hydrateClientRecord(d.id, d.data() as Partial<ClientRecord>))
           .sort((a, b) => (a.clientId || '').localeCompare(b.clientId || ''));
         setClients(list);
         markSettled();
@@ -340,6 +506,134 @@ export const DataProvider: React.FC<{ children: React.ReactNode }> = ({ children
       (err) => handleFirestoreError(err, OperationType.LIST, 'notifications')
     );
 
+    const unsubCp204 = onSnapshot(
+      collection(db, 'cp204'),
+      (snap) => {
+        const list = snap.docs
+          .map((d) => {
+            const raw = d.data() as Partial<Cp204Record>;
+            const revisions = normalizeCp204Revisions(raw.revisions);
+            const instalments = normalizeCp204Instalments(raw.instalments);
+            const originalEstimatedTax = safeNum(raw.originalEstimatedTax);
+            const currentEstimatedTax = computeCp204CurrentEstimatedTax(
+              originalEstimatedTax,
+              revisions
+            );
+            return {
+              id: d.id,
+              cp204Id: raw.cp204Id ?? d.id,
+              clientId: raw.clientId ?? '',
+              clientName: raw.clientName ?? '',
+              ya: raw.ya ?? '',
+              fye: raw.fye ?? '',
+              basisPeriodStart: raw.basisPeriodStart ?? '',
+              basisPeriodEnd: raw.basisPeriodEnd ?? '',
+              originalEstimatedTax,
+              originalSubmissionDate: raw.originalSubmissionDate ?? '',
+              currentEstimatedTax,
+              statutoryCp204DueDate: raw.statutoryCp204DueDate ?? '',
+              pic: raw.pic ?? '',
+              reviewer: raw.reviewer ?? '',
+              status: raw.status ?? 'In Progress',
+              acknowledgementUrl: raw.acknowledgementUrl ?? '',
+              remarks: raw.remarks ?? '',
+              revisions,
+              instalments,
+              createdBy: raw.createdBy ?? '',
+              updatedBy: raw.updatedBy,
+              createdAt: raw.createdAt,
+              updatedAt: raw.updatedAt,
+            } as Cp204Record;
+          })
+          .sort(
+            (a, b) =>
+              (b.ya || '').localeCompare(a.ya || '') ||
+              (a.clientName || '').localeCompare(b.clientName || '')
+          );
+        setCp204Records(list);
+        markSettled();
+      },
+      (err) => handleFirestoreError(err, OperationType.LIST, 'cp204')
+    );
+
+    const unsubTaxPayments = onSnapshot(
+      collection(db, 'taxPayments'),
+      (snap) => {
+        const list = snap.docs
+          .map((d) => {
+            const raw = d.data() as Partial<TaxPaymentRecord>;
+            const amountDue = Math.max(0, safeNum(raw.amountDue));
+            const amountPaid = Math.max(0, safeNum(raw.amountPaid));
+            return {
+              id: d.id,
+              paymentId: raw.paymentId ?? d.id,
+              clientId: raw.clientId ?? '',
+              clientName: raw.clientName ?? '',
+              paymentType: raw.paymentType ?? 'CP204 Instalment',
+              ya: raw.ya ?? '',
+              referenceCaseNo: raw.referenceCaseNo ?? '',
+              dueDate: raw.dueDate ?? '',
+              amountDue,
+              amountPaid,
+              outstandingAmount: Math.max(0, Math.round((amountDue - amountPaid) * 100) / 100),
+              paymentDate: raw.paymentDate ?? '',
+              paymentReference: raw.paymentReference ?? '',
+              verificationStatus: raw.verificationStatus ?? 'Not Verified',
+              followUpStatus: raw.followUpStatus ?? 'Pending',
+              remarks: raw.remarks ?? '',
+              createdBy: raw.createdBy ?? '',
+              updatedBy: raw.updatedBy,
+              createdAt: raw.createdAt,
+              updatedAt: raw.updatedAt,
+            } as TaxPaymentRecord;
+          })
+          .sort((a, b) => (a.dueDate || '9999-12-31').localeCompare(b.dueDate || '9999-12-31'));
+        setTaxPayments(list);
+        markSettled();
+      },
+      (err) => handleFirestoreError(err, OperationType.LIST, 'taxPayments')
+    );
+
+    const unsubCorrespondence = onSnapshot(
+      collection(db, 'correspondence'),
+      (snap) => {
+        const list = snap.docs
+          .map((d) => {
+            const raw = d.data() as Partial<CorrespondenceRecord>;
+            return {
+              id: d.id,
+              correspondenceId: raw.correspondenceId ?? d.id,
+              clientId: raw.clientId ?? '',
+              clientName: raw.clientName ?? '',
+              ya: raw.ya ?? '',
+              jobId: raw.jobId ?? '',
+              dateReceived: raw.dateReceived ?? '',
+              methodReceived: raw.methodReceived ?? 'Email',
+              category: raw.category ?? 'LHDN',
+              letterType: raw.letterType ?? 'Notice',
+              letterSubject: raw.letterSubject ?? '',
+              letterReferenceNo: raw.letterReferenceNo ?? '',
+              detailedInformation: raw.detailedInformation ?? '',
+              dueDate: raw.dueDate ?? '',
+              actionRequired: raw.actionRequired ?? '',
+              pic: raw.pic ?? '',
+              actionStatus: raw.actionStatus ?? 'Pending',
+              actionDate: raw.actionDate ?? '',
+              remarks: raw.remarks ?? '',
+              attachmentUrl: raw.attachmentUrl ?? '',
+              createdBy: raw.createdBy ?? '',
+              updatedBy: raw.updatedBy,
+              createdAt: raw.createdAt,
+              updatedAt: raw.updatedAt,
+            } as CorrespondenceRecord;
+          })
+          .sort((a, b) => (b.dateReceived || '').localeCompare(a.dateReceived || ''));
+        setCorrespondenceRecords(list);
+        markSettled();
+      },
+      (err) => handleFirestoreError(err, OperationType.LIST, 'correspondence')
+    );
+
     return () => {
       unsubStaff();
       unsubSettings();
@@ -348,6 +642,9 @@ export const DataProvider: React.FC<{ children: React.ReactNode }> = ({ children
       unsubHistory();
       unsubCalendar();
       unsubNotifications();
+      unsubCp204();
+      unsubTaxPayments();
+      unsubCorrespondence();
     };
   }, [accessStatus, user, refreshNonce]);
 
@@ -386,6 +683,13 @@ export const DataProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
       if (matched) {
         return { label: matched.displayName, color: matched.badgeColor };
+      }
+
+      if (key === 'pending mitrs') {
+        return { label: raw, color: '#0369A1' };
+      }
+      if (key === 'completed' && group === 'JOB_STATUS') {
+        return { label: raw, color: '#CA8A04' };
       }
 
       if (
@@ -615,18 +919,30 @@ export const DataProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
       try {
         if (existingId) {
+          const compacted = compactOptionalPayload(
+            basePayload,
+            REQUIRED_CLIENT_KEYS,
+            true,
+            false
+          );
           if (staffProfile?.role === 'Staff') {
-            const { clientStatus: _cs, dateOfResigned: _dr, ...staffAllowed } = basePayload;
+            const { clientStatus: _cs, dateOfResigned: _dr, ...staffAllowed } = compacted;
             await updateDoc(ref, staffAllowed);
           } else {
-            await updateDoc(ref, basePayload);
+            await updateDoc(ref, compacted);
           }
         } else {
-          await setDoc(ref, {
-            ...basePayload,
-            createdBy: actorEmail,
-            createdAt: serverTimestamp(),
-          });
+          const compacted = compactOptionalPayload(
+            {
+              ...basePayload,
+              createdBy: actorEmail,
+              createdAt: serverTimestamp(),
+            },
+            REQUIRED_CLIENT_KEYS,
+            false,
+            false
+          );
+          await setDoc(ref, compacted);
         }
         return docId;
       } catch (err) {
@@ -694,7 +1010,11 @@ export const DataProvider: React.FC<{ children: React.ReactNode }> = ({ children
       const existingJob = existingId ? jobs.find((j) => j.id === existingId) : undefined;
       const oldStatus = existingJob?.status ?? '';
 
-      const { payload, computedStatus } = buildSanitizedJobDocument(job, actorEmail);
+      const { payload, computedStatus, meta } = buildSanitizedJobDocument(
+        job,
+        actorEmail,
+        Boolean(existingId)
+      );
 
       const action = !existingId
         ? 'CREATED'
@@ -703,10 +1023,10 @@ export const DataProvider: React.FC<{ children: React.ReactNode }> = ({ children
         : 'UPDATED';
 
       const defaultRemark = !existingId
-        ? `Created ${payload.jobType || payload.module} job (${payload.jobCode}) for ${payload.clientName}`
+        ? `Created ${meta.jobType || meta.module} job (${meta.jobCode}) for ${meta.clientName}`
         : oldStatus !== computedStatus
         ? `Status updated from "${oldStatus}" to "${computedStatus}"`
-        : `Updated job fields for ${payload.jobCode}`;
+        : `Updated job fields for ${meta.jobCode}`;
 
       const historyDocId = sanitizeDocId(
         `HIST_${docId}_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 5)}`
@@ -795,7 +1115,11 @@ export const DataProvider: React.FC<{ children: React.ReactNode }> = ({ children
             const item = slice[idx];
             const nonce = `${Date.now().toString(36)}_${(i + idx).toString(36)}`;
             const docId = sanitizeDocId(`JOB_${item.jobCode}_${nonce}`);
-            const { payload, computedStatus } = buildSanitizedJobDocument(item, actorEmail);
+            const { payload, computedStatus, meta } = buildSanitizedJobDocument(
+              item,
+              actorEmail,
+              false
+            );
 
             batch.set(doc(db, 'jobs', docId), {
               ...payload,
@@ -812,7 +1136,7 @@ export const DataProvider: React.FC<{ children: React.ReactNode }> = ({ children
               newStatus: clampStr(computedStatus, 60),
               user: actorLabel,
               remarks: clampStr(
-                `Batch created ${payload.jobType || payload.module} (${payload.ya || ''}) for ${payload.clientName}`,
+                `Batch created ${meta.jobType || meta.module} (${meta.ya || ''}) for ${meta.clientName}`,
                 1000
               ),
             });
@@ -887,6 +1211,353 @@ export const DataProvider: React.FC<{ children: React.ReactNode }> = ({ children
       await deleteDoc(doc(db, 'calendarEvents', eventId));
     } catch (err) {
       handleFirestoreError(err, OperationType.DELETE, `calendarEvents/${eventId}`);
+    }
+  }, []);
+
+  // ---------------------- CP204 MONITORING CRUD ----------------------
+  const saveCp204 = useCallback(
+    async (record: Cp204SavePayload, existingId?: string): Promise<string> => {
+      const actorEmail = clampStr(user?.email || '', 160);
+      const normClientId = clampStr(record.clientId, 40);
+      const normYa = clampStr(record.ya, 16);
+
+      if (!normClientId || !clampStr(record.clientName, 200)) {
+        throw new Error('Client selection is required.');
+      }
+      if (!normYa) {
+        throw new Error('Year of Assessment (YA) is required.');
+      }
+
+      // Enforce unique clientId + ya across CP204 master records
+      const duplicate = cp204Records.find(
+        (r) =>
+          r.id !== existingId &&
+          r.clientId.trim().toLowerCase() === normClientId.toLowerCase() &&
+          r.ya.trim().toLowerCase() === normYa.toLowerCase()
+      );
+      if (duplicate) {
+        throw new Error(
+          `A CP204 record already exists for ${duplicate.clientName} (${duplicate.clientId}) for YA ${normYa} (${duplicate.cp204Id}).`
+        );
+      }
+
+      const normalizedRevisions = normalizeCp204Revisions(record.revisions);
+      const normalizedInstalments = normalizeCp204Instalments(record.instalments);
+      const instalmentError = validateCp204Instalments(normalizedInstalments);
+      if (instalmentError) {
+        throw new Error(instalmentError);
+      }
+
+      const originalEstimatedTax = safeNum(record.originalEstimatedTax);
+      const currentEstimatedTax = computeCp204CurrentEstimatedTax(
+        originalEstimatedTax,
+        normalizedRevisions
+      );
+
+      const existingRec = existingId ? cp204Records.find((r) => r.id === existingId) : undefined;
+      const cp204Id =
+        clampStr(record.cp204Id || existingRec?.cp204Id, 40) ||
+        generateNextSequentialId(
+          'CP204',
+          cp204Records.map((r) => r.cp204Id || r.id)
+        );
+      const docId = existingId || sanitizeDocId(cp204Id);
+      const ref = doc(db, 'cp204', docId);
+
+      const basePayload = {
+        cp204Id,
+        clientId: normClientId,
+        clientName: clampStr(record.clientName, 200),
+        ya: normYa,
+        fye: clampStr(record.fye, 10),
+        basisPeriodStart: clampStr(record.basisPeriodStart, 20),
+        basisPeriodEnd: clampStr(record.basisPeriodEnd, 20),
+        originalEstimatedTax,
+        originalSubmissionDate: clampStr(record.originalSubmissionDate, 20),
+        currentEstimatedTax,
+        statutoryCp204DueDate: clampStr(record.statutoryCp204DueDate, 20),
+        pic: clampStr(record.pic, 120),
+        reviewer: clampStr(record.reviewer, 120),
+        status: record.status || 'In Progress',
+        acknowledgementUrl: clampStr(record.acknowledgementUrl, 500),
+        remarks: clampStr(record.remarks, 2000),
+        revisions: normalizedRevisions,
+        instalments: normalizedInstalments,
+        updatedBy: actorEmail,
+        updatedAt: serverTimestamp(),
+      };
+
+      try {
+        if (existingId) {
+          await updateDoc(ref, basePayload);
+        } else {
+          await setDoc(ref, {
+            ...basePayload,
+            createdBy: actorEmail,
+            createdAt: serverTimestamp(),
+          });
+        }
+        return docId;
+      } catch (err) {
+        handleFirestoreError(
+          err,
+          existingId ? OperationType.UPDATE : OperationType.CREATE,
+          `cp204/${docId}`
+        );
+      }
+    },
+    [user, cp204Records]
+  );
+
+  const batchCreateCp204 = useCallback(
+    async (items: Cp204SavePayload[]): Promise<{ createdCount: number; skippedCount: number }> => {
+      const actorEmail = clampStr(user?.email || '', 160);
+      const existingKeys = new Set<string>(
+        cp204Records.map(
+          (r) => `${r.clientId.trim().toLowerCase()}::${r.ya.trim().toLowerCase()}`
+        )
+      );
+      const existingIds = cp204Records.map((r) => r.cp204Id || r.id);
+
+      const toCreate: Array<{ docId: string; cp204Id: string; item: Cp204SavePayload }> = [];
+      let skippedCount = 0;
+
+      for (const item of items) {
+        const key = `${clampStr(item.clientId, 40).toLowerCase()}::${clampStr(
+          item.ya,
+          16
+        ).toLowerCase()}`;
+        if (!item.clientId || !item.ya || existingKeys.has(key)) {
+          skippedCount += 1;
+          continue;
+        }
+        existingKeys.add(key);
+        const nextId = generateNextSequentialId('CP204', existingIds);
+        existingIds.push(nextId);
+        toCreate.push({ docId: sanitizeDocId(nextId), cp204Id: nextId, item });
+      }
+
+      if (toCreate.length === 0) {
+        return { createdCount: 0, skippedCount };
+      }
+
+      const CHUNK = 400;
+      let createdCount = 0;
+      try {
+        for (let i = 0; i < toCreate.length; i += CHUNK) {
+          const slice = toCreate.slice(i, i + CHUNK);
+          const batch = writeBatch(db);
+          for (const entry of slice) {
+            const revs = normalizeCp204Revisions(entry.item.revisions);
+            const insts = normalizeCp204Instalments(entry.item.instalments);
+            const origTax = safeNum(entry.item.originalEstimatedTax);
+            const currTax = computeCp204CurrentEstimatedTax(origTax, revs);
+            batch.set(doc(db, 'cp204', entry.docId), {
+              cp204Id: entry.cp204Id,
+              clientId: clampStr(entry.item.clientId, 40),
+              clientName: clampStr(entry.item.clientName, 200),
+              ya: clampStr(entry.item.ya, 16),
+              fye: clampStr(entry.item.fye, 10),
+              basisPeriodStart: clampStr(entry.item.basisPeriodStart, 20),
+              basisPeriodEnd: clampStr(entry.item.basisPeriodEnd, 20),
+              originalEstimatedTax: origTax,
+              originalSubmissionDate: clampStr(entry.item.originalSubmissionDate, 20),
+              currentEstimatedTax: currTax,
+              statutoryCp204DueDate: clampStr(entry.item.statutoryCp204DueDate, 20),
+              pic: clampStr(entry.item.pic, 120),
+              reviewer: clampStr(entry.item.reviewer, 120),
+              status: entry.item.status || 'In Progress',
+              acknowledgementUrl: clampStr(entry.item.acknowledgementUrl, 500),
+              remarks: clampStr(entry.item.remarks, 2000),
+              revisions: revs,
+              instalments: insts,
+              createdBy: actorEmail,
+              updatedBy: actorEmail,
+              createdAt: serverTimestamp(),
+              updatedAt: serverTimestamp(),
+            });
+            createdCount += 1;
+          }
+          await batch.commit();
+        }
+        return { createdCount, skippedCount };
+      } catch (err) {
+        handleFirestoreError(err, OperationType.WRITE, 'cp204/batch_create');
+      }
+    },
+    [user, cp204Records]
+  );
+
+  const deleteCp204 = useCallback(async (id: string) => {
+    try {
+      await deleteDoc(doc(db, 'cp204', id));
+    } catch (err) {
+      handleFirestoreError(err, OperationType.DELETE, `cp204/${id}`);
+    }
+  }, []);
+
+  // ---------------------- TAX PAYMENT MONITOR CRUD ----------------------
+  const saveTaxPayment = useCallback(
+    async (record: TaxPaymentSavePayload, existingId?: string): Promise<string> => {
+      const actorEmail = clampStr(user?.email || '', 160);
+      const amountDue = Math.max(0, safeNum(record.amountDue));
+      const amountPaid = Math.max(0, safeNum(record.amountPaid));
+      const outstandingAmount = Math.max(0, Math.round((amountDue - amountPaid) * 100) / 100);
+      const paymentDate = clampStr(record.paymentDate, 20);
+      const paymentReference = clampStr(record.paymentReference, 80);
+
+      if (!clampStr(record.clientId, 40) || !clampStr(record.clientName, 200)) {
+        throw new Error('Client selection is required.');
+      }
+      if (amountPaid > 0 && !paymentDate) {
+        throw new Error('Payment Date is required when Amount Paid is greater than 0.');
+      }
+      if (
+        record.verificationStatus === 'Verified' &&
+        (amountPaid <= 0 || !paymentDate || !paymentReference)
+      ) {
+        throw new Error(
+          'To mark Verification Status as Verified, Amount Paid (> 0), Payment Date, and Payment Reference are all required.'
+        );
+      }
+
+      const existingRec = existingId ? taxPayments.find((p) => p.id === existingId) : undefined;
+      const paymentId =
+        clampStr(record.paymentId || existingRec?.paymentId, 40) ||
+        generateNextSequentialId(
+          'TAXPAY',
+          taxPayments.map((p) => p.paymentId || p.id)
+        );
+      const docId = existingId || sanitizeDocId(paymentId);
+      const ref = doc(db, 'taxPayments', docId);
+
+      const basePayload = {
+        paymentId,
+        clientId: clampStr(record.clientId, 40),
+        clientName: clampStr(record.clientName, 200),
+        paymentType: record.paymentType || 'CP204 Instalment',
+        ya: clampStr(record.ya, 16),
+        referenceCaseNo: clampStr(record.referenceCaseNo, 80),
+        dueDate: clampStr(record.dueDate, 20),
+        amountDue,
+        amountPaid,
+        outstandingAmount,
+        paymentDate,
+        paymentReference,
+        verificationStatus: record.verificationStatus || 'Not Verified',
+        followUpStatus: record.followUpStatus || 'Pending',
+        remarks: clampStr(record.remarks, 2000),
+        updatedBy: actorEmail,
+        updatedAt: serverTimestamp(),
+      };
+
+      try {
+        if (existingId) {
+          await updateDoc(ref, basePayload);
+        } else {
+          await setDoc(ref, {
+            ...basePayload,
+            createdBy: actorEmail,
+            createdAt: serverTimestamp(),
+          });
+        }
+        return docId;
+      } catch (err) {
+        handleFirestoreError(
+          err,
+          existingId ? OperationType.UPDATE : OperationType.CREATE,
+          `taxPayments/${docId}`
+        );
+      }
+    },
+    [user, taxPayments]
+  );
+
+  const deleteTaxPayment = useCallback(async (id: string) => {
+    try {
+      await deleteDoc(doc(db, 'taxPayments', id));
+    } catch (err) {
+      handleFirestoreError(err, OperationType.DELETE, `taxPayments/${id}`);
+    }
+  }, []);
+
+  // ---------------------- CORRESPONDENCE CRUD ----------------------
+  const saveCorrespondence = useCallback(
+    async (record: CorrespondenceSavePayload, existingId?: string): Promise<string> => {
+      const actorEmail = clampStr(user?.email || '', 160);
+      if (!clampStr(record.clientId, 40) || !clampStr(record.clientName, 200)) {
+        throw new Error('Client selection is required.');
+      }
+      if (!clampStr(record.dateReceived, 20)) {
+        throw new Error('Date Received is required.');
+      }
+      if (!clampStr(record.letterSubject, 200)) {
+        throw new Error('Letter Subject is required.');
+      }
+
+      const existingRec = existingId
+        ? correspondenceRecords.find((c) => c.id === existingId)
+        : undefined;
+      const correspondenceId =
+        clampStr(record.correspondenceId || existingRec?.correspondenceId, 40) ||
+        generateNextSequentialId(
+          'COR',
+          correspondenceRecords.map((c) => c.correspondenceId || c.id)
+        );
+      const docId = existingId || sanitizeDocId(correspondenceId);
+      const ref = doc(db, 'correspondence', docId);
+
+      const basePayload = {
+        correspondenceId,
+        clientId: clampStr(record.clientId, 40),
+        clientName: clampStr(record.clientName, 200),
+        ya: clampStr(record.ya, 16),
+        jobId: clampStr(record.jobId, 128),
+        dateReceived: clampStr(record.dateReceived, 20),
+        methodReceived: record.methodReceived || 'Email',
+        category: record.category || 'LHDN',
+        letterType: record.letterType || 'Notice',
+        letterSubject: clampStr(record.letterSubject, 200),
+        letterReferenceNo: clampStr(record.letterReferenceNo, 100),
+        detailedInformation: clampStr(record.detailedInformation, 3000),
+        dueDate: clampStr(record.dueDate, 20),
+        actionRequired: clampStr(record.actionRequired, 500),
+        pic: clampStr(record.pic, 120),
+        actionStatus: record.actionStatus || 'Pending',
+        actionDate: clampStr(record.actionDate, 20),
+        remarks: clampStr(record.remarks, 2000),
+        attachmentUrl: clampStr(record.attachmentUrl, 500),
+        updatedBy: actorEmail,
+        updatedAt: serverTimestamp(),
+      };
+
+      try {
+        if (existingId) {
+          await updateDoc(ref, basePayload);
+        } else {
+          await setDoc(ref, {
+            ...basePayload,
+            createdBy: actorEmail,
+            createdAt: serverTimestamp(),
+          });
+        }
+        return docId;
+      } catch (err) {
+        handleFirestoreError(
+          err,
+          existingId ? OperationType.UPDATE : OperationType.CREATE,
+          `correspondence/${docId}`
+        );
+      }
+    },
+    [user, correspondenceRecords]
+  );
+
+  const deleteCorrespondence = useCallback(async (id: string) => {
+    try {
+      await deleteDoc(doc(db, 'correspondence', id));
+    } catch (err) {
+      handleFirestoreError(err, OperationType.DELETE, `correspondence/${id}`);
     }
   }, []);
 
@@ -1019,6 +1690,9 @@ export const DataProvider: React.FC<{ children: React.ReactNode }> = ({ children
         history,
         calendarEvents,
         notifications,
+        cp204Records,
+        taxPayments,
+        correspondenceRecords,
         loading,
         refreshing,
         lastRefreshedAt,
@@ -1040,6 +1714,13 @@ export const DataProvider: React.FC<{ children: React.ReactNode }> = ({ children
         deleteJob,
         saveCalendarEvent,
         deleteCalendarEvent,
+        saveCp204,
+        batchCreateCp204,
+        deleteCp204,
+        saveTaxPayment,
+        deleteTaxPayment,
+        saveCorrespondence,
+        deleteCorrespondence,
         publishAnnouncement,
         sendSuggestion,
         markNotificationRead,

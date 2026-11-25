@@ -55,7 +55,7 @@ const NAV_GROUPS: NavGroup[] = [
     title: 'Job Management',
     items: [
       { id: 'all-jobs', label: 'All Jobs', icon: Briefcase },
-      { id: 'cp204', label: 'CP204', icon: Calculator },
+      { id: 'cp204', label: 'CP204 Monitoring', icon: Calculator },
       { id: 'corporate', label: 'Corporate', icon: Landmark },
       { id: 'individual', label: 'Individual', icon: UserCheck },
       { id: 'ad-hoc', label: 'Ad Hoc', icon: FilePlus2 },

@@ -1,10 +1,22 @@
-import React, { useMemo, useState } from 'react';
-import { Plus, Pencil, Eye, Trash2, Briefcase, Layers, UserPlus } from 'lucide-react';
+import React, { useEffect, useMemo, useState } from 'react';
 import {
+  Plus,
+  Pencil,
+  Eye,
+  Trash2,
+  Briefcase,
+  Layers,
+  UserPlus,
+  ChevronLeft,
+  ChevronRight,
+} from 'lucide-react';
+import {
+  ClientRecord,
   ColumnDef,
   formatCurrencyRM,
   FYE_MONTHS,
   JOB_TYPES,
+  JobHistoryEntry,
   JobModule,
   TaxJob,
 } from '../../types/tpms';
@@ -14,14 +26,73 @@ import { useColumnVisibility } from '../../hooks/useColumnVisibility';
 import { RegisterToolbar } from '../../components/RegisterToolbar';
 import { StatusPill } from '../../components/StatusPill';
 import { exportToExcel, printRegisterHtml } from '../../lib/exportUtils';
-import { JobModal } from './JobModal';
+import {
+  addCalendarDays,
+  analyzeJobDeadlines,
+  extractFyeMonth,
+  formatDateDDMMYYYY,
+  getLatestSsmEot,
+  getShortDeadlineRule,
+  isIsoDateString,
+  latestIsoDate,
+} from '../../lib/deadlineUtils';
+import { JobModal, JobModalTab } from './JobModal';
 import { BatchAddJobsModal, BatchModalVariant } from './BatchAddJobsModal';
 
 interface JobsModuleViewProps {
   mode: 'ALL' | JobModule;
 }
 
+const PAGE_SIZE = 50;
+
 function getColumnsForMode(mode: 'ALL' | JobModule): ColumnDef[] {
+  // Exact Corporate table layout matching original TPMS register
+  if (mode === 'Corporate') {
+    return [
+      { key: 'clientName', label: 'Client Name', defaultVisible: true },
+      { key: 'jobType', label: 'Job Type', defaultVisible: true },
+      { key: 'fye', label: 'FYE', defaultVisible: true },
+      { key: 'ya', label: 'YA', defaultVisible: true },
+      { key: 'taxPic', label: 'PIC', defaultVisible: true },
+      { key: 'reviewer', label: 'Reviewer', defaultVisible: true },
+      { key: 'finalApplicableDeadline', label: 'Final Deadline', defaultVisible: true },
+      { key: 'ssmEot', label: 'SSM EOT', defaultVisible: true },
+      { key: 'status', label: 'Status', defaultVisible: true },
+      { key: 'formC', label: 'Form C', defaultVisible: true },
+      { key: 'mitrs', label: 'MITRS', defaultVisible: true },
+      { key: 'remarks', label: 'Job Remarks', defaultVisible: true },
+      { key: 'auditor', label: 'Auditor', defaultVisible: true },
+      { key: 'mitrsDueDate', label: 'MITRS Due Date', defaultVisible: true },
+      { key: 'workDoneStatus', label: 'Work Done Status', defaultVisible: true },
+      // Optional toggleable columns
+      { key: 'jobCode', label: 'Job Code', defaultVisible: false, optional: true },
+      { key: 'clientId', label: 'Client ID', defaultVisible: false, optional: true },
+      { key: 'groupId', label: 'Group ID', defaultVisible: false, optional: true },
+      {
+        key: 'originalStatutoryDeadline',
+        label: 'Orig. Statutory (+7m)',
+        defaultVisible: false,
+        optional: true,
+      },
+      { key: 'formCDueDate', label: 'Normal e-Filing (+8m)', defaultVisible: false, optional: true },
+      { key: 'accountsStatus', label: 'Accounts Status', defaultVisible: false, optional: true },
+      {
+        key: 'auditReportReceivedDate',
+        label: 'Audit Report Recv',
+        defaultVisible: false,
+        optional: true,
+      },
+      {
+        key: 'finalTaxPayable',
+        label: 'Final Tax Payable',
+        defaultVisible: false,
+        optional: true,
+        align: 'right',
+      },
+      { key: 'checklistProgress', label: 'Checklist', defaultVisible: false, optional: true },
+    ];
+  }
+
   const base: ColumnDef[] = [
     { key: 'jobCode', label: 'Job Code', defaultVisible: true },
     ...(mode === 'ALL' ? [{ key: 'module', label: 'Module', defaultVisible: true }] : []),
@@ -36,24 +107,6 @@ function getColumnsForMode(mode: 'ALL' | JobModule): ColumnDef[] {
     { key: 'status', label: 'Status', defaultVisible: true },
     { key: 'priority', label: 'Priority', defaultVisible: false, optional: true },
   ];
-
-  if (mode === 'Corporate') {
-    return [
-      ...base,
-      { key: 'originalStatutoryDeadline', label: 'Orig. Statutory (+7m)', defaultVisible: false },
-      { key: 'formCDueDate', label: 'Form C Due (+8m)', defaultVisible: true },
-      { key: 'lhdnEot1', label: 'LHDN EOT 1', defaultVisible: false },
-      { key: 'finalApplicableDeadline', label: 'Final Deadline', defaultVisible: true },
-      { key: 'formCStatus', label: 'Form C Status', defaultVisible: true },
-      { key: 'mitrsDueDate', label: 'MITRS Due (+30d)', defaultVisible: true },
-      { key: 'mitrsStatus', label: 'MITRS Status', defaultVisible: true },
-      { key: 'accountsStatus', label: 'Accounts Status', defaultVisible: false },
-      { key: 'auditReportReceivedDate', label: 'Audit Report Recv', defaultVisible: false },
-      { key: 'finalTaxPayable', label: 'Final Tax Payable', defaultVisible: false, align: 'right' },
-      { key: 'checklistProgress', label: 'Checklist', defaultVisible: true },
-      { key: 'remarks', label: 'Remarks', defaultVisible: false },
-    ];
-  }
 
   if (mode === 'Form E') {
     return [
@@ -189,12 +242,75 @@ function matchesJobView(job: TaxJob, mode: 'ALL' | JobModule): boolean {
   return false;
 }
 
+function formatMonthYearLabel(ym: string): string {
+  const match = /^(\d{4})-(\d{2})$/.exec(ym);
+  if (!match) return ym;
+  const dt = new Date(Date.UTC(Number(match[1]), Number(match[2]) - 1, 1));
+  return dt.toLocaleDateString('en-MY', { month: 'short', year: 'numeric', timeZone: 'UTC' });
+}
+
+function getStatusEffectiveDate(
+  job: TaxJob,
+  jobHistory: JobHistoryEntry[] | undefined
+): string {
+  const statusLower = (job.status || '').trim().toLowerCase();
+
+  if (statusLower === 'completed') {
+    const iso =
+      (isIsoDateString(job.completedDate) ? job.completedDate : '') ||
+      latestIsoDate([job.mitrsSubmissionDate, job.formCSubmissionDate]);
+    if (iso) return formatDateDDMMYYYY(iso);
+  }
+
+  if (statusLower === 'pending mitrs') {
+    const iso =
+      (isIsoDateString(job.formCSubmissionDate) ? job.formCSubmissionDate : '') ||
+      (isIsoDateString(job.submissionDate) ? job.submissionDate : '');
+    if (iso) return formatDateDDMMYYYY(iso);
+  }
+
+  // Check most recent audit history transition into current status
+  if (jobHistory && jobHistory.length > 0) {
+    const matching = jobHistory.find(
+      (h) => (h.newStatus || '').trim().toLowerCase() === statusLower && h.timestamp
+    );
+    if (matching?.timestamp) {
+      return formatDateDDMMYYYY(matching.timestamp);
+    }
+  }
+
+  // Workflow milestone fallback by status
+  if (statusLower.includes('client approval') && isIsoDateString(job.clientConfirmationDate)) {
+    return formatDateDDMMYYYY(job.clientConfirmationDate);
+  }
+  if (statusLower.includes('review') && isIsoDateString(job.reviewDate)) {
+    return formatDateDDMMYYYY(job.reviewDate);
+  }
+  if (statusLower.includes('submitted') && isIsoDateString(job.submissionDate)) {
+    return formatDateDDMMYYYY(job.submissionDate);
+  }
+  if (statusLower.includes('pending docs') && isIsoDateString(job.dateDocumentsRequested)) {
+    return formatDateDDMMYYYY(job.dateDocumentsRequested);
+  }
+  if (statusLower.includes('progress')) {
+    const progressDate =
+      (isIsoDateString(job.draftDate) ? job.draftDate : '') ||
+      (isIsoDateString(job.dateDocumentsReceived) ? job.dateDocumentsReceived : '');
+    if (progressDate) return formatDateDDMMYYYY(progressDate);
+  }
+
+  if (job.updatedAt) return formatDateDDMMYYYY(job.updatedAt);
+  if (job.createdAt) return formatDateDDMMYYYY(job.createdAt);
+  return '—';
+}
+
 export const JobsModuleView: React.FC<JobsModuleViewProps> = ({ mode }) => {
   const { isReadOnly, isManagerOrAdmin } = useAuth();
-  const { jobs, loading, deleteJob } = useData();
+  const { jobs, clients, history, loading, deleteJob, getSettingsByGroup } = useData();
 
+  const isCorporateView = mode === 'Corporate';
   const columns = useMemo(() => getColumnsForMode(mode), [mode]);
-  const colKey = `jobs_v2_${mode.toLowerCase().replace(/\s+/g, '_')}`;
+  const colKey = `jobs_v3_${mode.toLowerCase().replace(/\s+/g, '_')}`;
   const { visibleColumns, toggleColumn, resetColumns } = useColumnVisibility(colKey, columns);
 
   const [search, setSearch] = useState('');
@@ -204,15 +320,55 @@ export const JobsModuleView: React.FC<JobsModuleViewProps> = ({ mode }) => {
   const [fyeFilter, setFyeFilter] = useState('');
   const [picFilter, setPicFilter] = useState('');
   const [statusFilter, setStatusFilter] = useState('');
+  const [finalDeadlineFilter, setFinalDeadlineFilter] = useState('');
+  const [page, setPage] = useState(1);
 
   const [modalOpen, setModalOpen] = useState(false);
+  const [modalInitialTab, setModalInitialTab] = useState<JobModalTab>('core');
   const [editingJob, setEditingJob] = useState<TaxJob | null>(null);
   const [batchModalVariant, setBatchModalVariant] = useState<BatchModalVariant | null>(null);
 
-  const scopedJobs = useMemo(
-    () => jobs.filter((j) => matchesJobView(j, mode)),
-    [jobs, mode]
-  );
+  // Reset pagination when filters or mode change
+  useEffect(() => {
+    setPage(1);
+  }, [
+    mode,
+    search,
+    moduleFilter,
+    jobTypeFilter,
+    yaFilter,
+    fyeFilter,
+    picFilter,
+    statusFilter,
+    finalDeadlineFilter,
+  ]);
+
+  const scopedJobs = useMemo(() => jobs.filter((j) => matchesJobView(j, mode)), [jobs, mode]);
+
+  // Fast client lookup by doc ID or clientId (for Auditor fallback)
+  const clientLookup = useMemo(() => {
+    const byDocId = new Map<string, ClientRecord>();
+    const byClientId = new Map<string, ClientRecord>();
+    for (const c of clients) {
+      byDocId.set(c.id, c);
+      if (c.clientId) byClientId.set(c.clientId.trim().toLowerCase(), c);
+    }
+    return { byDocId, byClientId };
+  }, [clients]);
+
+  // Fast job history lookup grouped by jobId (already sorted newest-first from DataContext)
+  const historyByJobId = useMemo(() => {
+    const map = new Map<string, JobHistoryEntry[]>();
+    for (const entry of history) {
+      const list = map.get(entry.jobId);
+      if (list) {
+        list.push(entry);
+      } else {
+        map.set(entry.jobId, [entry]);
+      }
+    }
+    return map;
+  }, [history]);
 
   const distinctYAs = useMemo(
     () =>
@@ -221,14 +377,39 @@ export const JobsModuleView: React.FC<JobsModuleViewProps> = ({ mode }) => {
         .reverse(),
     [scopedJobs]
   );
+
   const distinctPics = useMemo(
     () => Array.from(new Set(scopedJobs.map((j) => j.taxPic).filter(Boolean) as string[])).sort(),
     [scopedJobs]
   );
-  const distinctStatuses = useMemo(
-    () => Array.from(new Set(scopedJobs.map((j) => j.status).filter(Boolean))).sort(),
-    [scopedJobs]
-  );
+
+  const distinctStatuses = useMemo(() => {
+    const fromSettings = getSettingsByGroup('JOB_STATUS').map((s) => s.displayName);
+    const fromJobs = scopedJobs.map((j) => j.status).filter(Boolean);
+    const merged = Array.from(
+      new Set([
+        ...fromJobs,
+        ...(isCorporateView ? ['Pending MITRS', 'Completed'] : []),
+        ...fromSettings,
+      ])
+    );
+    return merged.sort();
+  }, [scopedJobs, getSettingsByGroup, isCorporateView]);
+
+  const distinctDeadlineMonths = useMemo(() => {
+    const months = new Set<string>();
+    for (const j of scopedJobs) {
+      const d = j.finalApplicableDeadline || j.dueDate || '';
+      if (isIsoDateString(d)) {
+        months.add(d.slice(0, 7));
+      }
+    }
+    return Array.from(months).sort();
+  }, [scopedJobs]);
+
+  const todayStr = new Date().toISOString().slice(0, 10);
+  const in30DaysStr = addCalendarDays(todayStr, 30);
+  const thisMonthStr = todayStr.slice(0, 7);
 
   const filteredJobs = useMemo(() => {
     const q = search.trim().toLowerCase();
@@ -236,17 +417,58 @@ export const JobsModuleView: React.FC<JobsModuleViewProps> = ({ mode }) => {
       if (mode === 'ALL' && moduleFilter && j.module !== moduleFilter) return false;
       if (jobTypeFilter && (j.jobType || j.formType) !== jobTypeFilter) return false;
       if (yaFilter && j.ya !== yaFilter) return false;
-      if (fyeFilter && j.fye !== fyeFilter) return false;
+      if (fyeFilter) {
+        const jobFyeNum = extractFyeMonth(j.fye);
+        const filterFyeNum = extractFyeMonth(fyeFilter);
+        if (jobFyeNum !== filterFyeNum) return false;
+      }
       if (picFilter && j.taxPic !== picFilter) return false;
       if (statusFilter && j.status !== statusFilter) return false;
+
+      if (finalDeadlineFilter) {
+        const analysis = analyzeJobDeadlines(j);
+        const effDate = analysis.finalApplicableDeadline || j.finalApplicableDeadline || j.dueDate || '';
+        const shortRule = getShortDeadlineRule(analysis.winningRule);
+        const isClosed =
+          j.status === 'Completed' ||
+          j.status === 'Paid (FPX / ByrHASiL)' ||
+          j.status === 'Closed / Resolved';
+
+        if (finalDeadlineFilter === 'OVERDUE') {
+          if (!effDate || effDate >= todayStr || isClosed) return false;
+        } else if (finalDeadlineFilter === 'DUE_30') {
+          if (!effDate || effDate < todayStr || effDate > in30DaysStr || isClosed) return false;
+        } else if (finalDeadlineFilter === 'THIS_MONTH') {
+          if (!effDate || !effDate.startsWith(thisMonthStr)) return false;
+        } else if (finalDeadlineFilter === 'NORMAL') {
+          if (shortRule !== 'Normal') return false;
+        } else if (finalDeadlineFilter === 'EOT_1') {
+          if (shortRule !== '1st EOT') return false;
+        } else if (finalDeadlineFilter === 'EOT_2') {
+          if (shortRule !== '2nd EOT') return false;
+        } else if (finalDeadlineFilter === 'EOT_3') {
+          if (shortRule !== '3rd EOT') return false;
+        } else if (/^\d{4}-\d{2}$/.test(finalDeadlineFilter)) {
+          if (!effDate.startsWith(finalDeadlineFilter)) return false;
+        }
+      }
+
       if (q) {
+        const clientRec =
+          (j.clientDocId ? clientLookup.byDocId.get(j.clientDocId) : undefined) ||
+          (j.clientId ? clientLookup.byClientId.get(j.clientId.trim().toLowerCase()) : undefined);
         const hay = [
           j.jobCode,
           j.jobType,
+          j.ya,
+          j.yaSequence,
           j.clientId,
           j.clientName,
           j.groupId,
           j.taxPic,
+          j.reviewer,
+          j.auditor || clientRec?.auditor,
+          j.remarks,
           j.formType,
           j.formCSubmissionReference,
           j.mitrsSubmissionReference,
@@ -270,12 +492,39 @@ export const JobsModuleView: React.FC<JobsModuleViewProps> = ({ mode }) => {
     fyeFilter,
     picFilter,
     statusFilter,
+    finalDeadlineFilter,
     search,
+    todayStr,
+    in30DaysStr,
+    thisMonthStr,
+    clientLookup,
   ]);
+
+  const totalPages = Math.max(1, Math.ceil(filteredJobs.length / PAGE_SIZE));
+  const safePage = Math.min(page, totalPages);
+  const startIndex = (safePage - 1) * PAGE_SIZE;
+  const paginatedJobs = useMemo(
+    () => filteredJobs.slice(startIndex, startIndex + PAGE_SIZE),
+    [filteredJobs, startIndex]
+  );
+
+  const showingStart = filteredJobs.length === 0 ? 0 : startIndex + 1;
+  const showingEnd = Math.min(startIndex + PAGE_SIZE, filteredJobs.length);
+  const summaryText =
+    filteredJobs.length === 0
+      ? 'Showing 0 of 0 job(s)'
+      : `Showing ${showingStart}–${showingEnd} of ${filteredJobs.length.toLocaleString()} job(s)`;
 
   const activeCols = columns.filter((c) => visibleColumns[c.key]);
   const hasActiveFilters = Boolean(
-    search || moduleFilter || jobTypeFilter || yaFilter || fyeFilter || picFilter || statusFilter
+    search ||
+      moduleFilter ||
+      jobTypeFilter ||
+      yaFilter ||
+      fyeFilter ||
+      picFilter ||
+      statusFilter ||
+      finalDeadlineFilter
   );
 
   const statusBadgeGroup =
@@ -294,64 +543,101 @@ export const JobsModuleView: React.FC<JobsModuleViewProps> = ({ mode }) => {
     return `${done}/${list.length}`;
   };
 
+  const resolveAuditor = (j: TaxJob) => {
+    if (j.auditor && j.auditor.trim()) return j.auditor.trim();
+    const clientRec =
+      (j.clientDocId ? clientLookup.byDocId.get(j.clientDocId) : undefined) ||
+      (j.clientId ? clientLookup.byClientId.get(j.clientId.trim().toLowerCase()) : undefined);
+    return clientRec?.auditor || '';
+  };
+
+  const openJobModal = (jobToOpen: TaxJob | null, initialTab: JobModalTab = 'core') => {
+    setEditingJob(jobToOpen);
+    setModalInitialTab(initialTab);
+    setModalOpen(true);
+  };
+
   const exportRows = () =>
-    filteredJobs.map((j) => ({
-      jobCode: j.jobCode,
-      module: j.module,
-      jobType: j.jobType || j.formType || '',
-      clientId: j.clientId,
-      clientName: j.clientName,
-      groupId: j.groupId ?? '',
-      ya: j.ya ?? '',
-      fye: j.fye ?? '',
-      taxPic: j.taxPic ?? '',
-      reviewer: j.reviewer ?? '',
-      status: j.status,
-      priority: j.priority ?? '',
-      internalDeadline: j.internalDeadline ?? '',
-      originalStatutoryDeadline: j.originalStatutoryDeadline ?? '',
-      formCDueDate: j.formCDueDate ?? '',
-      lhdnEot1: j.lhdnEot1 ?? '',
-      finalApplicableDeadline: j.finalApplicableDeadline || j.dueDate || '',
-      mitrsDueDate: j.mitrsDueDate ?? '',
-      formCStatus: j.formCStatus ?? '',
-      mitrsStatus: j.mitrsStatus ?? '',
-      formEStatus: j.formEStatus ?? '',
-      cp8dStatus: j.cp8dStatus ?? '',
-      formEaStatus: j.formEaStatus ?? '',
-      accountsStatus: j.accountsStatus ?? '',
-      auditReportReceivedDate: j.auditReportReceivedDate ?? '',
-      dateDocumentsReceived: j.dateDocumentsReceived ?? '',
-      submissionStatus: j.submissionStatus ?? '',
-      submissionReference: j.submissionReference ?? '',
-      submissionDate: j.submissionDate ?? '',
-      personNo: j.personNo ?? '',
-      finalTaxPayable: j.finalTaxPayable ?? j.taxPayable ?? 0,
-      checklistProgress: getChecklistSummary(j),
-      dueDate: j.dueDate ?? '',
-      feeAmount: j.feeAmount ?? 0,
-      billingStatus: j.billingStatus ?? '',
-      cp204Estimate: j.cp204Estimate ?? 0,
-      cp204Revised6th: j.cp204Revised6th ?? 0,
-      cp204Revised9th: j.cp204Revised9th ?? 0,
-      cp204Revised11th: j.cp204Revised11th ?? 0,
-      cp204InstallmentStart: j.cp204InstallmentStart ?? '',
-      paymentType: j.paymentType ?? '',
-      installmentNo: j.installmentNo ?? '',
-      amountDue: j.amountDue ?? 0,
-      amountPaid: j.amountPaid ?? 0,
-      paymentDate: j.paymentDate ?? '',
-      receiptNo: j.receiptNo ?? '',
-      correspondenceType: j.correspondenceType ?? '',
-      letterRefNo: j.letterRefNo ?? '',
-      letterDate: j.letterDate ?? '',
-      responseDueDate: j.responseDueDate ?? '',
-      responseSentDate: j.responseSentDate ?? '',
-      remarks: j.remarks ?? '',
-    }));
+    filteredJobs.map((j) => {
+      const analysis = analyzeJobDeadlines(j);
+      const effDeadline = analysis.finalApplicableDeadline || j.finalApplicableDeadline || j.dueDate || '';
+      const shortRule = getShortDeadlineRule(analysis.winningRule);
+      const latestSsm = getLatestSsmEot(j);
+      const fyeMonth = extractFyeMonth(j.fye);
+      const formCSubmitted = (j.formCStatus || '').trim().toLowerCase() === 'submitted';
+      const mitrsSubmitted = (j.mitrsStatus || '').trim().toLowerCase() === 'submitted';
+      const mitrsDue = j.mitrsDueDate || analysis.mitrsApplicableDeadline || '';
+
+      return {
+        jobCode: j.jobCode,
+        module: j.module,
+        jobType: j.jobType || j.formType || '',
+        clientId: j.clientId,
+        clientName: j.clientName,
+        groupId: j.groupId ?? '',
+        ya: j.yaSequence ? `${j.ya ?? ''} (${j.yaSequence})`.trim() : j.ya ?? '',
+        fye: isCorporateView ? (fyeMonth ? String(fyeMonth) : '') : j.fye ?? '',
+        taxPic: j.taxPic ?? '',
+        reviewer: j.reviewer ?? '',
+        status: j.status,
+        priority: j.priority ?? '',
+        internalDeadline: formatDateDDMMYYYY(j.internalDeadline),
+        originalStatutoryDeadline: formatDateDDMMYYYY(j.originalStatutoryDeadline),
+        formCDueDate: formatDateDDMMYYYY(j.formCDueDate),
+        lhdnEot1: formatDateDDMMYYYY(j.lhdnEot1),
+        finalApplicableDeadline: effDeadline
+          ? `${formatDateDDMMYYYY(effDeadline)}${shortRule ? ` (${shortRule})` : ''}`
+          : '',
+        ssmEot: latestSsm.date
+          ? `${formatDateDDMMYYYY(latestSsm.date)}${latestSsm.label ? ` (${latestSsm.label})` : ''}`
+          : '',
+        formC: formCSubmitted
+          ? `${formatDateDDMMYYYY(j.formCSubmissionDate)} (Submitted)`
+          : formatDateDDMMYYYY(j.formCSubmissionDate),
+        mitrs: mitrsSubmitted
+          ? `${formatDateDDMMYYYY(j.mitrsSubmissionDate)} (Submitted)`
+          : formatDateDDMMYYYY(j.mitrsSubmissionDate),
+        mitrsDueDate: formatDateDDMMYYYY(mitrsDue),
+        auditor: resolveAuditor(j),
+        workDoneStatus: j.billingStatus || 'Unbilled WIP',
+        formCStatus: j.formCStatus ?? '',
+        mitrsStatus: j.mitrsStatus ?? '',
+        formEStatus: j.formEStatus ?? '',
+        cp8dStatus: j.cp8dStatus ?? '',
+        formEaStatus: j.formEaStatus ?? '',
+        accountsStatus: j.accountsStatus ?? '',
+        auditReportReceivedDate: formatDateDDMMYYYY(j.auditReportReceivedDate),
+        dateDocumentsReceived: formatDateDDMMYYYY(j.dateDocumentsReceived),
+        submissionStatus: j.submissionStatus ?? '',
+        submissionReference: j.submissionReference ?? '',
+        submissionDate: formatDateDDMMYYYY(j.submissionDate),
+        personNo: j.personNo ?? '',
+        finalTaxPayable: j.finalTaxPayable ?? j.taxPayable ?? 0,
+        checklistProgress: getChecklistSummary(j),
+        dueDate: formatDateDDMMYYYY(j.dueDate),
+        feeAmount: j.feeAmount ?? 0,
+        billingStatus: j.billingStatus ?? '',
+        cp204Estimate: j.cp204Estimate ?? 0,
+        cp204Revised6th: j.cp204Revised6th ?? 0,
+        cp204Revised9th: j.cp204Revised9th ?? 0,
+        cp204Revised11th: j.cp204Revised11th ?? 0,
+        cp204InstallmentStart: j.cp204InstallmentStart ?? '',
+        paymentType: j.paymentType ?? '',
+        installmentNo: j.installmentNo ?? '',
+        amountDue: j.amountDue ?? 0,
+        amountPaid: j.amountPaid ?? 0,
+        paymentDate: formatDateDDMMYYYY(j.paymentDate),
+        receiptNo: j.receiptNo ?? '',
+        correspondenceType: j.correspondenceType ?? '',
+        letterRefNo: j.letterRefNo ?? '',
+        letterDate: formatDateDDMMYYYY(j.letterDate),
+        responseDueDate: formatDateDDMMYYYY(j.responseDueDate),
+        responseSentDate: formatDateDDMMYYYY(j.responseSentDate),
+        remarks: j.remarks ?? '',
+      };
+    });
 
   const title = mode === 'ALL' ? 'All Jobs' : mode;
-  const todayStr = new Date().toISOString().slice(0, 10);
 
   return (
     <div className="space-y-4">
@@ -365,7 +651,11 @@ export const JobsModuleView: React.FC<JobsModuleViewProps> = ({ mode }) => {
       <RegisterToolbar
         searchValue={search}
         onSearchChange={setSearch}
-        searchPlaceholder={`Search ${title} by Job Code, Type, Client ID, Name, PIC, Ref No...`}
+        searchPlaceholder={
+          isCorporateView
+            ? 'Search Client / YA / Job Type'
+            : `Search ${title} by Client, YA, Job Type, Code, PIC, Ref No...`
+        }
         hasActiveFilters={hasActiveFilters}
         onResetFilters={() => {
           setSearch('');
@@ -375,6 +665,7 @@ export const JobsModuleView: React.FC<JobsModuleViewProps> = ({ mode }) => {
           setFyeFilter('');
           setPicFilter('');
           setStatusFilter('');
+          setFinalDeadlineFilter('');
         }}
         columns={columns}
         visibleColumns={visibleColumns}
@@ -382,6 +673,7 @@ export const JobsModuleView: React.FC<JobsModuleViewProps> = ({ mode }) => {
         onResetColumns={resetColumns}
         recordCount={filteredJobs.length}
         totalCount={scopedJobs.length}
+        summaryText={summaryText}
         onExportExcel={() =>
           exportToExcel(
             `TPMS_${title.replace(/\s+/g, '_')}_${todayStr}.xlsx`,
@@ -426,18 +718,20 @@ export const JobsModuleView: React.FC<JobsModuleViewProps> = ({ mode }) => {
                 <option value="Correspondence">Correspondence</option>
               </select>
             )}
-            <select
-              value={jobTypeFilter}
-              onChange={(e) => setJobTypeFilter(e.target.value)}
-              className="px-2.5 py-1.5 text-xs bg-slate-50 border border-slate-200 rounded-md text-slate-700"
-            >
-              <option value="">All Job Types</option>
-              {JOB_TYPES.map((jt) => (
-                <option key={jt} value={jt}>
-                  {jt}
-                </option>
-              ))}
-            </select>
+            {!isCorporateView && (
+              <select
+                value={jobTypeFilter}
+                onChange={(e) => setJobTypeFilter(e.target.value)}
+                className="px-2.5 py-1.5 text-xs bg-slate-50 border border-slate-200 rounded-md text-slate-700"
+              >
+                <option value="">All Job Types</option>
+                {JOB_TYPES.map((jt) => (
+                  <option key={jt} value={jt}>
+                    {jt}
+                  </option>
+                ))}
+              </select>
+            )}
             <select
               value={yaFilter}
               onChange={(e) => setYaFilter(e.target.value)}
@@ -458,7 +752,7 @@ export const JobsModuleView: React.FC<JobsModuleViewProps> = ({ mode }) => {
               <option value="">All FYE</option>
               {FYE_MONTHS.map((m) => (
                 <option key={m} value={m}>
-                  FYE {m}
+                  FYE {Number(m)}
                 </option>
               ))}
             </select>
@@ -467,7 +761,7 @@ export const JobsModuleView: React.FC<JobsModuleViewProps> = ({ mode }) => {
               onChange={(e) => setPicFilter(e.target.value)}
               className="px-2.5 py-1.5 text-xs bg-slate-50 border border-slate-200 rounded-md text-slate-700"
             >
-              <option value="">All TAX PICs</option>
+              <option value="">All PICs</option>
               {distinctPics.map((p) => (
                 <option key={p} value={p}>
                   {p}
@@ -479,12 +773,39 @@ export const JobsModuleView: React.FC<JobsModuleViewProps> = ({ mode }) => {
               onChange={(e) => setStatusFilter(e.target.value)}
               className="px-2.5 py-1.5 text-xs bg-slate-50 border border-slate-200 rounded-md text-slate-700"
             >
-              <option value="">All Statuses</option>
+              <option value="">All statuses</option>
               {distinctStatuses.map((s) => (
                 <option key={s} value={s}>
                   {s}
                 </option>
               ))}
+            </select>
+            <select
+              value={finalDeadlineFilter}
+              onChange={(e) => setFinalDeadlineFilter(e.target.value)}
+              className="px-2.5 py-1.5 text-xs bg-slate-50 border border-slate-200 rounded-md text-slate-700"
+            >
+              <option value="">All Final Deadlines</option>
+              <optgroup label="Deadline Window">
+                <option value="OVERDUE">Overdue</option>
+                <option value="DUE_30">Due within 30 Days</option>
+                <option value="THIS_MONTH">Due This Month</option>
+              </optgroup>
+              <optgroup label="Extension Rule">
+                <option value="NORMAL">Normal</option>
+                <option value="EOT_1">1st EOT</option>
+                <option value="EOT_2">2nd EOT</option>
+                <option value="EOT_3">3rd EOT</option>
+              </optgroup>
+              {distinctDeadlineMonths.length > 0 && (
+                <optgroup label="By Month">
+                  {distinctDeadlineMonths.map((ym) => (
+                    <option key={ym} value={ym}>
+                      {formatMonthYearLabel(ym)}
+                    </option>
+                  ))}
+                </optgroup>
+              )}
             </select>
           </>
         }
@@ -513,10 +834,7 @@ export const JobsModuleView: React.FC<JobsModuleViewProps> = ({ mode }) => {
               )}
               <button
                 type="button"
-                onClick={() => {
-                  setEditingJob(null);
-                  setModalOpen(true);
-                }}
+                onClick={() => openJobModal(null, 'core')}
                 className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold text-white bg-teal-700 hover:bg-teal-800 rounded-md whitespace-nowrap"
               >
                 <Plus className="w-3.5 h-3.5" />
@@ -528,7 +846,7 @@ export const JobsModuleView: React.FC<JobsModuleViewProps> = ({ mode }) => {
       />
 
       <div className="bg-white border border-slate-200 rounded-lg overflow-hidden">
-        <div className="overflow-auto max-h-[calc(100vh-275px)]">
+        <div className="overflow-auto max-h-[calc(100vh-285px)]">
           <table className="w-full text-xs border-collapse">
             <thead className="sticky top-0 z-10 bg-slate-100 border-b border-slate-200 text-slate-700">
               <tr>
@@ -543,7 +861,7 @@ export const JobsModuleView: React.FC<JobsModuleViewProps> = ({ mode }) => {
                   </th>
                 ))}
                 <th className="px-3 py-2 text-right font-semibold whitespace-nowrap no-print">
-                  Actions
+                  Action
                 </th>
               </tr>
             </thead>
@@ -556,7 +874,7 @@ export const JobsModuleView: React.FC<JobsModuleViewProps> = ({ mode }) => {
                     </td>
                   </tr>
                 ))
-              ) : filteredJobs.length === 0 ? (
+              ) : paginatedJobs.length === 0 ? (
                 <tr>
                   <td colSpan={activeCols.length + 1} className="px-6 py-12 text-center">
                     <Briefcase className="w-8 h-8 text-slate-300 mx-auto mb-2" />
@@ -569,19 +887,34 @@ export const JobsModuleView: React.FC<JobsModuleViewProps> = ({ mode }) => {
                   </td>
                 </tr>
               ) : (
-                filteredJobs.map((j) => {
-                  const effectiveDeadline = j.finalApplicableDeadline || j.dueDate || '';
+                paginatedJobs.map((j) => {
+                  const deadlineAnalysis = analyzeJobDeadlines(j);
+                  const effectiveDeadline =
+                    deadlineAnalysis.finalApplicableDeadline ||
+                    j.finalApplicableDeadline ||
+                    j.dueDate ||
+                    '';
+                  const shortRule = getShortDeadlineRule(deadlineAnalysis.winningRule);
+                  const latestSsm = getLatestSsmEot(j);
                   const isOverdue =
                     Boolean(effectiveDeadline) &&
                     effectiveDeadline < todayStr &&
                     j.status !== 'Completed' &&
                     j.status !== 'Paid (FPX / ByrHASiL)' &&
                     j.status !== 'Closed / Resolved';
+                  const statusEffectiveDate = getStatusEffectiveDate(j, historyByJobId.get(j.id));
+                  const formCSubmitted = (j.formCStatus || '').trim().toLowerCase() === 'submitted';
+                  const mitrsSubmitted = (j.mitrsStatus || '').trim().toLowerCase() === 'submitted';
+                  const fyeMonthNum = extractFyeMonth(j.fye);
+                  const auditorName = resolveAuditor(j);
+                  const mitrsDueValue =
+                    j.mitrsDueDate || deadlineAnalysis.mitrsApplicableDeadline || '';
 
                   return (
-                    <tr key={j.id} className="hover:bg-slate-50/90 transition-colors">
+                    <tr key={j.id} className="hover:bg-slate-50/90 transition-colors align-top">
                       {activeCols.map((col) => {
                         const key = col.key;
+
                         if (key === 'jobCode') {
                           return (
                             <td
@@ -592,22 +925,27 @@ export const JobsModuleView: React.FC<JobsModuleViewProps> = ({ mode }) => {
                             </td>
                           );
                         }
+
                         if (key === 'jobType') {
                           return (
-                            <td key={key} className="px-3 py-2 text-slate-700 font-medium whitespace-nowrap">
+                            <td
+                              key={key}
+                              className="px-3 py-2 text-slate-700 font-medium whitespace-nowrap"
+                            >
                               {j.jobType || j.formType || '—'}
                             </td>
                           );
                         }
+
                         if (key === 'clientName') {
                           return (
-                            <td key={key} className="px-3 py-2 font-medium text-slate-900 min-w-[180px]">
+                            <td
+                              key={key}
+                              className="px-3 py-2 font-medium text-slate-900 min-w-[180px]"
+                            >
                               <button
                                 type="button"
-                                onClick={() => {
-                                  setEditingJob(j);
-                                  setModalOpen(true);
-                                }}
+                                onClick={() => openJobModal(j, 'core')}
                                 className="text-left hover:text-teal-700 hover:underline"
                               >
                                 {j.clientName}
@@ -615,13 +953,174 @@ export const JobsModuleView: React.FC<JobsModuleViewProps> = ({ mode }) => {
                             </td>
                           );
                         }
+
+                        if (key === 'fye') {
+                          return (
+                            <td
+                              key={key}
+                              className="px-3 py-2 font-mono tabular-nums text-slate-700 whitespace-nowrap"
+                            >
+                              {isCorporateView
+                                ? fyeMonthNum !== null
+                                  ? String(fyeMonthNum)
+                                  : '—'
+                                : j.fye || '—'}
+                            </td>
+                          );
+                        }
+
+                        if (key === 'ya') {
+                          return (
+                            <td key={key} className="px-3 py-2 whitespace-nowrap">
+                              <div className="flex flex-col items-start gap-1">
+                                <span className="font-mono tabular-nums font-medium text-slate-800">
+                                  {j.ya || '—'}
+                                </span>
+                                {j.yaSequence && (
+                                  <span className="inline-flex items-center px-1.5 py-0.5 rounded bg-sky-100 text-sky-700 border border-sky-200 text-[10px] font-semibold leading-none">
+                                    {j.yaSequence}
+                                  </span>
+                                )}
+                              </div>
+                            </td>
+                          );
+                        }
+
+                        if (key === 'finalApplicableDeadline') {
+                          return (
+                            <td key={key} className="px-3 py-2 whitespace-nowrap">
+                              <div className="flex flex-col items-start gap-1">
+                                <div className="inline-flex items-center gap-1.5">
+                                  <span
+                                    className={`font-mono tabular-nums ${
+                                      isOverdue
+                                        ? 'text-rose-700 font-semibold'
+                                        : 'text-slate-800 font-medium'
+                                    }`}
+                                  >
+                                    {formatDateDDMMYYYY(effectiveDeadline)}
+                                  </span>
+                                  {isOverdue && (
+                                    <span className="inline-flex items-center px-1.5 py-0.5 rounded bg-rose-100 text-rose-700 border border-rose-200 text-[10px] font-semibold leading-none">
+                                      Overdue
+                                    </span>
+                                  )}
+                                </div>
+                                {effectiveDeadline && shortRule && (
+                                  <span className="inline-flex items-center px-1.5 py-0.5 rounded bg-sky-100 text-sky-700 border border-sky-200 text-[10px] font-semibold leading-none">
+                                    {shortRule}
+                                  </span>
+                                )}
+                              </div>
+                            </td>
+                          );
+                        }
+
+                        if (key === 'ssmEot') {
+                          return (
+                            <td key={key} className="px-3 py-2 whitespace-nowrap">
+                              <div className="flex flex-col items-start gap-1">
+                                <span className="font-mono tabular-nums text-slate-700">
+                                  {latestSsm.date ? formatDateDDMMYYYY(latestSsm.date) : '—'}
+                                </span>
+                                {latestSsm.date && latestSsm.label && (
+                                  <span className="inline-flex items-center px-1.5 py-0.5 rounded bg-slate-100 text-slate-700 border border-slate-200 text-[10px] font-semibold leading-none">
+                                    {latestSsm.label}
+                                  </span>
+                                )}
+                              </div>
+                            </td>
+                          );
+                        }
+
                         if (key === 'status') {
+                          if (isCorporateView) {
+                            return (
+                              <td key={key} className="px-3 py-2 whitespace-nowrap">
+                                <div className="flex flex-col items-start gap-1">
+                                  <span className="text-[11px] font-mono tabular-nums text-slate-500">
+                                    {statusEffectiveDate}
+                                  </span>
+                                  <StatusPill group={statusBadgeGroup} value={j.status} />
+                                </div>
+                              </td>
+                            );
+                          }
                           return (
                             <td key={key} className="px-3 py-2 whitespace-nowrap">
                               <StatusPill group={statusBadgeGroup} value={j.status} />
                             </td>
                           );
                         }
+
+                        if (key === 'formC') {
+                          return (
+                            <td key={key} className="px-3 py-2 whitespace-nowrap">
+                              <div className="flex flex-col items-start gap-1">
+                                <span className="font-mono tabular-nums text-slate-700">
+                                  {formatDateDDMMYYYY(j.formCSubmissionDate)}
+                                </span>
+                                {formCSubmitted && (
+                                  <span className="inline-flex items-center px-1.5 py-0.5 rounded-full bg-emerald-100 text-emerald-800 border border-emerald-200 text-[10px] font-semibold leading-none">
+                                    Submitted
+                                  </span>
+                                )}
+                              </div>
+                            </td>
+                          );
+                        }
+
+                        if (key === 'mitrs') {
+                          return (
+                            <td key={key} className="px-3 py-2 whitespace-nowrap">
+                              <div className="flex flex-col items-start gap-1">
+                                <span className="font-mono tabular-nums text-slate-700">
+                                  {formatDateDDMMYYYY(j.mitrsSubmissionDate)}
+                                </span>
+                                {mitrsSubmitted && (
+                                  <span className="inline-flex items-center px-1.5 py-0.5 rounded-full bg-emerald-100 text-emerald-800 border border-emerald-200 text-[10px] font-semibold leading-none">
+                                    Submitted
+                                  </span>
+                                )}
+                              </div>
+                            </td>
+                          );
+                        }
+
+                        if (key === 'auditor') {
+                          return (
+                            <td
+                              key={key}
+                              className="px-3 py-2 text-slate-700 whitespace-nowrap max-w-[160px] truncate"
+                              title={auditorName || undefined}
+                            >
+                              {auditorName || '—'}
+                            </td>
+                          );
+                        }
+
+                        if (key === 'mitrsDueDate') {
+                          return (
+                            <td
+                              key={key}
+                              className="px-3 py-2 font-mono tabular-nums text-slate-700 whitespace-nowrap"
+                            >
+                              {formatDateDDMMYYYY(mitrsDueValue)}
+                            </td>
+                          );
+                        }
+
+                        if (key === 'workDoneStatus' || key === 'billingStatus') {
+                          return (
+                            <td key={key} className="px-3 py-2 whitespace-nowrap">
+                              <StatusPill
+                                group="BILLING_STATUS"
+                                value={j.billingStatus || 'Unbilled WIP'}
+                              />
+                            </td>
+                          );
+                        }
+
                         if (
                           key === 'formCStatus' ||
                           key === 'mitrsStatus' ||
@@ -637,6 +1136,7 @@ export const JobsModuleView: React.FC<JobsModuleViewProps> = ({ mode }) => {
                             </td>
                           );
                         }
+
                         if (key === 'priority') {
                           return (
                             <td key={key} className="px-3 py-2 whitespace-nowrap">
@@ -644,37 +1144,38 @@ export const JobsModuleView: React.FC<JobsModuleViewProps> = ({ mode }) => {
                             </td>
                           );
                         }
-                        if (key === 'billingStatus') {
-                          return (
-                            <td key={key} className="px-3 py-2 whitespace-nowrap">
-                              <StatusPill group="BILLING_STATUS" value={j.billingStatus} />
-                            </td>
-                          );
-                        }
-                        if (key === 'finalApplicableDeadline' || key === 'dueDate') {
-                          const dVal =
-                            key === 'finalApplicableDeadline'
-                              ? j.finalApplicableDeadline || j.dueDate
-                              : j.dueDate;
+
+                        if (key === 'dueDate') {
                           return (
                             <td
                               key={key}
-                              className={`px-3 py-2 font-mono whitespace-nowrap ${
-                                isOverdue ? 'text-rose-700 font-semibold' : 'text-slate-800 font-medium'
+                              className={`px-3 py-2 font-mono tabular-nums whitespace-nowrap ${
+                                isOverdue
+                                  ? 'text-rose-700 font-semibold'
+                                  : 'text-slate-800 font-medium'
                               }`}
                             >
-                              {dVal || '—'}
-                              {isOverdue && <span className="ml-1 text-[10px]">(Overdue)</span>}
+                              {formatDateDDMMYYYY(j.dueDate)}
+                              {isOverdue && (
+                                <span className="ml-1.5 inline-flex items-center px-1.5 py-0.5 rounded bg-rose-100 text-rose-700 border border-rose-200 text-[10px] font-semibold">
+                                  Overdue
+                                </span>
+                              )}
                             </td>
                           );
                         }
+
                         if (key === 'checklistProgress') {
                           return (
-                            <td key={key} className="px-3 py-2 font-mono text-slate-600 whitespace-nowrap">
+                            <td
+                              key={key}
+                              className="px-3 py-2 font-mono text-slate-600 whitespace-nowrap"
+                            >
                               {getChecklistSummary(j)}
                             </td>
                           );
                         }
+
                         if (
                           key === 'cp204Estimate' ||
                           key === 'cp204Revised6th' ||
@@ -693,44 +1194,61 @@ export const JobsModuleView: React.FC<JobsModuleViewProps> = ({ mode }) => {
                           return (
                             <td
                               key={key}
-                              className="px-3 py-2 font-mono text-right text-slate-800 whitespace-nowrap"
+                              className="px-3 py-2 font-mono tabular-nums text-right text-slate-800 whitespace-nowrap"
                             >
                               {formatCurrencyRM(num)}
                             </td>
                           );
                         }
+
+                        if (
+                          [
+                            'originalStatutoryDeadline',
+                            'formCDueDate',
+                            'internalDeadline',
+                            'lhdnEot1',
+                            'auditReportReceivedDate',
+                            'dateDocumentsReceived',
+                            'submissionDate',
+                            'paymentDate',
+                            'letterDate',
+                            'responseDueDate',
+                            'responseSentDate',
+                          ].includes(key)
+                        ) {
+                          const rawDate = j[key as keyof TaxJob] as string | undefined;
+                          return (
+                            <td
+                              key={key}
+                              className="px-3 py-2 font-mono tabular-nums text-slate-700 whitespace-nowrap"
+                            >
+                              {formatDateDDMMYYYY(rawDate)}
+                            </td>
+                          );
+                        }
+
                         const rawVal = j[key as keyof TaxJob];
                         const isMono = [
                           'clientId',
                           'groupId',
-                          'ya',
-                          'fye',
                           'personNo',
-                          'originalStatutoryDeadline',
-                          'formCDueDate',
-                          'mitrsDueDate',
-                          'internalDeadline',
-                          'lhdnEot1',
-                          'auditReportReceivedDate',
-                          'dateDocumentsReceived',
-                          'submissionDate',
                           'submissionReference',
                           'eFilingAckNo',
                           'cp204InstallmentStart',
                           'installmentNo',
-                          'paymentDate',
                           'receiptNo',
                           'letterRefNo',
-                          'letterDate',
-                          'responseDueDate',
-                          'responseSentDate',
                         ].includes(key);
+
                         return (
                           <td
                             key={key}
                             className={`px-3 py-2 whitespace-nowrap text-slate-700 ${
                               isMono ? 'font-mono' : ''
-                            } ${key === 'remarks' ? 'max-w-[220px] truncate' : ''}`}
+                            } ${key === 'remarks' ? 'max-w-[200px] truncate' : ''}`}
+                            title={
+                              key === 'remarks' && rawVal ? String(rawVal) : undefined
+                            }
                           >
                             {rawVal !== undefined && rawVal !== null && rawVal !== ''
                               ? String(rawVal)
@@ -738,34 +1256,62 @@ export const JobsModuleView: React.FC<JobsModuleViewProps> = ({ mode }) => {
                           </td>
                         );
                       })}
+
                       <td className="px-3 py-2 text-right whitespace-nowrap no-print">
-                        <div className="inline-flex items-center gap-1">
-                          <button
-                            type="button"
-                            onClick={() => {
-                              setEditingJob(j);
-                              setModalOpen(true);
-                            }}
-                            title={isReadOnly ? 'View job' : 'Edit job'}
-                            className="p-1.5 rounded text-slate-500 hover:text-teal-700 hover:bg-teal-50"
-                          >
-                            {isReadOnly ? (
-                              <Eye className="w-3.5 h-3.5" />
-                            ) : (
-                              <Pencil className="w-3.5 h-3.5" />
-                            )}
-                          </button>
-                          {isManagerOrAdmin && (
+                        {isCorporateView ? (
+                          <div className="inline-flex items-center gap-2">
                             <button
                               type="button"
-                              onClick={() => void deleteJob(j.id)}
-                              title="Delete job"
-                              className="p-1.5 rounded text-slate-400 hover:text-rose-700 hover:bg-rose-50"
+                              onClick={() => openJobModal(j, 'core')}
+                              className="text-xs font-medium text-teal-700 hover:text-teal-900 hover:underline"
                             >
-                              <Trash2 className="w-3.5 h-3.5" />
+                              {isReadOnly ? 'View' : 'Edit'}
                             </button>
-                          )}
-                        </div>
+                            <span className="text-slate-300">|</span>
+                            <button
+                              type="button"
+                              onClick={() => openJobModal(j, 'workflow')}
+                              className="text-xs font-medium text-sky-700 hover:text-sky-900 hover:underline"
+                            >
+                              Work Done
+                            </button>
+                            {isManagerOrAdmin && (
+                              <button
+                                type="button"
+                                onClick={() => void deleteJob(j.id)}
+                                title="Delete job"
+                                className="p-1 rounded text-slate-400 hover:text-rose-700 hover:bg-rose-50"
+                              >
+                                <Trash2 className="w-3.5 h-3.5" />
+                              </button>
+                            )}
+                          </div>
+                        ) : (
+                          <div className="inline-flex items-center gap-1">
+                            <button
+                              type="button"
+                              onClick={() => openJobModal(j, 'core')}
+                              title={isReadOnly ? 'View job' : 'Edit job'}
+                              className="p-1.5 rounded text-slate-500 hover:text-teal-700 hover:bg-teal-50"
+                            >
+                              {isReadOnly ? (
+                                <Eye className="w-3.5 h-3.5" />
+                              ) : (
+                                <Pencil className="w-3.5 h-3.5" />
+                              )}
+                            </button>
+                            {isManagerOrAdmin && (
+                              <button
+                                type="button"
+                                onClick={() => void deleteJob(j.id)}
+                                title="Delete job"
+                                className="p-1.5 rounded text-slate-400 hover:text-rose-700 hover:bg-rose-50"
+                              >
+                                <Trash2 className="w-3.5 h-3.5" />
+                              </button>
+                            )}
+                          </div>
+                        )}
                       </td>
                     </tr>
                   );
@@ -774,6 +1320,36 @@ export const JobsModuleView: React.FC<JobsModuleViewProps> = ({ mode }) => {
             </tbody>
           </table>
         </div>
+
+        {/* Pagination Bar when > 50 jobs */}
+        {filteredJobs.length > PAGE_SIZE && (
+          <div className="px-3.5 py-2 border-t border-slate-200 bg-slate-50/70 flex items-center justify-between text-xs text-slate-600 no-print">
+            <span className="font-mono tabular-nums text-[11px]">{summaryText}</span>
+            <div className="inline-flex items-center gap-1.5">
+              <button
+                type="button"
+                disabled={safePage <= 1}
+                onClick={() => setPage((p) => Math.max(1, p - 1))}
+                className="inline-flex items-center gap-1 px-2 py-1 text-xs font-medium bg-white border border-slate-200 rounded hover:bg-slate-50 disabled:opacity-40 disabled:cursor-not-allowed"
+              >
+                <ChevronLeft className="w-3.5 h-3.5" />
+                Prev
+              </button>
+              <span className="px-2 font-mono text-[11px]">
+                Page {safePage} / {totalPages}
+              </span>
+              <button
+                type="button"
+                disabled={safePage >= totalPages}
+                onClick={() => setPage((p) => Math.min(totalPages, p + 1))}
+                className="inline-flex items-center gap-1 px-2 py-1 text-xs font-medium bg-white border border-slate-200 rounded hover:bg-slate-50 disabled:opacity-40 disabled:cursor-not-allowed"
+              >
+                Next
+                <ChevronRight className="w-3.5 h-3.5" />
+              </button>
+            </div>
+          </div>
+        )}
       </div>
 
       <JobModal
@@ -781,6 +1357,7 @@ export const JobsModuleView: React.FC<JobsModuleViewProps> = ({ mode }) => {
         job={editingJob}
         defaultModule={mode === 'ALL' ? 'Corporate' : mode}
         lockModule={mode !== 'ALL'}
+        initialTab={modalInitialTab}
         onClose={() => setModalOpen(false)}
       />
 
