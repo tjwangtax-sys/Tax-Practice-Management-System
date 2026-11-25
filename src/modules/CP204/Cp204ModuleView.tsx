@@ -1,4 +1,4 @@
-import React, { useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import {
   Plus,
   FilePlus2,
@@ -18,6 +18,7 @@ import {
   Cp204Revision,
   formatCurrencyRM,
   FYE_MONTHS,
+  NavigationFilterPreset,
 } from '../../types/tpms';
 import { useAuth } from '../../context/AuthContext';
 import { useData } from '../../context/DataContext';
@@ -60,7 +61,11 @@ function formatRevisionExport(rev?: Cp204Revision): string {
   return `${formatCurrencyRM(rev.proposedEstimatedTax)} (${rev.reviewStatus})`;
 }
 
-export const Cp204ModuleView: React.FC = () => {
+interface Cp204ModuleViewProps {
+  initialFilter?: NavigationFilterPreset | null;
+}
+
+export const Cp204ModuleView: React.FC<Cp204ModuleViewProps> = ({ initialFilter }) => {
   const { isReadOnly, isManagerOrAdmin } = useAuth();
   const { clients, cp204Records, deleteCp204, refreshAll, refreshing } = useData();
 
@@ -71,6 +76,15 @@ export const Cp204ModuleView: React.FC = () => {
   const [submissionFilter, setSubmissionFilter] = useState<'' | Cp204SubmissionFilter>('');
   const [showSpecialRemarks, setShowSpecialRemarks] = useState(false);
   const [visibleColumns, setVisibleColumns] = useState<Record<string, boolean>>(DEFAULT_VISIBLE);
+
+  useEffect(() => {
+    if (!initialFilter) return;
+    setFyeFilter(initialFilter.fye ?? '');
+    setYaFilter(initialFilter.ya ?? '');
+    setSearch(initialFilter.search ?? '');
+    setPicFilter('');
+    setSubmissionFilter('');
+  }, [initialFilter?.nonce]);
 
   // Quick Initial Modal state
   const [initialModalOpen, setInitialModalOpen] = useState(false);
@@ -104,11 +118,12 @@ export const Cp204ModuleView: React.FC = () => {
 
   const distinctYas = useMemo(() => {
     const set = new Set<string>([currentYearStr]);
+    if (yaFilter) set.add(yaFilter);
     for (const r of cp204Records) {
       if (r.ya) set.add(r.ya.trim());
     }
     return Array.from(set).sort((a, b) => b.localeCompare(a));
-  }, [cp204Records, currentYearStr]);
+  }, [cp204Records, currentYearStr, yaFilter]);
 
   const distinctPics = useMemo(() => {
     const set = new Set<string>();

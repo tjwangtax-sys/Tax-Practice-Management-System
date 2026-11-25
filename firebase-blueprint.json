@@ -341,6 +341,51 @@
         "updatedAt": { "type": "string", "format": "date-time" }
       },
       "required": ["correspondenceId", "clientId", "clientName", "dateReceived", "methodReceived", "category", "letterType", "letterSubject", "actionStatus", "createdBy", "createdAt", "updatedAt"]
+    },
+    "WorkDoneRecord": {
+      "title": "WorkDoneRecord",
+      "description": "Work done billing, HOD pricing allocation, SST calculation, and finance invoicing register.",
+      "type": "object",
+      "properties": {
+        "workDoneId": { "type": "string", "maxLength": 40 },
+        "jobId": { "type": "string", "maxLength": 128 },
+        "clientId": { "type": "string", "maxLength": 40 },
+        "clientName": { "type": "string", "maxLength": 200 },
+        "ya": { "type": "string", "maxLength": 16 },
+        "jobType": { "type": "string", "maxLength": 60 },
+        "pic": { "type": "string", "maxLength": 120 },
+        "reviewer": { "type": "string", "maxLength": 120 },
+        "jobStatus": { "type": "string", "maxLength": 60 },
+        "workDoneDescription": { "type": "string", "maxLength": 4000 },
+        "pricingMode": { "type": "string", "enum": ["Overall Fee", "Individual Allocation"] },
+        "feeAllocations": { "type": "array" },
+        "auditFee": { "type": "number" },
+        "quotationPrice": { "type": "number" },
+        "priorYearPrice": { "type": "number" },
+        "hodPrice": { "type": "number" },
+        "additionalCharges": { "type": "number" },
+        "finalPrice": { "type": "number" },
+        "sstAmount": { "type": "number" },
+        "totalInvoiceAmount": { "type": "number" },
+        "workDoneStatus": {
+          "type": "string",
+          "enum": ["Draft", "Quotation Pending Approval", "Quotation Issued", "In Progress", "Completed — Pending Finance", "Returned by Finance", "Ready for Invoicing", "Invoiced", "Cancelled"]
+        },
+        "financeInvoiceStatus": {
+          "type": "string",
+          "enum": ["Not Submitted", "Pending Review", "Returned", "Ready for Invoicing", "Invoiced", "Cancelled"]
+        },
+        "invoiceNo": { "type": "string", "maxLength": 80 },
+        "issueDate": { "type": "string", "maxLength": 20 },
+        "cancellationDate": { "type": "string", "maxLength": 20 },
+        "cancellationReason": { "type": "string", "maxLength": 500 },
+        "remarks": { "type": "string", "maxLength": 2000 },
+        "createdBy": { "type": "string", "maxLength": 160 },
+        "updatedBy": { "type": "string", "maxLength": 160 },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["workDoneId", "clientId", "clientName", "pricingMode", "workDoneStatus", "financeInvoiceStatus", "additionalCharges", "finalPrice", "totalInvoiceAmount", "createdBy", "createdAt", "updatedAt"]
     }
   },
   "firestore": {
@@ -383,6 +428,10 @@
     "/correspondence/{correspondenceDocId}": {
       "schema": { "$ref": "#/entities/CorrespondenceRecord" },
       "description": "Correspondence register for LHDN, SSM, Client, and Auditor communications."
+    },
+    "/workDone/{workDoneDocId}": {
+      "schema": { "$ref": "#/entities/WorkDoneRecord" },
+      "description": "Work done proposals, HOD fee pricing/allocations, SST, and finance invoice tracking."
     }
   }
 }

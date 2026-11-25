@@ -582,6 +582,84 @@ export interface CorrespondenceRecord {
   updatedAt?: Timestamp;
 }
 
+// =============================================================================
+// Work Done & Finance (workDone collection)
+// =============================================================================
+export const WORK_DONE_PRICING_MODES = ['Overall Fee', 'Individual Allocation'] as const;
+export type WorkDonePricingMode = (typeof WORK_DONE_PRICING_MODES)[number];
+
+export const WORK_DONE_STATUSES = [
+  'Draft',
+  'Quotation Pending Approval',
+  'Quotation Issued',
+  'In Progress',
+  'Completed — Pending Finance',
+  'Returned by Finance',
+  'Ready for Invoicing',
+  'Invoiced',
+  'Cancelled',
+] as const;
+export type WorkDoneStatus = (typeof WORK_DONE_STATUSES)[number];
+
+export const FINANCE_INVOICE_STATUSES = [
+  'Not Submitted',
+  'Pending Review',
+  'Returned',
+  'Ready for Invoicing',
+  'Invoiced',
+  'Cancelled',
+] as const;
+export type FinanceInvoiceStatus = (typeof FINANCE_INVOICE_STATUSES)[number];
+
+export interface WorkDoneFeeAllocation {
+  lineNo: number;
+  description: string;
+  fee: number;
+}
+
+export interface WorkDoneRecord {
+  id: string;
+  workDoneId: string;
+  jobId: string;
+  clientId: string;
+  clientName: string;
+  ya: string;
+  jobType: string;
+  pic: string;
+  reviewer: string;
+  jobStatus: string;
+  workDoneDescription: string;
+  pricingMode: WorkDonePricingMode;
+  feeAllocations: WorkDoneFeeAllocation[];
+  auditFee: number | null;
+  quotationPrice: number | null;
+  priorYearPrice: number | null;
+  hodPrice: number | null;
+  additionalCharges: number;
+  finalPrice: number;
+  sstAmount: number | null;
+  totalInvoiceAmount: number;
+  workDoneStatus: WorkDoneStatus;
+  financeInvoiceStatus: FinanceInvoiceStatus;
+  invoiceNo: string;
+  issueDate: string;
+  cancellationDate: string;
+  cancellationReason: string;
+  remarks: string;
+  createdBy: string;
+  updatedBy?: string;
+  createdAt?: Timestamp;
+  updatedAt?: Timestamp;
+}
+
+export interface NavigationFilterPreset {
+  fye?: string;
+  ya?: string;
+  search?: string;
+  jobId?: string;
+  nonce: number;
+}
+
 export interface CalendarEvent {
   id: string;
   title: string;

@@ -34,6 +34,8 @@ import {
   StaffMember,
   TaxJob,
   TaxPaymentRecord,
+  WorkDoneFeeAllocation,
+  WorkDoneRecord,
 } from '../types/tpms';
 import { useAuth } from './AuthContext';
 
@@ -57,6 +59,11 @@ export type CorrespondenceSavePayload = Omit<
   'id' | 'correspondenceId' | 'createdBy' | 'updatedBy' | 'createdAt' | 'updatedAt'
 > & { correspondenceId?: string };
 
+export type WorkDoneSavePayload = Omit<
+  WorkDoneRecord,
+  'id' | 'workDoneId' | 'finalPrice' | 'totalInvoiceAmount' | 'createdBy' | 'updatedBy' | 'createdAt' | 'updatedAt'
+> & { workDoneId?: string };
+
 interface DataContextValue {
   staff: StaffMember[];
   settings: SettingValue[];
@@ -68,6 +75,7 @@ interface DataContextValue {
   cp204Records: Cp204Record[];
   taxPayments: TaxPaymentRecord[];
   correspondenceRecords: CorrespondenceRecord[];
+  workDoneRecords: WorkDoneRecord[];
   loading: boolean;
   refreshing: boolean;
   lastRefreshedAt: Date | null;
@@ -118,6 +126,9 @@ interface DataContextValue {
   // Correspondence CRUD
   saveCorrespondence: (record: CorrespondenceSavePayload, existingId?: string) => Promise<string>;
   deleteCorrespondence: (id: string) => Promise<void>;
+  // Work Done & Finance CRUD
+  saveWorkDone: (record: WorkDoneSavePayload, existingId?: string) => Promise<string>;
+  deleteWorkDone: (id: string) => Promise<void>;
   // Notifications
   publishAnnouncement: (
     title: string,
@@ -370,6 +381,7 @@ export const DataProvider: React.FC<{ children: React.ReactNode }> = ({ children
   const [cp204Records, setCp204Records] = useState<Cp204Record[]>([]);
   const [taxPayments, setTaxPayments] = useState<TaxPaymentRecord[]>([]);
   const [correspondenceRecords, setCorrespondenceRecords] = useState<CorrespondenceRecord[]>([]);
+  const [workDoneRecords, setWorkDoneRecords] = useState<WorkDoneRecord[]>([]);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [refreshNonce, setRefreshNonce] = useState(0);
@@ -395,6 +407,7 @@ export const DataProvider: React.FC<{ children: React.ReactNode }> = ({ children
       setCp204Records([]);
       setTaxPayments([]);
       setCorrespondenceRecords([]);
+      setWorkDoneRecords([]);
       setLoading(false);
       return;
     }
@@ -403,7 +416,7 @@ export const DataProvider: React.FC<{ children: React.ReactNode }> = ({ children
     let settledCount = 0;
     const markSettled = () => {
       settledCount += 1;
-      if (settledCount >= 10) {
+      if (settledCount >= 11) {
         setLoading(false);
         setRefreshing(false);
         setLastRefreshedAt(new Date());
@@ -634,6 +647,67 @@ export const DataProvider: React.FC<{ children: React.ReactNode }> = ({ children
       (err) => handleFirestoreError(err, OperationType.LIST, 'correspondence')
     );
 
+    const unsubWorkDone = onSnapshot(
+      collection(db, 'workDone'),
+      (snap) => {
+        const list = snap.docs
+          .map((d) => {
+            const raw = d.data() as Partial<WorkDoneRecord>;
+            const optNum = (v: unknown): number | null =>
+              v === null || v === undefined || v === '' ? null : safeNum(v as number);
+            const hodPrice = optNum(raw.hodPrice);
+            const additionalCharges = safeNum(raw.additionalCharges);
+            const finalPrice = Math.round(((hodPrice ?? 0) + additionalCharges) * 100) / 100;
+            const sstAmount = optNum(raw.sstAmount);
+            const totalInvoiceAmount = Math.round((finalPrice + (sstAmount ?? 0)) * 100) / 100;
+            return {
+              id: d.id,
+              workDoneId: raw.workDoneId ?? d.id,
+              jobId: raw.jobId ?? '',
+              clientId: raw.clientId ?? '',
+              clientName: raw.clientName ?? '',
+              ya: raw.ya ?? '',
+              jobType: raw.jobType ?? '',
+              pic: raw.pic ?? '',
+              reviewer: raw.reviewer ?? '',
+              jobStatus: raw.jobStatus ?? '',
+              workDoneDescription: raw.workDoneDescription ?? '',
+              pricingMode: raw.pricingMode === 'Individual Allocation' ? 'Individual Allocation' : 'Overall Fee',
+              feeAllocations: Array.isArray(raw.feeAllocations)
+                ? raw.feeAllocations.map((a, idx) => ({
+                    lineNo: Number(a.lineNo || idx + 1),
+                    description: String(a.description || ''),
+                    fee: safeNum(a.fee),
+                  }))
+                : [],
+              auditFee: optNum(raw.auditFee),
+              quotationPrice: optNum(raw.quotationPrice),
+              priorYearPrice: optNum(raw.priorYearPrice),
+              hodPrice,
+              additionalCharges,
+              finalPrice,
+              sstAmount,
+              totalInvoiceAmount,
+              workDoneStatus: raw.workDoneStatus ?? 'Draft',
+              financeInvoiceStatus: raw.financeInvoiceStatus ?? 'Not Submitted',
+              invoiceNo: raw.invoiceNo ?? '',
+              issueDate: raw.issueDate ?? '',
+              cancellationDate: raw.cancellationDate ?? '',
+              cancellationReason: raw.cancellationReason ?? '',
+              remarks: raw.remarks ?? '',
+              createdBy: raw.createdBy ?? '',
+              updatedBy: raw.updatedBy,
+              createdAt: raw.createdAt,
+              updatedAt: raw.updatedAt,
+            } as WorkDoneRecord;
+          })
+          .sort((a, b) => (b.workDoneId || '').localeCompare(a.workDoneId || ''));
+        setWorkDoneRecords(list);
+        markSettled();
+      },
+      (err) => handleFirestoreError(err, OperationType.LIST, 'workDone')
+    );
+
     return () => {
       unsubStaff();
       unsubSettings();
@@ -645,6 +719,7 @@ export const DataProvider: React.FC<{ children: React.ReactNode }> = ({ children
       unsubCp204();
       unsubTaxPayments();
       unsubCorrespondence();
+      unsubWorkDone();
     };
   }, [accessStatus, user, refreshNonce]);
 
@@ -1561,6 +1636,246 @@ export const DataProvider: React.FC<{ children: React.ReactNode }> = ({ children
     }
   }, []);
 
+  // ---------------------- WORK DONE & FINANCE CRUD ----------------------
+  const saveWorkDone = useCallback(
+    async (record: WorkDoneSavePayload, existingId?: string): Promise<string> => {
+      const actorEmail = clampStr(user?.email || '', 160);
+      const role = staffProfile?.role || (actorEmail.toLowerCase() === 'tjwang.tax@gmail.com' ? 'Admin' : 'Report Viewer');
+      const isRoleAdmin = role === 'Admin';
+      const isRoleMgrOrAdmin = role === 'Admin' || role === 'Manager-HOD';
+
+      if (role === 'Report Viewer') {
+        throw new Error('Report Viewer role is strictly read-only.');
+      }
+      if (!clampStr(record.clientId, 40) || !clampStr(record.clientName, 200)) {
+        throw new Error('Client selection is required.');
+      }
+
+      const existingRec = existingId
+        ? workDoneRecords.find((w) => w.id === existingId)
+        : undefined;
+
+      const ADMIN_ONLY_STATUSES = ['Returned by Finance', 'Ready for Invoicing', 'Invoiced'];
+
+      // Already-invoiced protection: only Admin may modify, and pricing edits require correction reason in remarks
+      if (existingRec && existingRec.workDoneStatus === 'Invoiced') {
+        if (!isRoleAdmin) {
+          throw new Error('Only Admin can modify an already-invoiced Work Done record.');
+        }
+      }
+
+      if (ADMIN_ONLY_STATUSES.includes(record.workDoneStatus) && !isRoleAdmin) {
+        throw new Error(
+          `Only Admin can set Work Done Status to "${record.workDoneStatus}".`
+        );
+      }
+
+      const cleanDesc = clampStr(record.workDoneDescription, 4000);
+      const descLines = cleanDesc
+        .split('\n')
+        .map((l) => l.trim())
+        .filter((l) => l.length > 0);
+
+      // Enforce Manager-HOD / Admin role guard on hodPrice, pricingMode, feeAllocations
+      let pricingMode = record.pricingMode || 'Overall Fee';
+      let feeAllocations: WorkDoneFeeAllocation[] = [];
+      let hodPrice: number | null =
+        record.hodPrice === null || record.hodPrice === undefined
+          ? null
+          : Math.round(safeNum(record.hodPrice) * 100) / 100;
+
+      if (!isRoleMgrOrAdmin) {
+        if (existingRec) {
+          pricingMode = existingRec.pricingMode;
+          feeAllocations = existingRec.feeAllocations;
+          hodPrice = existingRec.hodPrice;
+        } else {
+          pricingMode = 'Overall Fee';
+          feeAllocations = [];
+          hodPrice = null;
+        }
+      } else if (pricingMode === 'Individual Allocation') {
+        if (descLines.length === 0) {
+          throw new Error(
+            'Individual Allocation mode requires at least one non-empty line in Work Done Description.'
+          );
+        }
+        const incomingAllocs = (record.feeAllocations || []).slice(0, 50);
+        if (incomingAllocs.length !== descLines.length) {
+          throw new Error(
+            'In Individual Allocation mode, each allocation line must match the newline-delimited Work Done Description items in order.'
+          );
+        }
+        feeAllocations = descLines.map((lineDesc, idx) => {
+          const item = incomingAllocs[idx];
+          if ((item?.description || '').trim() !== lineDesc) {
+            throw new Error(
+              `Allocation line ${idx + 1} description must match Work Done Description line ${idx + 1} exactly.`
+            );
+          }
+          return {
+            lineNo: idx + 1,
+            description: lineDesc.slice(0, 300),
+            fee: Math.max(0, Math.round(safeNum(item?.fee) * 100) / 100),
+          };
+        });
+        hodPrice =
+          Math.round(feeAllocations.reduce((sum, a) => sum + a.fee, 0) * 100) / 100;
+      } else {
+        feeAllocations = [];
+      }
+
+      const additionalCharges = Math.round(safeNum(record.additionalCharges) * 100) / 100;
+      const sstAmount: number | null =
+        record.sstAmount === null || record.sstAmount === undefined
+          ? null
+          : Math.max(0, Math.round(safeNum(record.sstAmount) * 100) / 100);
+      const auditFee: number | null =
+        record.auditFee === null || record.auditFee === undefined
+          ? null
+          : Math.max(0, Math.round(safeNum(record.auditFee) * 100) / 100);
+      const quotationPrice: number | null =
+        record.quotationPrice === null || record.quotationPrice === undefined
+          ? null
+          : Math.max(0, Math.round(safeNum(record.quotationPrice) * 100) / 100);
+      const priorYearPrice: number | null =
+        record.priorYearPrice === null || record.priorYearPrice === undefined
+          ? null
+          : Math.max(0, Math.round(safeNum(record.priorYearPrice) * 100) / 100);
+
+      // Strict pricing formula: finalPrice = hodPrice + additionalCharges; totalInvoiceAmount = finalPrice + sstAmount
+      const finalPrice = Math.round(((hodPrice ?? 0) + additionalCharges) * 100) / 100;
+      const totalInvoiceAmount = Math.round((finalPrice + (sstAmount ?? 0)) * 100) / 100;
+
+      // Status transition rules
+      let financeInvoiceStatus = record.financeInvoiceStatus || 'Not Submitted';
+      const invoiceNo = clampStr(record.invoiceNo, 80);
+      const issueDate = clampStr(record.issueDate, 20);
+      const remarks = clampStr(record.remarks, 2000);
+
+      if (record.workDoneStatus === 'Completed — Pending Finance') {
+        if (hodPrice === null) {
+          throw new Error(
+            'HOD Price must be explicitly entered by a Manager-HOD or Admin before moving to "Completed — Pending Finance" (Quotation Price is never substituted).'
+          );
+        }
+        if (sstAmount === null) {
+          throw new Error(
+            'SST Amount must be explicitly entered (enter 0 if SST-exempt) before moving to "Completed — Pending Finance".'
+          );
+        }
+        financeInvoiceStatus = 'Pending Review';
+      } else if (record.workDoneStatus === 'Returned by Finance') {
+        financeInvoiceStatus = 'Returned';
+      } else if (record.workDoneStatus === 'Ready for Invoicing') {
+        if (hodPrice === null || sstAmount === null) {
+          throw new Error('HOD Price and explicit SST Amount are required for Ready for Invoicing.');
+        }
+        financeInvoiceStatus = 'Ready for Invoicing';
+      } else if (record.workDoneStatus === 'Invoiced') {
+        if (!invoiceNo || !issueDate) {
+          throw new Error('Invoice No. and Issue Date are required to mark a record as Invoiced.');
+        }
+        if (hodPrice === null || sstAmount === null) {
+          throw new Error('HOD Price and explicit SST Amount are required for Invoiced records.');
+        }
+        financeInvoiceStatus = 'Invoiced';
+      } else if (record.workDoneStatus === 'Cancelled') {
+        financeInvoiceStatus = 'Cancelled';
+      }
+
+      // Admin pricing correction on already-invoiced record requires a correction reason in remarks
+      if (existingRec && existingRec.workDoneStatus === 'Invoiced') {
+        const pricingChanged =
+          existingRec.hodPrice !== hodPrice ||
+          existingRec.additionalCharges !== additionalCharges ||
+          existingRec.sstAmount !== sstAmount ||
+          existingRec.pricingMode !== pricingMode ||
+          JSON.stringify(existingRec.feeAllocations) !== JSON.stringify(feeAllocations);
+        if (pricingChanged && (!remarks || remarks === (existingRec.remarks || '').trim())) {
+          throw new Error(
+            'Modifying pricing on an already-invoiced record requires adding a correction reason in Remarks.'
+          );
+        }
+      }
+
+      const workDoneId =
+        clampStr(record.workDoneId || existingRec?.workDoneId, 40) ||
+        generateNextSequentialId(
+          'WD',
+          workDoneRecords.map((w) => w.workDoneId || w.id)
+        );
+      const docId = existingId || sanitizeDocId(workDoneId);
+      const ref = doc(db, 'workDone', docId);
+
+      const commonPayload: Record<string, unknown> = {
+        workDoneId,
+        jobId: clampStr(record.jobId, 128),
+        clientId: clampStr(record.clientId, 40),
+        clientName: clampStr(record.clientName, 200),
+        ya: clampStr(record.ya, 16),
+        jobType: clampStr(record.jobType, 60),
+        pic: clampStr(record.pic, 120),
+        reviewer: clampStr(record.reviewer, 120),
+        jobStatus: clampStr(record.jobStatus, 60),
+        workDoneDescription: cleanDesc,
+        auditFee,
+        quotationPrice,
+        priorYearPrice,
+        additionalCharges,
+        finalPrice,
+        sstAmount,
+        totalInvoiceAmount,
+        workDoneStatus: record.workDoneStatus || 'Draft',
+        financeInvoiceStatus,
+        cancellationDate: clampStr(record.cancellationDate, 20),
+        cancellationReason: clampStr(record.cancellationReason, 500),
+        remarks,
+        updatedBy: actorEmail,
+        updatedAt: serverTimestamp(),
+      };
+
+      if (isRoleMgrOrAdmin || !existingId) {
+        commonPayload.pricingMode = pricingMode;
+        commonPayload.feeAllocations = feeAllocations;
+        commonPayload.hodPrice = hodPrice;
+      }
+
+      if (isRoleAdmin || !existingId) {
+        commonPayload.invoiceNo = isRoleAdmin ? invoiceNo : '';
+        commonPayload.issueDate = isRoleAdmin ? issueDate : '';
+      }
+
+      try {
+        if (existingId) {
+          await updateDoc(ref, commonPayload);
+        } else {
+          await setDoc(ref, {
+            ...commonPayload,
+            createdBy: actorEmail,
+            createdAt: serverTimestamp(),
+          });
+        }
+        return docId;
+      } catch (err) {
+        handleFirestoreError(
+          err,
+          existingId ? OperationType.UPDATE : OperationType.CREATE,
+          `workDone/${docId}`
+        );
+      }
+    },
+    [user, staffProfile, workDoneRecords]
+  );
+
+  const deleteWorkDone = useCallback(async (id: string) => {
+    try {
+      await deleteDoc(doc(db, 'workDone', id));
+    } catch (err) {
+      handleFirestoreError(err, OperationType.DELETE, `workDone/${id}`);
+    }
+  }, []);
+
   // ---------------------- NOTIFICATIONS ----------------------
   const publishAnnouncement = useCallback(
     async (title: string, message: string, targetRole: 'ALL' | 'Admin' | 'Manager-HOD' = 'ALL') => {
@@ -1693,6 +2008,7 @@ export const DataProvider: React.FC<{ children: React.ReactNode }> = ({ children
         cp204Records,
         taxPayments,
         correspondenceRecords,
+        workDoneRecords,
         loading,
         refreshing,
         lastRefreshedAt,
@@ -1721,6 +2037,8 @@ export const DataProvider: React.FC<{ children: React.ReactNode }> = ({ children
         deleteTaxPayment,
         saveCorrespondence,
         deleteCorrespondence,
+        saveWorkDone,
+        deleteWorkDone,
         publishAnnouncement,
         sendSuggestion,
         markNotificationRead,

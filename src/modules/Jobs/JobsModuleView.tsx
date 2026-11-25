@@ -18,6 +18,7 @@ import {
   JOB_TYPES,
   JobHistoryEntry,
   JobModule,
+  NavigationFilterPreset,
   TaxJob,
 } from '../../types/tpms';
 import { useAuth } from '../../context/AuthContext';
@@ -41,6 +42,7 @@ import { BatchAddJobsModal, BatchModalVariant } from './BatchAddJobsModal';
 
 interface JobsModuleViewProps {
   mode: 'ALL' | JobModule;
+  initialFilter?: NavigationFilterPreset | null;
 }
 
 const PAGE_SIZE = 50;
@@ -304,7 +306,7 @@ function getStatusEffectiveDate(
   return '—';
 }
 
-export const JobsModuleView: React.FC<JobsModuleViewProps> = ({ mode }) => {
+export const JobsModuleView: React.FC<JobsModuleViewProps> = ({ mode, initialFilter }) => {
   const { isReadOnly, isManagerOrAdmin } = useAuth();
   const { jobs, clients, history, loading, deleteJob, getSettingsByGroup } = useData();
 
@@ -327,6 +329,18 @@ export const JobsModuleView: React.FC<JobsModuleViewProps> = ({ mode }) => {
   const [modalInitialTab, setModalInitialTab] = useState<JobModalTab>('core');
   const [editingJob, setEditingJob] = useState<TaxJob | null>(null);
   const [batchModalVariant, setBatchModalVariant] = useState<BatchModalVariant | null>(null);
+
+  useEffect(() => {
+    if (!initialFilter) return;
+    setFyeFilter(initialFilter.fye ?? '');
+    setYaFilter(initialFilter.ya ?? '');
+    setSearch(initialFilter.search ?? '');
+    setModuleFilter('');
+    setJobTypeFilter('');
+    setPicFilter('');
+    setStatusFilter('');
+    setFinalDeadlineFilter('');
+  }, [initialFilter?.nonce]);
 
   // Reset pagination when filters or mode change
   useEffect(() => {
@@ -370,13 +384,11 @@ export const JobsModuleView: React.FC<JobsModuleViewProps> = ({ mode }) => {
     return map;
   }, [history]);
 
-  const distinctYAs = useMemo(
-    () =>
-      Array.from(new Set(scopedJobs.map((j) => j.ya).filter(Boolean) as string[]))
-        .sort()
-        .reverse(),
-    [scopedJobs]
-  );
+  const distinctYAs = useMemo(() => {
+    const set = new Set<string>(scopedJobs.map((j) => j.ya).filter(Boolean) as string[]);
+    if (yaFilter) set.add(yaFilter);
+    return Array.from(set).sort().reverse();
+  }, [scopedJobs, yaFilter]);
 
   const distinctPics = useMemo(
     () => Array.from(new Set(scopedJobs.map((j) => j.taxPic).filter(Boolean) as string[])).sort(),

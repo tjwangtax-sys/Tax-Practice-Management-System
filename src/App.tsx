@@ -17,11 +17,12 @@ import { WorkDoneFinanceView } from './modules/Operations/WorkDoneFinanceView';
 import { BasicReportsView } from './modules/Operations/BasicReportsView';
 import { KpiPerformanceView } from './modules/Operations/KpiPerformanceView';
 import { StaffSettingsView } from './modules/Admin/StaffSettingsView';
-import { NavRoute } from './types/tpms';
+import { NavigationFilterPreset, NavRoute } from './types/tpms';
 
 const AppWorkspace: React.FC = () => {
   const { accessStatus, isAdmin } = useAuth();
-  const [activeRoute, setActiveRoute] = useState<NavRoute>('client-master');
+  const [activeRoute, setActiveRoute] = useState<NavRoute>('dashboard');
+  const [navPreset, setNavPreset] = useState<NavigationFilterPreset | null>(null);
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [mobileNavOpen, setMobileNavOpen] = useState(false);
   const [notificationsOpen, setNotificationsOpen] = useState(false);
@@ -30,8 +31,13 @@ const AppWorkspace: React.FC = () => {
     return <LoginScreen />;
   }
 
-  const handleSelectRoute = (route: NavRoute) => {
+  const handleSelectRoute = (route: NavRoute, preset?: Omit<NavigationFilterPreset, 'nonce'>) => {
     if (route === 'staff-settings' && !isAdmin) return;
+    if (preset) {
+      setNavPreset({ ...preset, nonce: Date.now() });
+    } else {
+      setNavPreset(null);
+    }
     setActiveRoute(route);
     setMobileNavOpen(false);
   };
@@ -45,17 +51,17 @@ const AppWorkspace: React.FC = () => {
       case 'client-master':
         return <ClientMasterView />;
       case 'all-jobs':
-        return <JobsModuleView mode="ALL" />;
+        return <JobsModuleView mode="ALL" initialFilter={navPreset} />;
       case 'cp204':
-        return <Cp204ModuleView />;
+        return <Cp204ModuleView initialFilter={navPreset} />;
       case 'corporate':
-        return <JobsModuleView mode="Corporate" />;
+        return <JobsModuleView mode="Corporate" initialFilter={navPreset} />;
       case 'individual':
-        return <JobsModuleView mode="Individual" />;
+        return <JobsModuleView mode="Individual" initialFilter={navPreset} />;
       case 'ad-hoc':
-        return <JobsModuleView mode="Ad Hoc" />;
+        return <JobsModuleView mode="Ad Hoc" initialFilter={navPreset} />;
       case 'form-e':
-        return <JobsModuleView mode="Form E" />;
+        return <JobsModuleView mode="Form E" initialFilter={navPreset} />;
       case 'tax-payment-monitor':
         return <TaxPaymentMonitorView />;
       case 'correspondence':
@@ -69,7 +75,7 @@ const AppWorkspace: React.FC = () => {
       case 'staff-settings':
         return <StaffSettingsView />;
       default:
-        return <ClientMasterView />;
+        return <DashboardView onNavigate={handleSelectRoute} />;
     }
   };
 

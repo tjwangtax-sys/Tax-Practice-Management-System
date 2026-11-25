@@ -27,6 +27,7 @@ export const SETTING_GROUPS = [
   'PAYMENT_STATUS',
   'CORRESPONDENCE_STATUS',
   'BILLING_STATUS',
+  'WORK_DONE_DESCRIPTION',
   'PRIORITY',
   'CORRESPONDENCE_TYPE',
 ] as const;
@@ -146,4 +147,14 @@ export const DEFAULT_MALAYSIAN_TAX_SETTINGS: SeedSettingTemplate[] = [
   { id: 'PRI_HIGH', group: 'PRIORITY', code: 'HIGH', displayName: 'High', module: 'Global', badgeColor: '#C2410C', active: true, sortOrder: 2 },
   { id: 'PRI_NORMAL', group: 'PRIORITY', code: 'NORMAL', displayName: 'Normal', module: 'Global', badgeColor: '#0369A1', active: true, sortOrder: 3 },
   { id: 'PRI_LOW', group: 'PRIORITY', code: 'LOW', displayName: 'Low', module: 'Global', badgeColor: '#64748B', active: true, sortOrder: 4 },
+
+  // WORK_DONE_DESCRIPTION (Catalogue for Work Done & Finance)
+  { id: 'WDD_FORMC', group: 'WORK_DONE_DESCRIPTION', code: 'FORM_C', displayName: 'Preparation & e-Filing of Form C Corporate Income Tax Return', module: 'Work Done & Finance', badgeColor: '#0F766E', active: true, sortOrder: 1 },
+  { id: 'WDD_MITRS', group: 'WORK_DONE_DESCRIPTION', code: 'MITRS', displayName: 'Preparation & Submission of MITRS Working Sheets', module: 'Work Done & Finance', badgeColor: '#0369A1', active: true, sortOrder: 2 },
+  { id: 'WDD_CP204', group: 'WORK_DONE_DESCRIPTION', code: 'CP204', displayName: 'Preparation & Submission of CP204 Initial Tax Estimate', module: 'Work Done & Finance', badgeColor: '#1E40AF', active: true, sortOrder: 3 },
+  { id: 'WDD_CP204A', group: 'WORK_DONE_DESCRIPTION', code: 'CP204A', displayName: 'Preparation & Submission of CP204A Revised Tax Estimate', module: 'Work Done & Finance', badgeColor: '#7C3AED', active: true, sortOrder: 4 },
+  { id: 'WDD_FORMB', group: 'WORK_DONE_DESCRIPTION', code: 'FORM_B', displayName: 'Preparation & e-Filing of Form B / Form BE Personal Tax Return', module: 'Work Done & Finance', badgeColor: '#047857', active: true, sortOrder: 5 },
+  { id: 'WDD_FORME', group: 'WORK_DONE_DESCRIPTION', code: 'FORM_E', displayName: 'Preparation & Submission of Form E, C.P.8D & Form EA', module: 'Work Done & Finance', badgeColor: '#B45309', active: true, sortOrder: 6 },
+  { id: 'WDD_AUDIT', group: 'WORK_DONE_DESCRIPTION', code: 'TAX_AUDIT', displayName: 'LHDN Tax Audit Representation & Query Response', module: 'Work Done & Finance', badgeColor: '#C2410C', active: true, sortOrder: 7 },
+  { id: 'WDD_RPGT', group: 'WORK_DONE_DESCRIPTION', code: 'RPGT', displayName: 'Preparation & Submission of CKHT / RPGT Return', module: 'Work Done & Finance', badgeColor: '#475569', active: true, sortOrder: 8 },
 ];

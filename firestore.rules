@@ -554,6 +554,64 @@ service cloud.firestore {
       && (!('attachmentUrl' in d) || (d.attachmentUrl is string && d.attachmentUrl.size() <= 500));
     }
 
+    // --- Work Done & Finance Validation ---
+    function isValidWorkDone(d) {
+      let k = d.keys();
+      return k.hasAll([
+        'workDoneId', 'clientId', 'clientName', 'pricingMode',
+        'workDoneStatus', 'financeInvoiceStatus',
+        'additionalCharges', 'finalPrice', 'totalInvoiceAmount',
+        'createdBy', 'createdAt', 'updatedAt'
+      ])
+      && k.hasOnly([
+        'workDoneId', 'jobId', 'clientId', 'clientName', 'ya', 'jobType',
+        'pic', 'reviewer', 'jobStatus', 'workDoneDescription',
+        'pricingMode', 'feeAllocations',
+        'auditFee', 'quotationPrice', 'priorYearPrice', 'hodPrice',
+        'additionalCharges', 'finalPrice', 'sstAmount', 'totalInvoiceAmount',
+        'workDoneStatus', 'financeInvoiceStatus',
+        'invoiceNo', 'issueDate', 'cancellationDate', 'cancellationReason', 'remarks',
+        'createdBy', 'updatedBy', 'createdAt', 'updatedAt'
+      ])
+      && d.workDoneId is string && d.workDoneId.size() >= 1 && d.workDoneId.size() <= 40
+      && d.clientId is string && d.clientId.size() >= 1 && d.clientId.size() <= 40
+      && d.clientName is string && d.clientName.size() >= 1 && d.clientName.size() <= 200
+      && d.pricingMode in ['Overall Fee', 'Individual Allocation']
+      && d.workDoneStatus in [
+        'Draft', 'Quotation Pending Approval', 'Quotation Issued', 'In Progress',
+        'Completed — Pending Finance', 'Returned by Finance', 'Ready for Invoicing',
+        'Invoiced', 'Cancelled'
+      ]
+      && d.financeInvoiceStatus in [
+        'Not Submitted', 'Pending Review', 'Returned', 'Ready for Invoicing', 'Invoiced', 'Cancelled'
+      ]
+      && d.additionalCharges is number
+      && d.finalPrice is number
+      && d.totalInvoiceAmount is number
+      && d.createdBy is string && d.createdBy.size() >= 1 && d.createdBy.size() <= 160
+      && d.createdAt is timestamp
+      && d.updatedAt is timestamp
+      && (!('updatedBy' in d) || (d.updatedBy is string && d.updatedBy.size() <= 160))
+      && (!('jobId' in d) || (d.jobId is string && d.jobId.size() <= 128))
+      && (!('ya' in d) || (d.ya is string && d.ya.size() <= 16))
+      && (!('jobType' in d) || (d.jobType is string && d.jobType.size() <= 60))
+      && (!('pic' in d) || (d.pic is string && d.pic.size() <= 120))
+      && (!('reviewer' in d) || (d.reviewer is string && d.reviewer.size() <= 120))
+      && (!('jobStatus' in d) || (d.jobStatus is string && d.jobStatus.size() <= 60))
+      && (!('workDoneDescription' in d) || (d.workDoneDescription is string && d.workDoneDescription.size() <= 4000))
+      && (!('feeAllocations' in d) || (d.feeAllocations is list && d.feeAllocations.size() <= 50 && (d.feeAllocations.size() == 0 || d.feeAllocations[0] is map)))
+      && (!('auditFee' in d) || d.auditFee == null || d.auditFee is number)
+      && (!('quotationPrice' in d) || d.quotationPrice == null || d.quotationPrice is number)
+      && (!('priorYearPrice' in d) || d.priorYearPrice == null || d.priorYearPrice is number)
+      && (!('hodPrice' in d) || d.hodPrice == null || d.hodPrice is number)
+      && (!('sstAmount' in d) || d.sstAmount == null || d.sstAmount is number)
+      && (!('invoiceNo' in d) || (d.invoiceNo is string && d.invoiceNo.size() <= 80))
+      && (!('issueDate' in d) || (d.issueDate is string && d.issueDate.size() <= 20))
+      && (!('cancellationDate' in d) || (d.cancellationDate is string && d.cancellationDate.size() <= 20))
+      && (!('cancellationReason' in d) || (d.cancellationReason is string && d.cancellationReason.size() <= 500))
+      && (!('remarks' in d) || (d.remarks is string && d.remarks.size() <= 2000));
+    }
+
     // -------------------------------------------------------------------------
     // Collection Rules
     // -------------------------------------------------------------------------
@@ -788,6 +846,46 @@ service cloud.firestore {
         && !incoming().diff(existing()).affectedKeys().hasAny(['createdBy', 'createdAt'])
         && isWorkingStaff();
       allow delete: if isValidId(correspondenceDocId) && isManagerOrAdmin();
+    }
+
+    // 11. Work Done & Finance (Role-tiered HOD pricing & Admin finance invoicing)
+    match /workDone/{workDoneDocId} {
+      allow get: if isActiveStaff() && isValidId(workDoneDocId);
+      allow list: if isActiveStaff();
+      allow create: if isVerifiedUser()
+        && isValidId(workDoneDocId)
+        && isValidWorkDone(incoming())
+        && incoming().createdBy == request.auth.token.email
+        && incoming().createdAt == request.time
+        && incoming().updatedAt == request.time
+        && (
+          hasRole(['Admin']) ||
+          (hasRole(['Manager-HOD'])
+            && !(incoming().workDoneStatus in ['Returned by Finance', 'Ready for Invoicing', 'Invoiced'])) ||
+          (hasRole(['Staff'])
+            && !(incoming().workDoneStatus in ['Returned by Finance', 'Ready for Invoicing', 'Invoiced'])
+            && (!('hodPrice' in incoming()) || incoming().hodPrice == null)
+            && incoming().pricingMode == 'Overall Fee'
+            && (!('feeAllocations' in incoming()) || incoming().feeAllocations.size() == 0))
+        );
+      allow update: if isVerifiedUser()
+        && isValidId(workDoneDocId)
+        && isValidWorkDone(incoming())
+        && incoming().createdAt == existing().createdAt
+        && incoming().createdBy == existing().createdBy
+        && incoming().updatedAt == request.time
+        && !incoming().diff(existing()).affectedKeys().hasAny(['createdBy', 'createdAt'])
+        && (
+          hasRole(['Admin']) ||
+          (hasRole(['Manager-HOD'])
+            && existing().workDoneStatus != 'Invoiced'
+            && !(incoming().workDoneStatus in ['Returned by Finance', 'Ready for Invoicing', 'Invoiced'])) ||
+          (hasRole(['Staff'])
+            && existing().workDoneStatus != 'Invoiced'
+            && !(incoming().workDoneStatus in ['Returned by Finance', 'Ready for Invoicing', 'Invoiced'])
+            && !incoming().diff(existing()).affectedKeys().hasAny(['hodPrice', 'pricingMode', 'feeAllocations', 'invoiceNo', 'issueDate']))
+        );
+      allow delete: if isValidId(workDoneDocId) && isAdmin();
     }
   }
 }
