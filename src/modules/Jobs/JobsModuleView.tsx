@@ -24,6 +24,8 @@ import {
 import { useAuth } from '../../context/AuthContext';
 import { useData } from '../../context/DataContext';
 import { useColumnVisibility } from '../../hooks/useColumnVisibility';
+import { useExcelTableFilters } from '../../hooks/useExcelTableFilters';
+import { ExcelColumnFilter } from '../../components/ExcelColumnFilter';
 import { RegisterToolbar } from '../../components/RegisterToolbar';
 import { StatusPill } from '../../components/StatusPill';
 import { exportToExcel, printRegisterHtml } from '../../lib/exportUtils';
@@ -512,42 +514,6 @@ export const JobsModuleView: React.FC<JobsModuleViewProps> = ({ mode, initialFil
     clientLookup,
   ]);
 
-  const totalPages = Math.max(1, Math.ceil(filteredJobs.length / PAGE_SIZE));
-  const safePage = Math.min(page, totalPages);
-  const startIndex = (safePage - 1) * PAGE_SIZE;
-  const paginatedJobs = useMemo(
-    () => filteredJobs.slice(startIndex, startIndex + PAGE_SIZE),
-    [filteredJobs, startIndex]
-  );
-
-  const showingStart = filteredJobs.length === 0 ? 0 : startIndex + 1;
-  const showingEnd = Math.min(startIndex + PAGE_SIZE, filteredJobs.length);
-  const summaryText =
-    filteredJobs.length === 0
-      ? 'Showing 0 of 0 job(s)'
-      : `Showing ${showingStart}–${showingEnd} of ${filteredJobs.length.toLocaleString()} job(s)`;
-
-  const activeCols = columns.filter((c) => visibleColumns[c.key]);
-  const hasActiveFilters = Boolean(
-    search ||
-      moduleFilter ||
-      jobTypeFilter ||
-      yaFilter ||
-      fyeFilter ||
-      picFilter ||
-      statusFilter ||
-      finalDeadlineFilter
-  );
-
-  const statusBadgeGroup =
-    mode === 'CP204'
-      ? 'CP204_STATUS'
-      : mode === 'Tax Payment Monitor'
-      ? 'PAYMENT_STATUS'
-      : mode === 'Correspondence'
-      ? 'CORRESPONDENCE_STATUS'
-      : 'JOB_STATUS';
-
   const getChecklistSummary = (j: TaxJob) => {
     const list = j.complianceChecklist || [];
     if (list.length === 0) return '0/7';
@@ -563,6 +529,138 @@ export const JobsModuleView: React.FC<JobsModuleViewProps> = ({ mode, initialFil
     return clientRec?.auditor || '';
   };
 
+  const jobValueGetters = useMemo(
+    () => ({
+      jobCode: (j: TaxJob) => j.jobCode,
+      module: (j: TaxJob) => j.module,
+      jobType: (j: TaxJob) => j.jobType || j.formType || '',
+      clientId: (j: TaxJob) => j.clientId,
+      clientName: (j: TaxJob) => j.clientName,
+      groupId: (j: TaxJob) => j.groupId ?? '',
+      ya: (j: TaxJob) => (j.yaSequence ? `${j.ya ?? ''} (${j.yaSequence})`.trim() : j.ya ?? ''),
+      fye: (j: TaxJob) => {
+        const m = extractFyeMonth(j.fye);
+        return isCorporateView ? (m !== null ? String(m) : '') : j.fye ?? '';
+      },
+      taxPic: (j: TaxJob) => j.taxPic ?? '',
+      reviewer: (j: TaxJob) => j.reviewer ?? '',
+      status: (j: TaxJob) => j.status ?? '',
+      priority: (j: TaxJob) => j.priority ?? '',
+      internalDeadline: (j: TaxJob) => formatDateDDMMYYYY(j.internalDeadline),
+      originalStatutoryDeadline: (j: TaxJob) => formatDateDDMMYYYY(j.originalStatutoryDeadline),
+      formCDueDate: (j: TaxJob) => formatDateDDMMYYYY(j.formCDueDate),
+      lhdnEot1: (j: TaxJob) => formatDateDDMMYYYY(j.lhdnEot1),
+      finalApplicableDeadline: (j: TaxJob) => {
+        const analysis = analyzeJobDeadlines(j);
+        const eff = analysis.finalApplicableDeadline || j.finalApplicableDeadline || j.dueDate || '';
+        return eff ? formatDateDDMMYYYY(eff) : '';
+      },
+      ssmEot: (j: TaxJob) => {
+        const latest = getLatestSsmEot(j);
+        return latest.date ? formatDateDDMMYYYY(latest.date) : '';
+      },
+      formC: (j: TaxJob) =>
+        (j.formCStatus || '').trim().toLowerCase() === 'submitted'
+          ? 'Submitted'
+          : j.formCStatus || '',
+      mitrs: (j: TaxJob) =>
+        (j.mitrsStatus || '').trim().toLowerCase() === 'submitted'
+          ? 'Submitted'
+          : j.mitrsStatus || '',
+      mitrsDueDate: (j: TaxJob) => {
+        const analysis = analyzeJobDeadlines(j);
+        const d = j.mitrsDueDate || analysis.mitrsApplicableDeadline || '';
+        return d ? formatDateDDMMYYYY(d) : '';
+      },
+      auditor: (j: TaxJob) => resolveAuditor(j),
+      workDoneStatus: (j: TaxJob) => j.billingStatus || 'Unbilled WIP',
+      formCStatus: (j: TaxJob) => j.formCStatus ?? '',
+      mitrsStatus: (j: TaxJob) => j.mitrsStatus ?? '',
+      formEStatus: (j: TaxJob) => j.formEStatus ?? '',
+      cp8dStatus: (j: TaxJob) => j.cp8dStatus ?? '',
+      formEaStatus: (j: TaxJob) => j.formEaStatus ?? '',
+      accountsStatus: (j: TaxJob) => j.accountsStatus ?? '',
+      auditReportReceivedDate: (j: TaxJob) => formatDateDDMMYYYY(j.auditReportReceivedDate),
+      dateDocumentsReceived: (j: TaxJob) => formatDateDDMMYYYY(j.dateDocumentsReceived),
+      submissionStatus: (j: TaxJob) => j.submissionStatus ?? '',
+      submissionReference: (j: TaxJob) => j.submissionReference ?? '',
+      submissionDate: (j: TaxJob) => formatDateDDMMYYYY(j.submissionDate),
+      personNo: (j: TaxJob) => j.personNo ?? '',
+      finalTaxPayable: (j: TaxJob) => j.finalTaxPayable ?? j.taxPayable ?? 0,
+      checklistProgress: (j: TaxJob) => getChecklistSummary(j),
+      dueDate: (j: TaxJob) => formatDateDDMMYYYY(j.dueDate),
+      feeAmount: (j: TaxJob) => j.feeAmount ?? 0,
+      billingStatus: (j: TaxJob) => j.billingStatus ?? '',
+      cp204Estimate: (j: TaxJob) => j.cp204Estimate ?? 0,
+      cp204Revised6th: (j: TaxJob) => j.cp204Revised6th ?? 0,
+      cp204Revised9th: (j: TaxJob) => j.cp204Revised9th ?? 0,
+      cp204Revised11th: (j: TaxJob) => j.cp204Revised11th ?? 0,
+      cp204InstallmentStart: (j: TaxJob) => j.cp204InstallmentStart ?? '',
+      paymentType: (j: TaxJob) => j.paymentType ?? '',
+      installmentNo: (j: TaxJob) => j.installmentNo ?? '',
+      amountDue: (j: TaxJob) => j.amountDue ?? 0,
+      amountPaid: (j: TaxJob) => j.amountPaid ?? 0,
+      paymentDate: (j: TaxJob) => formatDateDDMMYYYY(j.paymentDate),
+      receiptNo: (j: TaxJob) => j.receiptNo ?? '',
+      correspondenceType: (j: TaxJob) => j.correspondenceType ?? '',
+      letterRefNo: (j: TaxJob) => j.letterRefNo ?? '',
+      letterDate: (j: TaxJob) => formatDateDDMMYYYY(j.letterDate),
+      responseDueDate: (j: TaxJob) => formatDateDDMMYYYY(j.responseDueDate),
+      responseSentDate: (j: TaxJob) => formatDateDDMMYYYY(j.responseSentDate),
+      remarks: (j: TaxJob) => j.remarks ?? '',
+    }),
+    [isCorporateView, clientLookup] // eslint-disable-line react-hooks/exhaustive-deps
+  );
+
+  const excel = useExcelTableFilters(filteredJobs, jobValueGetters);
+  const displayedJobs = excel.rows;
+
+  // Clear column filters when switching job module views
+  useEffect(() => {
+    excel.resetColumnFilters();
+  }, [mode]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  useEffect(() => {
+    setPage(1);
+  }, [excel.columnFilters, excel.sortState]);
+
+  const totalPages = Math.max(1, Math.ceil(displayedJobs.length / PAGE_SIZE));
+  const safePage = Math.min(page, totalPages);
+  const startIndex = (safePage - 1) * PAGE_SIZE;
+  const paginatedJobs = useMemo(
+    () => displayedJobs.slice(startIndex, startIndex + PAGE_SIZE),
+    [displayedJobs, startIndex]
+  );
+
+  const showingStart = displayedJobs.length === 0 ? 0 : startIndex + 1;
+  const showingEnd = Math.min(startIndex + PAGE_SIZE, displayedJobs.length);
+  const summaryText =
+    displayedJobs.length === 0
+      ? 'Showing 0 of 0 job(s)'
+      : `Showing ${showingStart}–${showingEnd} of ${displayedJobs.length.toLocaleString()} job(s)`;
+
+  const activeCols = columns.filter((c) => visibleColumns[c.key]);
+  const hasActiveFilters = Boolean(
+    search ||
+      moduleFilter ||
+      jobTypeFilter ||
+      yaFilter ||
+      fyeFilter ||
+      picFilter ||
+      statusFilter ||
+      finalDeadlineFilter ||
+      excel.hasActiveColumnFilters
+  );
+
+  const statusBadgeGroup =
+    mode === 'CP204'
+      ? 'CP204_STATUS'
+      : mode === 'Tax Payment Monitor'
+      ? 'PAYMENT_STATUS'
+      : mode === 'Correspondence'
+      ? 'CORRESPONDENCE_STATUS'
+      : 'JOB_STATUS';
+
   const openJobModal = (jobToOpen: TaxJob | null, initialTab: JobModalTab = 'core') => {
     setEditingJob(jobToOpen);
     setModalInitialTab(initialTab);
@@ -570,7 +668,7 @@ export const JobsModuleView: React.FC<JobsModuleViewProps> = ({ mode, initialFil
   };
 
   const exportRows = () =>
-    filteredJobs.map((j) => {
+    displayedJobs.map((j) => {
       const analysis = analyzeJobDeadlines(j);
       const effDeadline = analysis.finalApplicableDeadline || j.finalApplicableDeadline || j.dueDate || '';
       const shortRule = getShortDeadlineRule(analysis.winningRule);
@@ -678,12 +776,13 @@ export const JobsModuleView: React.FC<JobsModuleViewProps> = ({ mode, initialFil
           setPicFilter('');
           setStatusFilter('');
           setFinalDeadlineFilter('');
+          excel.resetColumnFilters();
         }}
         columns={columns}
         visibleColumns={visibleColumns}
         onToggleColumn={toggleColumn}
         onResetColumns={resetColumns}
-        recordCount={filteredJobs.length}
+        recordCount={displayedJobs.length}
         totalCount={scopedJobs.length}
         summaryText={summaryText}
         onExportExcel={() =>
@@ -697,7 +796,7 @@ export const JobsModuleView: React.FC<JobsModuleViewProps> = ({ mode, initialFil
         onPrint={() =>
           printRegisterHtml(
             title,
-            `${filteredJobs.length} compliance jobs`,
+            `${displayedJobs.length} compliance jobs`,
             activeCols,
             exportRows(),
             false
@@ -706,7 +805,7 @@ export const JobsModuleView: React.FC<JobsModuleViewProps> = ({ mode, initialFil
         onSavePdf={() =>
           printRegisterHtml(
             title,
-            `${filteredJobs.length} compliance jobs`,
+            `${displayedJobs.length} compliance jobs`,
             activeCols,
             exportRows(),
             true
@@ -869,7 +968,18 @@ export const JobsModuleView: React.FC<JobsModuleViewProps> = ({ mode, initialFil
                       col.align === 'right' ? 'text-right' : 'text-left'
                     }`}
                   >
-                    {col.label}
+                    <ExcelColumnFilter
+                      columnKey={col.key}
+                      title={col.label}
+                      values={excel.getColumnValues(col.key)}
+                      selectedValues={excel.columnFilters[col.key]}
+                      onChangeSelected={(next) => excel.setColumnFilter(col.key, next)}
+                      sortDirection={
+                        excel.sortState?.key === col.key ? excel.sortState.direction : null
+                      }
+                      onSort={(dir) => excel.setColumnSort(col.key, dir)}
+                      align={col.align === 'right' ? 'right' : 'left'}
+                    />
                   </th>
                 ))}
                 <th className="px-3 py-2 text-right font-semibold whitespace-nowrap no-print">

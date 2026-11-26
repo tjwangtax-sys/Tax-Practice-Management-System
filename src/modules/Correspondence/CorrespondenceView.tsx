@@ -7,11 +7,11 @@ import {
   X,
   Save,
   AlertCircle,
-  Search,
   ExternalLink,
   RefreshCw,
 } from 'lucide-react';
 import {
+  ClientRecord,
   ColumnDef,
   CORRESPONDENCE_ACTION_STATUSES,
   CORRESPONDENCE_CATEGORIES,
@@ -27,6 +27,10 @@ import { useAuth } from '../../context/AuthContext';
 import { useData } from '../../context/DataContext';
 import { RegisterToolbar } from '../../components/RegisterToolbar';
 import { StatusPill } from '../../components/StatusPill';
+import { ClientSelectorField } from '../../components/ClientSelectorField';
+import { ExcelColumnFilter } from '../../components/ExcelColumnFilter';
+import { useExcelTableFilters } from '../../hooks/useExcelTableFilters';
+import { buildDynamicSelectOptions } from '../../lib/settingsDropdown';
 import { exportToExcel, printRegisterHtml } from '../../lib/exportUtils';
 import { addCalendarDays, formatDateDDMMYYYY } from '../../lib/deadlineUtils';
 
@@ -75,9 +79,8 @@ interface CorrespondenceModalProps {
 
 const CorrespondenceModal: React.FC<CorrespondenceModalProps> = ({ open, editing, onClose }) => {
   const { isReadOnly } = useAuth();
-  const { clients, jobs, staff, saveCorrespondence } = useData();
+  const { clients, jobs, staff, saveCorrespondence, getSettingsByGroup } = useData();
 
-  const [clientSearch, setClientSearch] = useState('');
   const [clientId, setClientId] = useState('');
   const [clientName, setClientName] = useState('');
   const [ya, setYa] = useState(String(new Date().getFullYear()));
@@ -99,18 +102,6 @@ const CorrespondenceModal: React.FC<CorrespondenceModalProps> = ({ open, editing
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  const filteredClients = useMemo(() => {
-    const q = clientSearch.trim().toLowerCase();
-    if (!q) return clients;
-    return clients.filter(
-      (c) =>
-        c.clientName.toLowerCase().includes(q) ||
-        c.clientId.toLowerCase().includes(q) ||
-        (c.companyNo || '').toLowerCase().includes(q) ||
-        (c.tin || '').toLowerCase().includes(q)
-    );
-  }, [clients, clientSearch]);
-
   const clientJobs = useMemo(
     () => (clientId ? jobs.filter((j) => j.clientId === clientId) : []),
     [jobs, clientId]
@@ -124,7 +115,6 @@ const CorrespondenceModal: React.FC<CorrespondenceModalProps> = ({ open, editing
   useEffect(() => {
     if (!open) return;
     setError(null);
-    setClientSearch('');
     const today = new Date().toISOString().slice(0, 10);
     if (editing) {
       setClientId(editing.clientId);
@@ -169,8 +159,23 @@ const CorrespondenceModal: React.FC<CorrespondenceModalProps> = ({ open, editing
 
   if (!open) return null;
 
-  const handleSelectClient = (cid: string) => {
-    const found = clients.find((c) => c.clientId === cid);
+  const methodOptions = buildDynamicSelectOptions(
+    getSettingsByGroup('METHOD_RECEIVED'),
+    CORRESPONDENCE_METHODS,
+    methodReceived
+  );
+  const categoryOptions = buildDynamicSelectOptions(
+    getSettingsByGroup('CORRESPONDENCE_CATEGORY'),
+    CORRESPONDENCE_CATEGORIES,
+    category
+  );
+  const letterTypeOptions = buildDynamicSelectOptions(
+    getSettingsByGroup('LETTER_TYPE'),
+    CORRESPONDENCE_LETTER_TYPES,
+    letterType
+  );
+
+  const handleSelectClient = (found: ClientRecord | null) => {
     if (!found) {
       setClientId('');
       setClientName('');
@@ -180,7 +185,7 @@ const CorrespondenceModal: React.FC<CorrespondenceModalProps> = ({ open, editing
     setClientId(found.clientId);
     setClientName(found.clientName);
     setJobId('');
-    if (!pic && found.taxPic) setPic(found.taxPic);
+    if (found.taxPic) setPic(found.taxPic);
   };
 
   const handleSubmit = async (e: React.FormEvent) => {
@@ -262,33 +267,15 @@ const CorrespondenceModal: React.FC<CorrespondenceModalProps> = ({ open, editing
 
           {/* Client + Linked Job */}
           <div className="grid grid-cols-1 md:grid-cols-12 gap-3">
-            <div className="md:col-span-7 space-y-2">
-              <label className={labelCls}>Client *</label>
-              <div className="relative">
-                <Search className="w-3.5 h-3.5 text-slate-400 absolute left-2.5 top-1/2 -translate-y-1/2 pointer-events-none" />
-                <input
-                  type="text"
-                  disabled={isReadOnly}
-                  value={clientSearch}
-                  onChange={(e) => setClientSearch(e.target.value)}
-                  placeholder="Search client by name, ID, SSM No., or TIN..."
-                  className={`${inputCls} pl-8`}
-                />
-              </div>
-              <select
-                required
-                disabled={isReadOnly}
+            <div className="md:col-span-7">
+              <ClientSelectorField
+                clients={clients}
                 value={clientId}
-                onChange={(e) => handleSelectClient(e.target.value)}
-                className={inputCls}
-              >
-                <option value="">— Select Client —</option>
-                {filteredClients.map((c) => (
-                  <option key={c.id} value={c.clientId}>
-                    {c.clientName} ({c.clientId})
-                  </option>
-                ))}
-              </select>
+                onSelectClient={handleSelectClient}
+                disabled={isReadOnly}
+                required
+                label="Client"
+              />
             </div>
 
             <div className="md:col-span-2">
@@ -341,9 +328,9 @@ const CorrespondenceModal: React.FC<CorrespondenceModalProps> = ({ open, editing
                 onChange={(e) => setMethodReceived(e.target.value as CorrespondenceMethod)}
                 className={inputCls}
               >
-                {CORRESPONDENCE_METHODS.map((m) => (
-                  <option key={m} value={m}>
-                    {m}
+                {methodOptions.map((m) => (
+                  <option key={m.value} value={m.value}>
+                    {m.label}
                   </option>
                 ))}
               </select>
@@ -356,9 +343,9 @@ const CorrespondenceModal: React.FC<CorrespondenceModalProps> = ({ open, editing
                 onChange={(e) => setCategory(e.target.value as CorrespondenceCategory)}
                 className={inputCls}
               >
-                {CORRESPONDENCE_CATEGORIES.map((c) => (
-                  <option key={c} value={c}>
-                    {c}
+                {categoryOptions.map((c) => (
+                  <option key={c.value} value={c.value}>
+                    {c.label}
                   </option>
                 ))}
               </select>
@@ -371,9 +358,9 @@ const CorrespondenceModal: React.FC<CorrespondenceModalProps> = ({ open, editing
                 onChange={(e) => setLetterType(e.target.value as CorrespondenceLetterType)}
                 className={inputCls}
               >
-                {CORRESPONDENCE_LETTER_TYPES.map((t) => (
-                  <option key={t} value={t}>
-                    {t}
+                {letterTypeOptions.map((t) => (
+                  <option key={t.value} value={t.value}>
+                    {t.label}
                   </option>
                 ))}
               </select>
@@ -556,7 +543,8 @@ const CorrespondenceModal: React.FC<CorrespondenceModalProps> = ({ open, editing
 // =============================================================================
 export const CorrespondenceView: React.FC = () => {
   const { isReadOnly, isManagerOrAdmin } = useAuth();
-  const { correspondenceRecords, deleteCorrespondence, refreshAll, refreshing } = useData();
+  const { correspondenceRecords, deleteCorrespondence, refreshAll, refreshing, getSettingsByGroup } =
+    useData();
 
   const [search, setSearch] = useState('');
   const [statusFilter, setStatusFilter] = useState('');
@@ -623,8 +611,45 @@ export const CorrespondenceView: React.FC = () => {
     search,
   ]);
 
+  const categoryFilterOptions = useMemo(
+    () =>
+      buildDynamicSelectOptions(
+        getSettingsByGroup('CORRESPONDENCE_CATEGORY'),
+        CORRESPONDENCE_CATEGORIES,
+        categoryFilter
+      ),
+    [getSettingsByGroup, categoryFilter]
+  );
+
+  const correspondenceValueGetters = useMemo(
+    () => ({
+      correspondenceId: (r: CorrespondenceRecord) => r.correspondenceId,
+      clientName: (r: CorrespondenceRecord) => r.clientName,
+      ya: (r: CorrespondenceRecord) => r.ya || '',
+      dateReceived: (r: CorrespondenceRecord) => formatDateDDMMYYYY(r.dateReceived),
+      methodReceived: (r: CorrespondenceRecord) => r.methodReceived,
+      category: (r: CorrespondenceRecord) => r.category,
+      letterType: (r: CorrespondenceRecord) => r.letterType,
+      letterSubject: (r: CorrespondenceRecord) => r.letterSubject,
+      dueDate: (r: CorrespondenceRecord) => formatDateDDMMYYYY(r.dueDate),
+      pic: (r: CorrespondenceRecord) => r.pic || '',
+      actionStatus: (r: CorrespondenceRecord) => r.actionStatus,
+      actionDate: (r: CorrespondenceRecord) => formatDateDDMMYYYY(r.actionDate),
+      jobId: (r: CorrespondenceRecord) => r.jobId || '',
+      remarks: (r: CorrespondenceRecord) => r.remarks || '',
+    }),
+    []
+  );
+
+  const excel = useExcelTableFilters(filteredRecords, correspondenceValueGetters);
+  const displayedRecords = excel.rows;
+
   const hasActiveFilters = Boolean(
-    search.trim() || statusFilter || categoryFilter || dueDateFilter
+    search.trim() ||
+      statusFilter ||
+      categoryFilter ||
+      dueDateFilter ||
+      excel.hasActiveColumnFilters
   );
 
   const handleResetFilters = () => {
@@ -632,6 +657,7 @@ export const CorrespondenceView: React.FC = () => {
     setStatusFilter('');
     setCategoryFilter('');
     setDueDateFilter('');
+    excel.resetColumnFilters();
   };
 
   const handleToggleColumn = (key: string) => {
@@ -643,7 +669,7 @@ export const CorrespondenceView: React.FC = () => {
       key: c.key,
       label: c.label,
     }));
-    const rows = filteredRecords.map((r) => ({
+    const rows = displayedRecords.map((r) => ({
       correspondenceId: r.correspondenceId,
       clientName: `${r.clientName} (${r.clientId})`,
       ya: r.ya || '—',
@@ -673,7 +699,7 @@ export const CorrespondenceView: React.FC = () => {
     const { cols, rows } = buildExport();
     printRegisterHtml(
       'Correspondence Register',
-      `${filteredRecords.length} correspondence record(s) | Overdue: ${kpis.overdue}`,
+      `${displayedRecords.length} correspondence record(s) | Overdue: ${kpis.overdue}`,
       cols,
       rows,
       false
@@ -684,7 +710,7 @@ export const CorrespondenceView: React.FC = () => {
     const { cols, rows } = buildExport();
     printRegisterHtml(
       'Correspondence Register',
-      `${filteredRecords.length} correspondence record(s) | Overdue: ${kpis.overdue}`,
+      `${displayedRecords.length} correspondence record(s) | Overdue: ${kpis.overdue}`,
       cols,
       rows,
       true
@@ -820,7 +846,7 @@ export const CorrespondenceView: React.FC = () => {
         onExportExcel={handleExportExcel}
         onPrint={handlePrint}
         onSavePdf={handleSavePdf}
-        recordCount={filteredRecords.length}
+        recordCount={displayedRecords.length}
         totalCount={correspondenceRecords.length}
         primaryAction={
           !isReadOnly ? (
@@ -858,9 +884,9 @@ export const CorrespondenceView: React.FC = () => {
               className="px-2.5 py-1.5 text-xs bg-white border border-slate-200 rounded-md text-slate-700"
             >
               <option value="">All Categories</option>
-              {CORRESPONDENCE_CATEGORIES.map((c) => (
-                <option key={c} value={c}>
-                  {c}
+              {categoryFilterOptions.map((c) => (
+                <option key={c.value} value={c.value}>
+                  {c.label}
                 </option>
               ))}
             </select>
@@ -885,73 +911,31 @@ export const CorrespondenceView: React.FC = () => {
           <table className="w-full text-xs border-collapse">
             <thead className="bg-slate-100 sticky top-0 z-10 border-b border-slate-200 text-slate-700">
               <tr>
-                {visibleColumns.correspondenceId && (
-                  <th className="px-3 py-2.5 text-left font-semibold whitespace-nowrap">ID</th>
-                )}
-                {visibleColumns.clientName && (
-                  <th className="px-3 py-2.5 text-left font-semibold whitespace-nowrap">
-                    Client Name
+                {CORRESPONDENCE_COLUMNS.filter((c) => visibleColumns[c.key]).map((col) => (
+                  <th
+                    key={col.key}
+                    className="px-3 py-2.5 text-left font-semibold whitespace-nowrap"
+                  >
+                    <ExcelColumnFilter
+                      columnKey={col.key}
+                      title={col.label}
+                      values={excel.getColumnValues(col.key)}
+                      selectedValues={excel.columnFilters[col.key]}
+                      onChangeSelected={(next) => excel.setColumnFilter(col.key, next)}
+                      sortDirection={
+                        excel.sortState?.key === col.key ? excel.sortState.direction : null
+                      }
+                      onSort={(dir) => excel.setColumnSort(col.key, dir)}
+                    />
                   </th>
-                )}
-                {visibleColumns.ya && (
-                  <th className="px-3 py-2.5 text-left font-semibold whitespace-nowrap">YA</th>
-                )}
-                {visibleColumns.dateReceived && (
-                  <th className="px-3 py-2.5 text-left font-semibold whitespace-nowrap">
-                    Date Received
-                  </th>
-                )}
-                {visibleColumns.methodReceived && (
-                  <th className="px-3 py-2.5 text-left font-semibold whitespace-nowrap">Method</th>
-                )}
-                {visibleColumns.category && (
-                  <th className="px-3 py-2.5 text-left font-semibold whitespace-nowrap">
-                    Category
-                  </th>
-                )}
-                {visibleColumns.letterType && (
-                  <th className="px-3 py-2.5 text-left font-semibold whitespace-nowrap">
-                    Letter Type
-                  </th>
-                )}
-                {visibleColumns.letterSubject && (
-                  <th className="px-3 py-2.5 text-left font-semibold whitespace-nowrap">
-                    Subject &amp; Ref No.
-                  </th>
-                )}
-                {visibleColumns.dueDate && (
-                  <th className="px-3 py-2.5 text-left font-semibold whitespace-nowrap">
-                    Due Date
-                  </th>
-                )}
-                {visibleColumns.pic && (
-                  <th className="px-3 py-2.5 text-left font-semibold whitespace-nowrap">PIC</th>
-                )}
-                {visibleColumns.actionStatus && (
-                  <th className="px-3 py-2.5 text-left font-semibold whitespace-nowrap">
-                    Action Status
-                  </th>
-                )}
-                {visibleColumns.actionDate && (
-                  <th className="px-3 py-2.5 text-left font-semibold whitespace-nowrap">
-                    Action Date
-                  </th>
-                )}
-                {visibleColumns.jobId && (
-                  <th className="px-3 py-2.5 text-left font-semibold whitespace-nowrap">
-                    Linked Job
-                  </th>
-                )}
-                {visibleColumns.remarks && (
-                  <th className="px-3 py-2.5 text-left font-semibold whitespace-nowrap">Remarks</th>
-                )}
+                ))}
                 <th className="px-3 py-2.5 text-right font-semibold whitespace-nowrap no-print">
                   Action
                 </th>
               </tr>
             </thead>
             <tbody className="divide-y divide-slate-100">
-              {filteredRecords.length === 0 ? (
+              {displayedRecords.length === 0 ? (
                 <tr>
                   <td colSpan={15} className="px-4 py-12 text-center text-slate-500">
                     {correspondenceRecords.length === 0
@@ -960,7 +944,7 @@ export const CorrespondenceView: React.FC = () => {
                   </td>
                 </tr>
               ) : (
-                filteredRecords.map((r) => {
+                displayedRecords.map((r) => {
                   const isOpen = !CLOSED_STATUSES.has(r.actionStatus);
                   const isOverdue = isOpen && Boolean(r.dueDate) && r.dueDate < todayStr;
                   const isDueSoon =

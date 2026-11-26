@@ -730,9 +730,18 @@ export const DataProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
   const getSettingsByGroup = useCallback(
     (group: string, includeInactive = false) => {
-      return settings
-        .filter((s) => s.group === group && (includeInactive || s.active))
+      const normalized = group.trim().toUpperCase();
+      const direct = settings
+        .filter((s) => s.group.toUpperCase() === normalized && (includeInactive || s.active))
         .sort((a, b) => a.sortOrder - b.sortOrder);
+      if (direct.length > 0) return direct;
+      if (normalized === 'E_INVOICE_STATUS' || normalized === 'EINVOICE_STATUS') {
+        const alias = normalized === 'E_INVOICE_STATUS' ? 'EINVOICE_STATUS' : 'E_INVOICE_STATUS';
+        return settings
+          .filter((s) => s.group.toUpperCase() === alias && (includeInactive || s.active))
+          .sort((a, b) => a.sortOrder - b.sortOrder);
+      }
+      return direct;
     },
     [settings]
   );
@@ -906,9 +915,21 @@ export const DataProvider: React.FC<{ children: React.ReactNode }> = ({ children
   }, []);
 
   const seedDefaultSettings = useCallback(async (): Promise<number> => {
-    const existingIds = new Set(settings.map((s) => s.id));
-    const toCreate = DEFAULT_MALAYSIAN_TAX_SETTINGS.filter((item) => !existingIds.has(item.id));
-    if (toCreate.length === 0) return 0;
+    const existingById = new Map(settings.map((s) => [s.id, s]));
+    const toCreate = DEFAULT_MALAYSIAN_TAX_SETTINGS.filter((item) => !existingById.has(item.id));
+    // Also upgrade legacy EINVOICE_STATUS docs to E_INVOICE_STATUS (LHDN v4.8 thresholds)
+    const toUpgrade = DEFAULT_MALAYSIAN_TAX_SETTINGS.filter((item) => {
+      if (item.group !== 'E_INVOICE_STATUS') return false;
+      const existing = existingById.get(item.id);
+      return Boolean(
+        existing &&
+          (existing.group === 'EINVOICE_STATUS' ||
+            existing.displayName === 'Phase 4 (RM1M–5M)' ||
+            existing.displayName === 'Exempt (<RM500k)')
+      );
+    });
+
+    if (toCreate.length === 0 && toUpgrade.length === 0) return 0;
 
     try {
       const batch = writeBatch(db);
@@ -926,8 +947,21 @@ export const DataProvider: React.FC<{ children: React.ReactNode }> = ({ children
           updatedAt: serverTimestamp(),
         });
       }
+      for (const item of toUpgrade) {
+        const ref = doc(db, 'settings', item.id);
+        batch.update(ref, {
+          group: item.group,
+          code: item.code,
+          displayName: item.displayName,
+          module: item.module,
+          badgeColor: item.badgeColor,
+          active: item.active,
+          sortOrder: item.sortOrder,
+          updatedAt: serverTimestamp(),
+        });
+      }
       await batch.commit();
-      return toCreate.length;
+      return toCreate.length + toUpgrade.length;
     } catch (err) {
       handleFirestoreError(err, OperationType.WRITE, 'settings/seed');
     }

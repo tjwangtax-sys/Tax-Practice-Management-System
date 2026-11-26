@@ -14,6 +14,8 @@ import { SETTING_GROUPS, SETTING_MODULES } from '../../lib/defaultSettings';
 import { useAuth } from '../../context/AuthContext';
 import { useData } from '../../context/DataContext';
 import { useColumnVisibility } from '../../hooks/useColumnVisibility';
+import { useExcelTableFilters } from '../../hooks/useExcelTableFilters';
+import { ExcelColumnFilter } from '../../components/ExcelColumnFilter';
 import { RegisterToolbar } from '../../components/RegisterToolbar';
 import { StatusPill } from '../../components/StatusPill';
 import { exportToExcel, printRegisterHtml } from '../../lib/exportUtils';
@@ -40,7 +42,7 @@ const SETTINGS_COLUMNS: ColumnDef[] = [
 ];
 
 export const StaffSettingsView: React.FC = () => {
-  const { isAdmin, user } = useAuth();
+  const { isAdmin, isManagerOrAdmin, user } = useAuth();
   const {
     staff,
     settings,
@@ -51,7 +53,7 @@ export const StaffSettingsView: React.FC = () => {
     seedDefaultSettings,
   } = useData();
 
-  const [tab, setTab] = useState<'staff' | 'settings'>('staff');
+  const [tab, setTab] = useState<'staff' | 'settings'>(() => (isAdmin ? 'staff' : 'settings'));
 
   // Staff filters & modal
   const [staffSearch, setStaffSearch] = useState('');
@@ -131,13 +133,49 @@ export const StaffSettingsView: React.FC = () => {
     });
   }, [settings, settingSearch, groupFilter, moduleFilter]);
 
-  if (!isAdmin) {
+  const staffValueGetters = useMemo(
+    () => ({
+      staffId: (s: StaffMember) => s.staffId,
+      staffName: (s: StaffMember) => s.staffName,
+      email: (s: StaffMember) => s.email,
+      role: (s: StaffMember) => s.role,
+      department: (s: StaffMember) => s.department ?? '',
+      designation: (s: StaffMember) => s.designation ?? '',
+      phone: (s: StaffMember) => s.phone ?? '',
+      active: (s: StaffMember) => (s.active ? 'Active' : 'Inactive'),
+    }),
+    []
+  );
+
+  const settingsValueGetters = useMemo(
+    () => ({
+      group: (s: SettingValue) => s.group,
+      code: (s: SettingValue) => s.code,
+      displayName: (s: SettingValue) => s.displayName,
+      module: (s: SettingValue) => s.module,
+      badgeColor: (s: SettingValue) => s.badgeColor,
+      sortOrder: (s: SettingValue) => s.sortOrder,
+      active: (s: SettingValue) => (s.active ? 'Active' : 'Inactive'),
+    }),
+    []
+  );
+
+  const staffExcel = useExcelTableFilters(filteredStaff, staffValueGetters);
+  const settingsExcel = useExcelTableFilters(filteredSettings, settingsValueGetters);
+  const displayedStaff = staffExcel.rows;
+  const displayedSettings = settingsExcel.rows;
+
+  const activeTab: 'staff' | 'settings' = isAdmin ? tab : 'settings';
+
+  if (!isManagerOrAdmin) {
     return (
       <div className="bg-white border border-slate-200 rounded-lg p-8 text-center">
         <ShieldAlert className="w-8 h-8 text-amber-600 mx-auto mb-2" />
-        <h3 className="font-display font-bold text-sm text-slate-900">Administrator Access Only</h3>
+        <h3 className="font-display font-bold text-sm text-slate-900">
+          Admin / Manager-HOD Access Required
+        </h3>
         <p className="text-xs text-slate-500 mt-1">
-          Staff &amp; Settings is restricted to users with the Admin role.
+          Staff &amp; Settings is restricted to users with Admin or Manager-HOD privileges.
         </p>
       </div>
     );
@@ -271,22 +309,24 @@ export const StaffSettingsView: React.FC = () => {
         </div>
 
         <div className="inline-flex p-1 bg-slate-200/70 rounded-lg no-print">
-          <button
-            type="button"
-            onClick={() => setTab('staff')}
-            className={`px-3.5 py-1.5 text-xs font-semibold rounded-md transition-colors ${
-              tab === 'staff'
-                ? 'bg-white text-slate-900 shadow-xs'
-                : 'text-slate-600 hover:text-slate-900'
-            }`}
-          >
-            Staff Directory <span className="ml-1 font-mono text-slate-400">({staff.length})</span>
-          </button>
+          {isAdmin && (
+            <button
+              type="button"
+              onClick={() => setTab('staff')}
+              className={`px-3.5 py-1.5 text-xs font-semibold rounded-md transition-colors ${
+                activeTab === 'staff'
+                  ? 'bg-white text-slate-900 shadow-xs'
+                  : 'text-slate-600 hover:text-slate-900'
+              }`}
+            >
+              Staff Directory <span className="ml-1 font-mono text-slate-400">({staff.length})</span>
+            </button>
+          )}
           <button
             type="button"
             onClick={() => setTab('settings')}
             className={`px-3.5 py-1.5 text-xs font-semibold rounded-md transition-colors ${
-              tab === 'settings'
+              activeTab === 'settings'
                 ? 'bg-white text-slate-900 shadow-xs'
                 : 'text-slate-600 hover:text-slate-900'
             }`}
@@ -297,31 +337,34 @@ export const StaffSettingsView: React.FC = () => {
         </div>
       </div>
 
-      {/* TAB 1: STAFF DIRECTORY */}
-      {tab === 'staff' && (
+      {/* TAB 1: STAFF DIRECTORY (Admin Only) */}
+      {isAdmin && activeTab === 'staff' && (
         <div className="space-y-3">
           <RegisterToolbar
             searchValue={staffSearch}
             onSearchChange={setStaffSearch}
             searchPlaceholder="Search Staff ID, Name, Email, Department..."
-            hasActiveFilters={Boolean(staffSearch || roleFilter || staffActiveFilter)}
+            hasActiveFilters={Boolean(
+              staffSearch || roleFilter || staffActiveFilter || staffExcel.hasActiveColumnFilters
+            )}
             onResetFilters={() => {
               setStaffSearch('');
               setRoleFilter('');
               setStaffActiveFilter('');
+              staffExcel.resetColumnFilters();
             }}
             columns={STAFF_COLUMNS}
             visibleColumns={staffColVis.visibleColumns}
             onToggleColumn={staffColVis.toggleColumn}
             onResetColumns={staffColVis.resetColumns}
-            recordCount={filteredStaff.length}
+            recordCount={displayedStaff.length}
             totalCount={staff.length}
             onExportExcel={() =>
               exportToExcel(
                 `TPMS_Staff_Directory_${new Date().toISOString().slice(0, 10)}.xlsx`,
                 'Staff',
                 visibleStaffCols,
-                filteredStaff.map((s) => ({
+                displayedStaff.map((s) => ({
                   ...s,
                   active: s.active ? 'Active' : 'Inactive',
                 }))
@@ -330,9 +373,9 @@ export const StaffSettingsView: React.FC = () => {
             onPrint={() =>
               printRegisterHtml(
                 'Staff Directory',
-                `Authorized staff & RBAC roles — ${filteredStaff.length} records`,
+                `Authorized staff & RBAC roles — ${displayedStaff.length} records`,
                 visibleStaffCols,
-                filteredStaff.map((s) => ({
+                displayedStaff.map((s) => ({
                   ...s,
                   active: s.active ? 'Active' : 'Inactive',
                 })),
@@ -342,9 +385,9 @@ export const StaffSettingsView: React.FC = () => {
             onSavePdf={() =>
               printRegisterHtml(
                 'Staff Directory',
-                `Authorized staff & RBAC roles — ${filteredStaff.length} records`,
+                `Authorized staff & RBAC roles — ${displayedStaff.length} records`,
                 visibleStaffCols,
-                filteredStaff.map((s) => ({
+                displayedStaff.map((s) => ({
                   ...s,
                   active: s.active ? 'Active' : 'Inactive',
                 })),
@@ -393,7 +436,19 @@ export const StaffSettingsView: React.FC = () => {
                   <tr>
                     {visibleStaffCols.map((col) => (
                       <th key={col.key} className="px-3 py-2 text-left font-semibold whitespace-nowrap">
-                        {col.label}
+                        <ExcelColumnFilter
+                          columnKey={col.key}
+                          title={col.label}
+                          values={staffExcel.getColumnValues(col.key)}
+                          selectedValues={staffExcel.columnFilters[col.key]}
+                          onChangeSelected={(next) => staffExcel.setColumnFilter(col.key, next)}
+                          sortDirection={
+                            staffExcel.sortState?.key === col.key
+                              ? staffExcel.sortState.direction
+                              : null
+                          }
+                          onSort={(dir) => staffExcel.setColumnSort(col.key, dir)}
+                        />
                       </th>
                     ))}
                     <th className="px-3 py-2 text-right font-semibold whitespace-nowrap no-print">
@@ -402,7 +457,7 @@ export const StaffSettingsView: React.FC = () => {
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-slate-100">
-                  {filteredStaff.map((s) => {
+                  {displayedStaff.map((s) => {
                     const isSelf = s.email.toLowerCase() === (user?.email || '').toLowerCase();
                     return (
                       <tr key={s.id} className="hover:bg-slate-50/90">
@@ -496,7 +551,7 @@ export const StaffSettingsView: React.FC = () => {
       )}
 
       {/* TAB 2: CONTROLLED VALUES (SETTINGS) */}
-      {tab === 'settings' && (
+      {activeTab === 'settings' && (
         <div className="space-y-3">
           {seedMessage && (
             <div className="p-3 rounded-lg bg-emerald-50 border border-emerald-200 text-xs text-emerald-800 flex items-center justify-between">
@@ -518,24 +573,27 @@ export const StaffSettingsView: React.FC = () => {
             searchValue={settingSearch}
             onSearchChange={setSettingSearch}
             searchPlaceholder="Search Group, Code, Display Name, Module, Hex..."
-            hasActiveFilters={Boolean(settingSearch || groupFilter || moduleFilter)}
+            hasActiveFilters={Boolean(
+              settingSearch || groupFilter || moduleFilter || settingsExcel.hasActiveColumnFilters
+            )}
             onResetFilters={() => {
               setSettingSearch('');
               setGroupFilter('');
               setModuleFilter('');
+              settingsExcel.resetColumnFilters();
             }}
             columns={SETTINGS_COLUMNS}
             visibleColumns={settingColVis.visibleColumns}
             onToggleColumn={settingColVis.toggleColumn}
             onResetColumns={settingColVis.resetColumns}
-            recordCount={filteredSettings.length}
+            recordCount={displayedSettings.length}
             totalCount={settings.length}
             onExportExcel={() =>
               exportToExcel(
                 `TPMS_Controlled_Settings_${new Date().toISOString().slice(0, 10)}.xlsx`,
                 'Settings',
                 visibleSettingCols,
-                filteredSettings.map((s) => ({
+                displayedSettings.map((s) => ({
                   ...s,
                   active: s.active ? 'Active' : 'Inactive',
                 }))
@@ -544,9 +602,9 @@ export const StaffSettingsView: React.FC = () => {
             onPrint={() =>
               printRegisterHtml(
                 'Controlled Values & Status Settings',
-                `${filteredSettings.length} settings records`,
+                `${displayedSettings.length} settings records`,
                 visibleSettingCols,
-                filteredSettings.map((s) => ({
+                displayedSettings.map((s) => ({
                   ...s,
                   active: s.active ? 'Active' : 'Inactive',
                 })),
@@ -556,9 +614,9 @@ export const StaffSettingsView: React.FC = () => {
             onSavePdf={() =>
               printRegisterHtml(
                 'Controlled Values & Status Settings',
-                `${filteredSettings.length} settings records`,
+                `${displayedSettings.length} settings records`,
                 visibleSettingCols,
-                filteredSettings.map((s) => ({
+                displayedSettings.map((s) => ({
                   ...s,
                   active: s.active ? 'Active' : 'Inactive',
                 })),
@@ -622,7 +680,19 @@ export const StaffSettingsView: React.FC = () => {
                   <tr>
                     {visibleSettingCols.map((col) => (
                       <th key={col.key} className="px-3 py-2 text-left font-semibold whitespace-nowrap">
-                        {col.label}
+                        <ExcelColumnFilter
+                          columnKey={col.key}
+                          title={col.label}
+                          values={settingsExcel.getColumnValues(col.key)}
+                          selectedValues={settingsExcel.columnFilters[col.key]}
+                          onChangeSelected={(next) => settingsExcel.setColumnFilter(col.key, next)}
+                          sortDirection={
+                            settingsExcel.sortState?.key === col.key
+                              ? settingsExcel.sortState.direction
+                              : null
+                          }
+                          onSort={(dir) => settingsExcel.setColumnSort(col.key, dir)}
+                        />
                       </th>
                     ))}
                     <th className="px-3 py-2 text-right font-semibold whitespace-nowrap no-print">
@@ -631,7 +701,7 @@ export const StaffSettingsView: React.FC = () => {
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-slate-100">
-                  {filteredSettings.length === 0 ? (
+                  {displayedSettings.length === 0 ? (
                     <tr>
                       <td colSpan={visibleSettingCols.length + 1} className="px-6 py-10 text-center">
                         <p className="text-xs font-semibold text-slate-700">
@@ -644,7 +714,7 @@ export const StaffSettingsView: React.FC = () => {
                       </td>
                     </tr>
                   ) : (
-                    filteredSettings.map((s) => (
+                    displayedSettings.map((s) => (
                       <tr key={s.id} className="hover:bg-slate-50/90">
                         {settingColVis.visibleColumns.group && (
                           <td className="px-3 py-2 font-mono text-[11px] font-medium text-slate-700 whitespace-nowrap">
@@ -702,14 +772,16 @@ export const StaffSettingsView: React.FC = () => {
                             >
                               <Pencil className="w-3.5 h-3.5" />
                             </button>
-                            <button
-                              type="button"
-                              onClick={() => void deleteSetting(s.id)}
-                              title="Delete setting"
-                              className="p-1.5 rounded text-slate-400 hover:text-rose-700 hover:bg-rose-50"
-                            >
-                              <Trash2 className="w-3.5 h-3.5" />
-                            </button>
+                            {isAdmin && (
+                              <button
+                                type="button"
+                                onClick={() => void deleteSetting(s.id)}
+                                title="Delete setting"
+                                className="p-1.5 rounded text-slate-400 hover:text-rose-700 hover:bg-rose-50"
+                              >
+                                <Trash2 className="w-3.5 h-3.5" />
+                              </button>
+                            )}
                           </div>
                         </td>
                       </tr>

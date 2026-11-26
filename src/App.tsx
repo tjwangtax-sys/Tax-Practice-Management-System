@@ -21,7 +21,7 @@ import { StaffSettingsView } from './modules/Admin/StaffSettingsView';
 import { NavigationFilterPreset, NavRoute } from './types/tpms';
 
 const AppWorkspace: React.FC = () => {
-  const { accessStatus, isAdmin } = useAuth();
+  const { accessStatus, isManagerOrAdmin } = useAuth();
   const [activeRoute, setActiveRoute] = useState<NavRoute>('dashboard');
   const [navPreset, setNavPreset] = useState<NavigationFilterPreset | null>(null);
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
@@ -33,7 +33,7 @@ const AppWorkspace: React.FC = () => {
   }
 
   const handleSelectRoute = (route: NavRoute, preset?: Omit<NavigationFilterPreset, 'nonce'>) => {
-    if (route === 'staff-settings' && !isAdmin) return;
+    if (route === 'staff-settings' && !isManagerOrAdmin) return;
     if (preset) {
       setNavPreset({ ...preset, nonce: Date.now() });
     } else {

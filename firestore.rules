@@ -650,15 +650,15 @@ service cloud.firestore {
         && isValidSetting(incoming())
         && incoming().createdAt == request.time
         && incoming().updatedAt == request.time
-        && hasRole(['Admin']);
+        && isManagerOrAdmin();
       allow update: if isVerifiedUser()
         && isValidId(settingId)
         && isValidSetting(incoming())
         && incoming().createdAt == existing().createdAt
         && incoming().updatedAt == request.time
         && incoming().diff(existing()).affectedKeys().hasOnly(['group', 'code', 'displayName', 'module', 'badgeColor', 'active', 'sortOrder', 'updatedAt'])
-        && hasRole(['Admin']);
-      allow delete: if isVerifiedUser() && isValidId(settingId) && hasRole(['Admin']);
+        && isManagerOrAdmin();
+      allow delete: if isVerifiedUser() && isValidId(settingId) && isAdmin();
     }
 
     // 3. Client Master (40 fields + 4 relational schedules)

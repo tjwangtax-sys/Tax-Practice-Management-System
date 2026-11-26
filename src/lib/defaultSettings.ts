@@ -14,11 +14,12 @@ export const SETTING_GROUPS = [
   'CLIENT_CATEGORY',
   'SME_STATUS',
   'MYTAX_APPOINTMENT',
-  'EINVOICE_STATUS',
+  'E_INVOICE_STATUS',
   'ENGAGEMENT_STATUS',
   'BUSINESS_STATUS',
   'YA_STATUS',
   'TAX_AGENT',
+  'JOB_TYPE',
   'JOB_STATUS',
   'CP204_STATUS',
   'CORP_STATUS',
@@ -26,10 +27,13 @@ export const SETTING_GROUPS = [
   'FORM_E_STATUS',
   'PAYMENT_STATUS',
   'CORRESPONDENCE_STATUS',
+  'CORRESPONDENCE_CATEGORY',
+  'LETTER_TYPE',
+  'METHOD_RECEIVED',
+  'CORRESPONDENCE_TYPE',
   'BILLING_STATUS',
   'WORK_DONE_DESCRIPTION',
   'PRIORITY',
-  'CORRESPONDENCE_TYPE',
 ] as const;
 
 export const SETTING_MODULES = [
@@ -73,12 +77,14 @@ export const DEFAULT_MALAYSIAN_TAX_SETTINGS: SeedSettingTemplate[] = [
   { id: 'MYTAX_NONE', group: 'MYTAX_APPOINTMENT', code: 'NOT_APPOINTED', displayName: 'Not Appointed', module: 'Client Master', badgeColor: '#64748B', active: true, sortOrder: 3 },
   { id: 'MYTAX_REV', group: 'MYTAX_APPOINTMENT', code: 'REVOKED', displayName: 'Revoked', module: 'Client Master', badgeColor: '#B91C1C', active: true, sortOrder: 4 },
 
-  // EINVOICE_STATUS (Malaysian LHDN MyInvois Phased Rollout)
-  { id: 'EINV_P1', group: 'EINVOICE_STATUS', code: 'PHASE_1', displayName: 'Phase 1 (>RM100M)', module: 'Client Master', badgeColor: '#1D4ED8', active: true, sortOrder: 1 },
-  { id: 'EINV_P2', group: 'EINVOICE_STATUS', code: 'PHASE_2', displayName: 'Phase 2 (RM25M–100M)', module: 'Client Master', badgeColor: '#0369A1', active: true, sortOrder: 2 },
-  { id: 'EINV_P3', group: 'EINVOICE_STATUS', code: 'PHASE_3', displayName: 'Phase 3 (RM5M–25M)', module: 'Client Master', badgeColor: '#0F766E', active: true, sortOrder: 3 },
-  { id: 'EINV_P4', group: 'EINVOICE_STATUS', code: 'PHASE_4', displayName: 'Phase 4 (RM1M–5M)', module: 'Client Master', badgeColor: '#B45309', active: true, sortOrder: 4 },
-  { id: 'EINV_EXEMPT', group: 'EINVOICE_STATUS', code: 'EXEMPT', displayName: 'Exempt (<RM500k)', module: 'Client Master', badgeColor: '#64748B', active: true, sortOrder: 5 },
+  // E_INVOICE_STATUS (Malaysian LHDN e-Invoice General Guideline v4.8)
+  { id: 'EINV_P1', group: 'E_INVOICE_STATUS', code: 'PHASE_1', displayName: 'Phase 1 (>RM100M)', module: 'Client Master', badgeColor: '#1D4ED8', active: true, sortOrder: 1 },
+  { id: 'EINV_P2', group: 'E_INVOICE_STATUS', code: 'PHASE_2', displayName: 'Phase 2 (RM25M–100M)', module: 'Client Master', badgeColor: '#0369A1', active: true, sortOrder: 2 },
+  { id: 'EINV_P3', group: 'E_INVOICE_STATUS', code: 'PHASE_3', displayName: 'Phase 3 (RM5M–25M)', module: 'Client Master', badgeColor: '#0F766E', active: true, sortOrder: 3 },
+  { id: 'EINV_P4', group: 'E_INVOICE_STATUS', code: 'PHASE_4', displayName: 'Phase 4 (RM3M–5M)', module: 'Client Master', badgeColor: '#B45309', active: true, sortOrder: 4 },
+  { id: 'EINV_EXEMPT', group: 'E_INVOICE_STATUS', code: 'EXEMPT', displayName: 'Exempt (<RM3M)', module: 'Client Master', badgeColor: '#64748B', active: true, sortOrder: 5 },
+  { id: 'EINV_VOLUNTARY', group: 'E_INVOICE_STATUS', code: 'VOLUNTARY_IMPLEMENTED', displayName: 'Voluntary / Implemented', module: 'Client Master', badgeColor: '#15803D', active: true, sortOrder: 6 },
+  { id: 'EINV_NA', group: 'E_INVOICE_STATUS', code: 'NOT_APPLICABLE', displayName: 'Not Applicable', module: 'Client Master', badgeColor: '#475569', active: true, sortOrder: 7 },
 
   // ENGAGEMENT_STATUS
   { id: 'ENG_SIGNED', group: 'ENGAGEMENT_STATUS', code: 'SIGNED', displayName: 'LOE Signed', module: 'Client Master', badgeColor: '#15803D', active: true, sortOrder: 1 },
@@ -96,6 +102,24 @@ export const DEFAULT_MALAYSIAN_TAX_SETTINGS: SeedSettingTemplate[] = [
   { id: 'YA_WIP', group: 'YA_STATUS', code: 'IN_PROGRESS', displayName: 'In Progress', module: 'Client Master', badgeColor: '#0369A1', active: true, sortOrder: 2 },
   { id: 'YA_PENDING', group: 'YA_STATUS', code: 'PENDING_DOCS', displayName: 'Pending Docs', module: 'Client Master', badgeColor: '#B45309', active: true, sortOrder: 3 },
   { id: 'YA_EXEMPT', group: 'YA_STATUS', code: 'EXEMPT_DORMANT', displayName: 'Exempt / Not Applicable', module: 'Client Master', badgeColor: '#64748B', active: true, sortOrder: 4 },
+
+  // JOB_TYPE
+  { id: 'JT_FORM_C', group: 'JOB_TYPE', code: 'FORM_C', displayName: 'Form C', module: 'Corporate', badgeColor: '#0F766E', active: true, sortOrder: 1 },
+  { id: 'JT_FORM_B', group: 'JOB_TYPE', code: 'FORM_B', displayName: 'Form B', module: 'Individual', badgeColor: '#0369A1', active: true, sortOrder: 2 },
+  { id: 'JT_FORM_BE', group: 'JOB_TYPE', code: 'FORM_BE', displayName: 'Form BE', module: 'Individual', badgeColor: '#0284C7', active: true, sortOrder: 3 },
+  { id: 'JT_FORM_M', group: 'JOB_TYPE', code: 'FORM_M', displayName: 'Form M', module: 'Individual', badgeColor: '#1D4ED8', active: true, sortOrder: 4 },
+  { id: 'JT_FORM_P', group: 'JOB_TYPE', code: 'FORM_P', displayName: 'Form P', module: 'Individual', badgeColor: '#4338CA', active: true, sortOrder: 5 },
+  { id: 'JT_FORM_E', group: 'JOB_TYPE', code: 'FORM_E', displayName: 'Form E', module: 'Form E', badgeColor: '#B45309', active: true, sortOrder: 6 },
+  { id: 'JT_CP204', group: 'JOB_TYPE', code: 'CP204', displayName: 'CP204', module: 'CP204', badgeColor: '#1E40AF', active: true, sortOrder: 7 },
+  { id: 'JT_CP204A', group: 'JOB_TYPE', code: 'CP204A', displayName: 'CP204A', module: 'CP204', badgeColor: '#7C3AED', active: true, sortOrder: 8 },
+  { id: 'JT_CP204B', group: 'JOB_TYPE', code: 'CP204B', displayName: 'CP204B', module: 'CP204', badgeColor: '#6D28D9', active: true, sortOrder: 9 },
+  { id: 'JT_MITRS', group: 'JOB_TYPE', code: 'MITRS', displayName: 'MITRS', module: 'Corporate', badgeColor: '#047857', active: true, sortOrder: 10 },
+  { id: 'JT_TAX_AUDIT', group: 'JOB_TYPE', code: 'TAX_AUDIT', displayName: 'Tax Audit', module: 'Ad Hoc', badgeColor: '#C2410C', active: true, sortOrder: 11 },
+  { id: 'JT_RPGT', group: 'JOB_TYPE', code: 'RPGT_CKHT', displayName: 'RPGT / CKHT', module: 'Ad Hoc', badgeColor: '#9A3412', active: true, sortOrder: 12 },
+  { id: 'JT_TAX_APPEAL', group: 'JOB_TYPE', code: 'TAX_APPEAL', displayName: 'Tax Appeal', module: 'Ad Hoc', badgeColor: '#B91C1C', active: true, sortOrder: 13 },
+  { id: 'JT_TAX_REFUND', group: 'JOB_TYPE', code: 'TAX_REFUND', displayName: 'Tax Refund', module: 'Ad Hoc', badgeColor: '#15803D', active: true, sortOrder: 14 },
+  { id: 'JT_TAX_RESIDENCY', group: 'JOB_TYPE', code: 'TAX_RESIDENCY', displayName: 'Tax Residency', module: 'Ad Hoc', badgeColor: '#0E7490', active: true, sortOrder: 15 },
+  { id: 'JT_OTHER', group: 'JOB_TYPE', code: 'OTHER', displayName: 'Other', module: 'Ad Hoc', badgeColor: '#64748B', active: true, sortOrder: 16 },
 
   // JOB_STATUS (Global / All Jobs)
   { id: 'JS_NOT_STARTED', group: 'JOB_STATUS', code: 'NOT_STARTED', displayName: 'Not Started', module: 'All Jobs', badgeColor: '#64748B', active: true, sortOrder: 1 },
@@ -128,6 +152,29 @@ export const DEFAULT_MALAYSIAN_TAX_SETTINGS: SeedSettingTemplate[] = [
   { id: 'CORR_REPLIED', group: 'CORRESPONDENCE_STATUS', code: 'REPLIED', displayName: 'Replied to LHDN', module: 'Correspondence', badgeColor: '#0F766E', active: true, sortOrder: 3 },
   { id: 'CORR_CLOSED', group: 'CORRESPONDENCE_STATUS', code: 'CLOSED', displayName: 'Closed / Resolved', module: 'Correspondence', badgeColor: '#15803D', active: true, sortOrder: 4 },
   { id: 'CORR_ESCALATED', group: 'CORRESPONDENCE_STATUS', code: 'APPEAL', displayName: 'Form Q / Appeal', module: 'Correspondence', badgeColor: '#B91C1C', active: true, sortOrder: 5 },
+
+  // CORRESPONDENCE_CATEGORY
+  { id: 'CCAT_LHDN', group: 'CORRESPONDENCE_CATEGORY', code: 'LHDN', displayName: 'LHDN', module: 'Correspondence', badgeColor: '#1D4ED8', active: true, sortOrder: 1 },
+  { id: 'CCAT_SSM', group: 'CORRESPONDENCE_CATEGORY', code: 'SSM', displayName: 'SSM', module: 'Correspondence', badgeColor: '#7C3AED', active: true, sortOrder: 2 },
+  { id: 'CCAT_CLIENT', group: 'CORRESPONDENCE_CATEGORY', code: 'CLIENT', displayName: 'Client', module: 'Correspondence', badgeColor: '#0F766E', active: true, sortOrder: 3 },
+  { id: 'CCAT_AUDITOR', group: 'CORRESPONDENCE_CATEGORY', code: 'AUDITOR', displayName: 'Auditor', module: 'Correspondence', badgeColor: '#B45309', active: true, sortOrder: 4 },
+  { id: 'CCAT_OTHER', group: 'CORRESPONDENCE_CATEGORY', code: 'OTHER', displayName: 'Other', module: 'Correspondence', badgeColor: '#64748B', active: true, sortOrder: 5 },
+
+  // LETTER_TYPE
+  { id: 'LT_NOTICE', group: 'LETTER_TYPE', code: 'NOTICE', displayName: 'Notice', module: 'Correspondence', badgeColor: '#0369A1', active: true, sortOrder: 1 },
+  { id: 'LT_QUERY', group: 'LETTER_TYPE', code: 'QUERY', displayName: 'Query', module: 'Correspondence', badgeColor: '#B45309', active: true, sortOrder: 2 },
+  { id: 'LT_ASSESSMENT', group: 'LETTER_TYPE', code: 'ASSESSMENT', displayName: 'Assessment', module: 'Correspondence', badgeColor: '#7C3AED', active: true, sortOrder: 3 },
+  { id: 'LT_AUDIT', group: 'LETTER_TYPE', code: 'AUDIT', displayName: 'Audit', module: 'Correspondence', badgeColor: '#B91C1C', active: true, sortOrder: 4 },
+  { id: 'LT_APPEAL', group: 'LETTER_TYPE', code: 'APPEAL', displayName: 'Appeal', module: 'Correspondence', badgeColor: '#C2410C', active: true, sortOrder: 5 },
+  { id: 'LT_REMINDER', group: 'LETTER_TYPE', code: 'REMINDER', displayName: 'Reminder', module: 'Correspondence', badgeColor: '#0F766E', active: true, sortOrder: 6 },
+  { id: 'LT_OTHER', group: 'LETTER_TYPE', code: 'OTHER', displayName: 'Other', module: 'Correspondence', badgeColor: '#64748B', active: true, sortOrder: 7 },
+
+  // METHOD_RECEIVED
+  { id: 'MR_EMAIL', group: 'METHOD_RECEIVED', code: 'EMAIL', displayName: 'Email', module: 'Correspondence', badgeColor: '#0369A1', active: true, sortOrder: 1 },
+  { id: 'MR_POST', group: 'METHOD_RECEIVED', code: 'POST', displayName: 'Post', module: 'Correspondence', badgeColor: '#475569', active: true, sortOrder: 2 },
+  { id: 'MR_PORTAL', group: 'METHOD_RECEIVED', code: 'PORTAL', displayName: 'Portal', module: 'Correspondence', badgeColor: '#0F766E', active: true, sortOrder: 3 },
+  { id: 'MR_HAND', group: 'METHOD_RECEIVED', code: 'HAND_DELIVERED', displayName: 'Hand Delivered', module: 'Correspondence', badgeColor: '#B45309', active: true, sortOrder: 4 },
+  { id: 'MR_OTHER', group: 'METHOD_RECEIVED', code: 'OTHER', displayName: 'Other', module: 'Correspondence', badgeColor: '#64748B', active: true, sortOrder: 5 },
 
   // CORRESPONDENCE_TYPE
   { id: 'CT_DESK', group: 'CORRESPONDENCE_TYPE', code: 'DESK_AUDIT', displayName: 'LHDN Desk Audit', module: 'Correspondence', badgeColor: '#B45309', active: true, sortOrder: 1 },

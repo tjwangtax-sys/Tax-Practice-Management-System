@@ -13,6 +13,7 @@ import {
 import { useAuth } from '../../context/AuthContext';
 import { useData } from '../../context/DataContext';
 import { StatusPill } from '../../components/StatusPill';
+import { buildDynamicSelectOptions } from '../../lib/settingsDropdown';
 
 interface ClientModalProps {
   open: boolean;
@@ -165,16 +166,54 @@ export const ClientModal: React.FC<ClientModalProps> = ({
   if (!open) return null;
 
   const isEdit = Boolean(client);
-  const statusOptions = (() => {
-    const seeded = getSettingsByGroup('CLIENT_STATUS').map((s) => s.displayName);
-    return seeded.length > 0 ? seeded : [...CLIENT_STATUS_OPTIONS];
-  })();
-  const smeOptions = getSettingsByGroup('SME_STATUS').map((s) => s.displayName);
-  const myTaxOptions = getSettingsByGroup('MYTAX_APPOINTMENT').map((s) => s.displayName);
-  const eInvoiceOptions = getSettingsByGroup('EINVOICE_STATUS').map((s) => s.displayName);
-  const engagementOptions = getSettingsByGroup('ENGAGEMENT_STATUS').map((s) => s.displayName);
-  const businessStatusOptions = getSettingsByGroup('BUSINESS_STATUS').map((s) => s.displayName);
-  const yaStatusOptions = getSettingsByGroup('YA_STATUS').map((s) => s.displayName);
+  const statusOptions = buildDynamicSelectOptions(
+    getSettingsByGroup('CLIENT_STATUS'),
+    CLIENT_STATUS_OPTIONS,
+    form.clientStatus
+  );
+  const smeOptions = buildDynamicSelectOptions(
+    getSettingsByGroup('SME_STATUS'),
+    ['SME', 'Non-SME', 'N/A'],
+    form.smeStatus
+  );
+  const myTaxOptions = buildDynamicSelectOptions(
+    getSettingsByGroup('MYTAX_APPOINTMENT'),
+    ['Appointed', 'Pending', 'Not Appointed', 'Revoked'],
+    form.myTaxAppointment
+  );
+  const eInvoiceOptions = buildDynamicSelectOptions(
+    getSettingsByGroup('E_INVOICE_STATUS'),
+    [
+      'Phase 1 (>RM100M)',
+      'Phase 2 (RM25M–100M)',
+      'Phase 3 (RM5M–25M)',
+      'Phase 4 (RM3M–5M)',
+      'Exempt (<RM3M)',
+      'Voluntary / Implemented',
+      'Not Applicable',
+    ],
+    form.eInvoiceStatus
+  );
+  const engagementOptions = buildDynamicSelectOptions(
+    getSettingsByGroup('ENGAGEMENT_STATUS'),
+    ['LOE Signed', 'Pending LOE', 'Renewal Due', 'Terminated'],
+    form.engagementStatus
+  );
+  const businessStatusOptions = buildDynamicSelectOptions(
+    getSettingsByGroup('BUSINESS_STATUS'),
+    ['Operating', 'Dormant', 'Ceased'],
+    form.businessStatus
+  );
+  const firstYaStatusOptions = buildDynamicSelectOptions(
+    getSettingsByGroup('YA_STATUS'),
+    ['Filed', 'In Progress', 'Pending Docs', 'Exempt / Not Applicable'],
+    form.firstYaStatus
+  );
+  const secondYaStatusOptions = buildDynamicSelectOptions(
+    getSettingsByGroup('YA_STATUS'),
+    ['Filed', 'In Progress', 'Pending Docs', 'Exempt / Not Applicable'],
+    form.secondYaStatus
+  );
 
   const activeStaffNames = staff.filter((s) => s.active).map((s) => s.staffName);
 
@@ -515,8 +554,8 @@ export const ClientModal: React.FC<ClientModalProps> = ({
                         className={inputCls}
                       >
                         {statusOptions.map((opt) => (
-                          <option key={opt} value={opt}>
-                            {opt}
+                          <option key={opt.value} value={opt.value}>
+                            {opt.label}
                           </option>
                         ))}
                       </select>
@@ -530,12 +569,9 @@ export const ClientModal: React.FC<ClientModalProps> = ({
                         className={inputCls}
                       >
                         <option value="">Select Engagement Status</option>
-                        {(engagementOptions.length > 0
-                          ? engagementOptions
-                          : ['LOE Signed', 'Pending LOE', 'Renewal Due', 'Terminated']
-                        ).map((opt) => (
-                          <option key={opt} value={opt}>
-                            {opt}
+                        {engagementOptions.map((opt) => (
+                          <option key={opt.value} value={opt.value}>
+                            {opt.label}
                           </option>
                         ))}
                       </select>
@@ -558,13 +594,11 @@ export const ClientModal: React.FC<ClientModalProps> = ({
                         className={inputCls}
                       >
                         <option value="">Select SME Status</option>
-                        {(smeOptions.length > 0 ? smeOptions : ['SME', 'Non-SME', 'N/A']).map(
-                          (opt) => (
-                            <option key={opt} value={opt}>
-                              {opt}
-                            </option>
-                          )
-                        )}
+                        {smeOptions.map((opt) => (
+                          <option key={opt.value} value={opt.value}>
+                            {opt.label}
+                          </option>
+                        ))}
                       </select>
                     </div>
                     <div>
@@ -588,12 +622,9 @@ export const ClientModal: React.FC<ClientModalProps> = ({
                         className={inputCls}
                       >
                         <option value="">Select Status</option>
-                        {(myTaxOptions.length > 0
-                          ? myTaxOptions
-                          : ['Appointed', 'Pending', 'Not Appointed', 'Revoked']
-                        ).map((opt) => (
-                          <option key={opt} value={opt}>
-                            {opt}
+                        {myTaxOptions.map((opt) => (
+                          <option key={opt.value} value={opt.value}>
+                            {opt.label}
                           </option>
                         ))}
                       </select>
@@ -607,18 +638,9 @@ export const ClientModal: React.FC<ClientModalProps> = ({
                         className={inputCls}
                       >
                         <option value="">Select Phase</option>
-                        {(eInvoiceOptions.length > 0
-                          ? eInvoiceOptions
-                          : [
-                              'Phase 1 (>RM100M)',
-                              'Phase 2 (RM25M–100M)',
-                              'Phase 3 (RM5M–25M)',
-                              'Phase 4 (RM1M–5M)',
-                              'Exempt (<RM500k)',
-                            ]
-                        ).map((opt) => (
-                          <option key={opt} value={opt}>
-                            {opt}
+                        {eInvoiceOptions.map((opt) => (
+                          <option key={opt.value} value={opt.value}>
+                            {opt.label}
                           </option>
                         ))}
                       </select>
@@ -848,12 +870,9 @@ export const ClientModal: React.FC<ClientModalProps> = ({
                         className={inputCls}
                       >
                         <option value="">Select Business Status</option>
-                        {(businessStatusOptions.length > 0
-                          ? businessStatusOptions
-                          : ['Operating', 'Dormant', 'Ceased']
-                        ).map((opt) => (
-                          <option key={opt} value={opt}>
-                            {opt}
+                        {businessStatusOptions.map((opt) => (
+                          <option key={opt.value} value={opt.value}>
+                            {opt.label}
                           </option>
                         ))}
                       </select>
@@ -888,12 +907,9 @@ export const ClientModal: React.FC<ClientModalProps> = ({
                         className={inputCls}
                       >
                         <option value="">Select YA Status</option>
-                        {(yaStatusOptions.length > 0
-                          ? yaStatusOptions
-                          : ['Filed', 'In Progress', 'Pending Docs', 'Exempt / Not Applicable']
-                        ).map((opt) => (
-                          <option key={opt} value={opt}>
-                            {opt}
+                        {firstYaStatusOptions.map((opt) => (
+                          <option key={opt.value} value={opt.value}>
+                            {opt.label}
                           </option>
                         ))}
                       </select>
@@ -919,12 +935,9 @@ export const ClientModal: React.FC<ClientModalProps> = ({
                         className={inputCls}
                       >
                         <option value="">Select YA Status</option>
-                        {(yaStatusOptions.length > 0
-                          ? yaStatusOptions
-                          : ['Filed', 'In Progress', 'Pending Docs', 'Exempt / Not Applicable']
-                        ).map((opt) => (
-                          <option key={opt} value={opt}>
-                            {opt}
+                        {secondYaStatusOptions.map((opt) => (
+                          <option key={opt.value} value={opt.value}>
+                            {opt.label}
                           </option>
                         ))}
                       </select>
@@ -1551,12 +1564,13 @@ export const ClientModal: React.FC<ClientModalProps> = ({
                                 }}
                                 className={inputCls}
                               >
-                                {(yaStatusOptions.length > 0
-                                  ? yaStatusOptions
-                                  : ['Filed', 'In Progress', 'Pending Docs', 'Exempt / Not Applicable']
+                                {buildDynamicSelectOptions(
+                                  getSettingsByGroup('YA_STATUS'),
+                                  ['Filed', 'In Progress', 'Pending Docs', 'Exempt / Not Applicable'],
+                                  item.yaStatus
                                 ).map((opt) => (
-                                  <option key={opt} value={opt}>
-                                    {opt}
+                                  <option key={opt.value} value={opt.value}>
+                                    {opt.label}
                                   </option>
                                 ))}
                               </select>

@@ -10,6 +10,8 @@ import {
 import { useAuth } from '../../context/AuthContext';
 import { useData } from '../../context/DataContext';
 import { useColumnVisibility } from '../../hooks/useColumnVisibility';
+import { useExcelTableFilters } from '../../hooks/useExcelTableFilters';
+import { ExcelColumnFilter } from '../../components/ExcelColumnFilter';
 import { RegisterToolbar } from '../../components/RegisterToolbar';
 import { StatusPill } from '../../components/StatusPill';
 import { exportToExcel, printRegisterHtml } from '../../lib/exportUtils';
@@ -117,8 +119,38 @@ export const ClientMasterView: React.FC = () => {
     });
   }, [clients, activeTab, search, groupFilter, categoryFilter, fyeFilter, statusFilter]);
 
+  const clientValueGetters = useMemo(
+    () => ({
+      clientId: (c: ClientRecord) => c.clientId,
+      clientName: (c: ClientRecord) => c.clientName,
+      category: (c: ClientRecord) => c.category,
+      groupId: (c: ClientRecord) => c.groupId,
+      fye: (c: ClientRecord) => c.fye,
+      taxPic: (c: ClientRecord) => c.taxPic,
+      clientStatus: (c: ClientRecord) => c.clientStatus,
+      taxAgent: (c: ClientRecord) => c.taxAgent,
+      companyNo: (c: ClientRecord) => c.companyNo,
+      tin: (c: ClientRecord) => c.tin,
+      eNumber: (c: ClientRecord) => c.eNumber,
+      myTaxAppointment: (c: ClientRecord) => c.myTaxAppointment,
+      dateOfIncorporation: (c: ClientRecord) => c.dateOfIncorporation,
+      dateOfCommencementBusiness: (c: ClientRecord) => c.dateOfCommencementBusiness,
+      companySecretary: (c: ClientRecord) => c.companySecretary,
+      specialRemarks: (c: ClientRecord) => c.specialRemarks,
+    }),
+    []
+  );
+
+  const excel = useExcelTableFilters(filteredClients, clientValueGetters);
+  const displayedClients = excel.rows;
+
   const hasActiveFilters = Boolean(
-    search || groupFilter || categoryFilter || fyeFilter || statusFilter
+    search ||
+      groupFilter ||
+      categoryFilter ||
+      fyeFilter ||
+      statusFilter ||
+      excel.hasActiveColumnFilters
   );
 
   const handleResetFilters = () => {
@@ -127,12 +159,13 @@ export const ClientMasterView: React.FC = () => {
     setCategoryFilter('');
     setFyeFilter('');
     setStatusFilter('');
+    excel.resetColumnFilters();
   };
 
   const activeExportCols = CLIENT_COLUMNS.filter((c) => visibleColumns[c.key]);
 
   const buildExportRows = () =>
-    filteredClients.map((c) => ({
+    displayedClients.map((c) => ({
       clientId: c.clientId,
       clientName: c.clientName,
       category: c.category,
@@ -235,7 +268,7 @@ export const ClientMasterView: React.FC = () => {
         visibleColumns={visibleColumns}
         onToggleColumn={toggleColumn}
         onResetColumns={resetColumns}
-        recordCount={filteredClients.length}
+        recordCount={displayedClients.length}
         totalCount={clients.length}
         onExportExcel={() =>
           exportToExcel(
@@ -248,7 +281,7 @@ export const ClientMasterView: React.FC = () => {
         onPrint={() =>
           printRegisterHtml(
             `Client Master (${activeTab})`,
-            `Filtered client register — ${filteredClients.length} records`,
+            `Filtered client register — ${displayedClients.length} records`,
             activeExportCols,
             buildExportRows(),
             false
@@ -257,7 +290,7 @@ export const ClientMasterView: React.FC = () => {
         onSavePdf={() =>
           printRegisterHtml(
             `Client Master (${activeTab})`,
-            `Filtered client register — ${filteredClients.length} records`,
+            `Filtered client register — ${displayedClients.length} records`,
             activeExportCols,
             buildExportRows(),
             true
@@ -344,7 +377,17 @@ export const ClientMasterView: React.FC = () => {
                     key={col.key}
                     className="px-3 py-2 text-left font-semibold whitespace-nowrap border-b border-slate-200"
                   >
-                    {col.label}
+                    <ExcelColumnFilter
+                      columnKey={col.key}
+                      title={col.label}
+                      values={excel.getColumnValues(col.key)}
+                      selectedValues={excel.columnFilters[col.key]}
+                      onChangeSelected={(next) => excel.setColumnFilter(col.key, next)}
+                      sortDirection={
+                        excel.sortState?.key === col.key ? excel.sortState.direction : null
+                      }
+                      onSort={(dir) => excel.setColumnSort(col.key, dir)}
+                    />
                   </th>
                 ))}
                 <th className="px-3 py-2 text-right font-semibold whitespace-nowrap border-b border-slate-200 no-print">
@@ -361,7 +404,7 @@ export const ClientMasterView: React.FC = () => {
                     </td>
                   </tr>
                 ))
-              ) : filteredClients.length === 0 ? (
+              ) : displayedClients.length === 0 ? (
                 <tr>
                   <td colSpan={activeExportCols.length + 1} className="px-6 py-12 text-center">
                     <Building2 className="w-8 h-8 text-slate-300 mx-auto mb-2" />
@@ -386,7 +429,7 @@ export const ClientMasterView: React.FC = () => {
                   </td>
                 </tr>
               ) : (
-                filteredClients.map((c) => {
+                displayedClients.map((c) => {
                   const isResigned = c.clientStatus.toLowerCase() === 'resigned';
                   return (
                     <tr key={c.id} className="hover:bg-slate-50/90 transition-colors">

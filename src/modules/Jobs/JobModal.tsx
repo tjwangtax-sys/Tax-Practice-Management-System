@@ -14,6 +14,7 @@ import {
 } from 'lucide-react';
 import {
   ChecklistStepStatus,
+  ClientRecord,
   DocumentFollowupItem,
   FYE_MONTHS,
   JOB_TYPES,
@@ -32,6 +33,8 @@ import {
 import { useAuth } from '../../context/AuthContext';
 import { JobSavePayload, useData } from '../../context/DataContext';
 import { StatusPill } from '../../components/StatusPill';
+import { ClientSelectorField } from '../../components/ClientSelectorField';
+import { buildDynamicSelectOptions } from '../../lib/settingsDropdown';
 
 export type JobModalTab = 'core' | 'workflow' | 'checklist' | 'followups' | 'history';
 
@@ -315,22 +318,17 @@ export const JobModal: React.FC<JobModalProps> = ({
       ? 'CORRESPONDENCE_STATUS'
       : 'JOB_STATUS';
 
+  const jobTypeOptions = buildDynamicSelectOptions(
+    getSettingsByGroup('JOB_TYPE'),
+    JOB_TYPES,
+    liveForm.jobType || 'Other'
+  );
+
   const statusOptions = (() => {
-    const specific = getSettingsByGroup(statusGroup).map((s) => s.displayName);
-    const general = getSettingsByGroup('JOB_STATUS').map((s) => s.displayName);
-    const merged = Array.from(new Set([...specific, ...general]));
-    if (merged.length > 0) {
-      if (!merged.includes('Pending MITRS')) {
-        const compIdx = merged.indexOf('Completed');
-        if (compIdx >= 0) {
-          merged.splice(compIdx, 0, 'Pending MITRS');
-        } else {
-          merged.push('Pending MITRS');
-        }
-      }
-      return merged;
-    }
-    return [
+    const specific = getSettingsByGroup(statusGroup);
+    const general = getSettingsByGroup('JOB_STATUS');
+    const combinedSettings = [...specific, ...general];
+    const fallback = [
       'Not Started',
       'Pending Docs',
       'In Progress',
@@ -341,12 +339,23 @@ export const JobModal: React.FC<JobModalProps> = ({
       'Completed',
       'On Hold',
     ];
+    const built = buildDynamicSelectOptions(combinedSettings, fallback, liveForm.status);
+    if (!built.some((o) => o.value === 'Pending MITRS')) {
+      const compIdx = built.findIndex((o) => o.value === 'Completed');
+      if (compIdx >= 0) {
+        built.splice(compIdx, 0, { value: 'Pending MITRS', label: 'Pending MITRS' });
+      } else {
+        built.push({ value: 'Pending MITRS', label: 'Pending MITRS' });
+      }
+    }
+    return built;
   })();
 
-  const priorityOptions = (() => {
-    const list = getSettingsByGroup('PRIORITY').map((s) => s.displayName);
-    return list.length > 0 ? list : ['Urgent', 'High', 'Normal', 'Low'];
-  })();
+  const priorityOptions = buildDynamicSelectOptions(
+    getSettingsByGroup('PRIORITY'),
+    ['Urgent', 'High', 'Normal', 'Low'],
+    liveForm.priority
+  );
 
   const billingOptions = (() => {
     const list = getSettingsByGroup('BILLING_STATUS').map((s) => s.displayName);
@@ -381,9 +390,11 @@ export const JobModal: React.FC<JobModalProps> = ({
     );
   };
 
-  const handleSelectClient = (clientDocId: string) => {
-    const found = clients.find((c) => c.id === clientDocId);
-    if (!found) return;
+  const handleSelectClient = (found: ClientRecord | null) => {
+    if (!found) {
+      patchForm({ clientDocId: '', clientId: '', clientName: '' });
+      return;
+    }
     const fyeChanged = Boolean(found.fye && found.fye !== form.fye);
     patchForm(
       {
@@ -552,28 +563,21 @@ export const JobModal: React.FC<JobModalProps> = ({
                       }
                       className={inputCls}
                     >
-                      {JOB_TYPES.map((jt) => (
-                        <option key={jt} value={jt}>
-                          {jt}
+                      {jobTypeOptions.map((jt) => (
+                        <option key={jt.value} value={jt.value}>
+                          {jt.label}
                         </option>
                       ))}
                     </select>
                   </div>
-                  <div>
-                    <label className={labelCls}>Quick-Select Client Master</label>
-                    <select
+                  <div className="sm:col-span-2 lg:col-span-4">
+                    <ClientSelectorField
+                      clients={clients}
+                      value={liveForm.clientId}
+                      onSelectClient={handleSelectClient}
                       disabled={effectiveReadOnly}
-                      value={liveForm.clientDocId}
-                      onChange={(e) => handleSelectClient(e.target.value)}
-                      className={inputCls}
-                    >
-                      <option value="">— Auto-fill from Client Master —</option>
-                      {clients.map((c) => (
-                        <option key={c.id} value={c.id}>
-                          {c.clientId} — {c.clientName} (FYE {c.fye || '-'})
-                        </option>
-                      ))}
-                    </select>
+                      label="Client Picker (Search by Name, Client ID, Company No. or TIN)"
+                    />
                   </div>
 
                   <div>
@@ -680,8 +684,8 @@ export const JobModal: React.FC<JobModalProps> = ({
                       className={inputCls}
                     >
                       {statusOptions.map((s) => (
-                        <option key={s} value={s}>
-                          {s}
+                        <option key={s.value} value={s.value}>
+                          {s.label}
                         </option>
                       ))}
                     </select>
@@ -695,8 +699,8 @@ export const JobModal: React.FC<JobModalProps> = ({
                       className={inputCls}
                     >
                       {priorityOptions.map((p) => (
-                        <option key={p} value={p}>
-                          {p}
+                        <option key={p.value} value={p.value}>
+                          {p.label}
                         </option>
                       ))}
                     </select>

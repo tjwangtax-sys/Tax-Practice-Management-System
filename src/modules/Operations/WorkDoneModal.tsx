@@ -10,6 +10,7 @@ import {
   Receipt,
 } from 'lucide-react';
 import {
+  ClientRecord,
   FINANCE_INVOICE_STATUSES,
   FinanceInvoiceStatus,
   formatCurrencyRM,
@@ -23,6 +24,8 @@ import {
 } from '../../types/tpms';
 import { useAuth } from '../../context/AuthContext';
 import { useData, WorkDoneSavePayload } from '../../context/DataContext';
+import { ClientSelectorField } from '../../components/ClientSelectorField';
+import { buildDynamicSelectOptions } from '../../lib/settingsDropdown';
 
 interface WorkDoneModalProps {
   open: boolean;
@@ -129,6 +132,11 @@ export const WorkDoneModal: React.FC<WorkDoneModalProps> = ({ open, record, onCl
   const descriptionCatalogue = useMemo(
     () => getSettingsByGroup('WORK_DONE_DESCRIPTION'),
     [getSettingsByGroup]
+  );
+
+  const jobTypeOptions = useMemo(
+    () => buildDynamicSelectOptions(getSettingsByGroup('JOB_TYPE'), JOB_TYPES, jobType),
+    [getSettingsByGroup, jobType]
   );
 
   const activeStaffNames = useMemo(
@@ -258,13 +266,14 @@ export const WorkDoneModal: React.FC<WorkDoneModalProps> = ({ open, record, onCl
     }
   };
 
-  const handleSelectClient = (selectedClientId: string) => {
-    setClientId(selectedClientId);
-    const found = clients.find((c) => c.clientId === selectedClientId);
-    if (found) {
-      setClientName(found.clientName);
-      if (!pic && found.taxPic) setPic(found.taxPic);
+  const handleSelectClient = (client: ClientRecord | null) => {
+    if (!client) {
+      setClientId('');
+      return;
     }
+    setClientId(client.clientId);
+    setClientName(client.clientName);
+    if (client.taxPic) setPic(client.taxPic);
   };
 
   const handleWorkDoneStatusChange = (nextStatus: WorkDoneStatus) => {
@@ -551,50 +560,41 @@ export const WorkDoneModal: React.FC<WorkDoneModalProps> = ({ open, record, onCl
               </div>
             )}
 
-            <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
-              <div>
-                <label className="block text-[11px] font-medium text-slate-700 mb-1">
-                  Client *
-                </label>
-                <select
-                  value={clientId}
-                  onChange={(e) => handleSelectClient(e.target.value)}
-                  disabled={formDisabled}
-                  className="w-full px-2.5 py-1.5 text-xs bg-white border border-slate-200 rounded-md disabled:bg-slate-100"
-                >
-                  <option value="">— Select Client —</option>
-                  {clients.map((c) => (
-                    <option key={c.id} value={c.clientId}>
-                      {c.clientName} ({c.clientId})
-                    </option>
-                  ))}
-                </select>
-              </div>
-              <div>
-                <label className="block text-[11px] font-medium text-slate-700 mb-1">
-                  Client Name *
-                </label>
-                <input
-                  type="text"
-                  value={clientName}
-                  onChange={(e) => setClientName(e.target.value)}
-                  disabled={formDisabled}
-                  required
-                  className="w-full px-2.5 py-1.5 text-xs bg-white border border-slate-200 rounded-md disabled:bg-slate-100"
-                />
-              </div>
-              <div>
-                <label className="block text-[11px] font-medium text-slate-700 mb-1">
-                  Job Code / Ref
-                </label>
-                <input
-                  type="text"
-                  value={jobId}
-                  onChange={(e) => setJobId(e.target.value)}
-                  disabled={formDisabled}
-                  placeholder="Optional job code"
-                  className="w-full px-2.5 py-1.5 text-xs font-mono bg-white border border-slate-200 rounded-md disabled:bg-slate-100"
-                />
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-3 items-start">
+              <ClientSelectorField
+                clients={clients}
+                value={clientId}
+                onSelectClient={handleSelectClient}
+                label="Client"
+                disabled={formDisabled}
+              />
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                <div>
+                  <label className="block text-[11px] font-medium text-slate-700 mb-1">
+                    Client Name *
+                  </label>
+                  <input
+                    type="text"
+                    value={clientName}
+                    onChange={(e) => setClientName(e.target.value)}
+                    disabled={formDisabled}
+                    required
+                    className="w-full px-2.5 py-1.5 text-xs bg-white border border-slate-200 rounded-md disabled:bg-slate-100"
+                  />
+                </div>
+                <div>
+                  <label className="block text-[11px] font-medium text-slate-700 mb-1">
+                    Job Code / Ref
+                  </label>
+                  <input
+                    type="text"
+                    value={jobId}
+                    onChange={(e) => setJobId(e.target.value)}
+                    disabled={formDisabled}
+                    placeholder="Optional job code"
+                    className="w-full px-2.5 py-1.5 text-xs font-mono bg-white border border-slate-200 rounded-md disabled:bg-slate-100"
+                  />
+                </div>
               </div>
             </div>
 
@@ -620,9 +620,9 @@ export const WorkDoneModal: React.FC<WorkDoneModalProps> = ({ open, record, onCl
                   disabled={formDisabled}
                   className="w-full px-2.5 py-1.5 text-xs bg-white border border-slate-200 rounded-md disabled:bg-slate-100"
                 >
-                  {JOB_TYPES.map((jt) => (
-                    <option key={jt} value={jt}>
-                      {jt}
+                  {jobTypeOptions.map((opt) => (
+                    <option key={opt.value} value={opt.value}>
+                      {opt.label}
                     </option>
                   ))}
                 </select>

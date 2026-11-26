@@ -24,6 +24,8 @@ import { useAuth } from '../../context/AuthContext';
 import { useData } from '../../context/DataContext';
 import { RegisterToolbar } from '../../components/RegisterToolbar';
 import { StatusPill } from '../../components/StatusPill';
+import { ExcelColumnFilter } from '../../components/ExcelColumnFilter';
+import { useExcelTableFilters } from '../../hooks/useExcelTableFilters';
 import { exportToExcel, printRegisterHtml } from '../../lib/exportUtils';
 import { formatDateDDMMYYYY } from '../../lib/deadlineUtils';
 import {
@@ -197,17 +199,73 @@ export const Cp204ModuleView: React.FC<Cp204ModuleViewProps> = ({ initialFilter 
     clientByIdMap,
   ]);
 
+  const cp204ValueGetters = useMemo(
+    () => ({
+      clientName: (rec: Cp204Record) => rec.clientName,
+      clientId: (rec: Cp204Record) => rec.clientId,
+      fye: (rec: Cp204Record) => (rec.fye ? String(Number(rec.fye)) : ''),
+      ya: (rec: Cp204Record) => rec.ya,
+      pic: (rec: Cp204Record) => rec.pic || '',
+      initialEstimate: (rec: Cp204Record) => rec.originalEstimatedTax,
+      rev6: (rec: Cp204Record) => {
+        const rev = getRevisionForMonth(rec, '6');
+        return rev ? formatRevisionExport(rev) : '';
+      },
+      rev9: (rec: Cp204Record) => {
+        const rev = getRevisionForMonth(rec, '9');
+        return rev ? formatRevisionExport(rev) : '';
+      },
+      rev11: (rec: Cp204Record) => {
+        const rev = getRevisionForMonth(rec, '11');
+        return rev ? formatRevisionExport(rev) : '';
+      },
+      currentEstimatedTax: (rec: Cp204Record) => rec.currentEstimatedTax,
+      instalmentsSummary: (rec: Cp204Record) => {
+        const paid = rec.instalments.filter(
+          (i) => i.outstandingAmount === 0 && i.amountDue > 0
+        ).length;
+        return rec.instalments.length > 0 ? `${paid}/${rec.instalments.length} settled` : 'Not scheduled';
+      },
+      reviewer: (rec: Cp204Record) => rec.reviewer || '',
+      statutoryDueDate: (rec: Cp204Record) => formatDateDDMMYYYY(rec.statutoryCp204DueDate),
+    }),
+    []
+  );
+
+  const missingValueGetters = useMemo(
+    () => ({
+      clientName: (c: (typeof clients)[number]) => c.clientName,
+      clientId: (c: (typeof clients)[number]) => c.clientId,
+      fye: (c: (typeof clients)[number]) => (c.fye ? String(Number(c.fye)) : ''),
+      ya: () => targetMissingYa,
+      pic: (c: (typeof clients)[number]) => c.taxPic || '',
+      status: () => 'CP204 record missing',
+    }),
+    [targetMissingYa]
+  );
+
+  const excel = useExcelTableFilters(filteredRecords, cp204ValueGetters);
+  const excelMissing = useExcelTableFilters(missingClients, missingValueGetters);
+  const displayedRecords = excel.rows;
+  const displayedMissing = excelMissing.rows;
+
   const totals = useMemo(() => {
-    const initialSum = filteredRecords.reduce((s, r) => s + (r.originalEstimatedTax || 0), 0);
-    const currentSum = filteredRecords.reduce((s, r) => s + (r.currentEstimatedTax || 0), 0);
+    const initialSum = displayedRecords.reduce((s, r) => s + (r.originalEstimatedTax || 0), 0);
+    const currentSum = displayedRecords.reduce((s, r) => s + (r.currentEstimatedTax || 0), 0);
     const followUpCount = cp204Records.filter(
       (r) => classifyCp204SubmissionStatus(r, todayStr) === 'Follow-up required'
     ).length;
     return { initialSum, currentSum, followUpCount };
-  }, [filteredRecords, cp204Records, todayStr]);
+  }, [displayedRecords, cp204Records, todayStr]);
 
   const hasActiveFilters = Boolean(
-    search.trim() || yaFilter || fyeFilter || picFilter || submissionFilter
+    search.trim() ||
+      yaFilter ||
+      fyeFilter ||
+      picFilter ||
+      submissionFilter ||
+      excel.hasActiveColumnFilters ||
+      excelMissing.hasActiveColumnFilters
   );
 
   const handleResetFilters = () => {
@@ -216,6 +274,8 @@ export const Cp204ModuleView: React.FC<Cp204ModuleViewProps> = ({ initialFilter 
     setFyeFilter('');
     setPicFilter('');
     setSubmissionFilter('');
+    excel.resetColumnFilters();
+    excelMissing.resetColumnFilters();
   };
 
   const handleToggleColumn = (key: string) => {
@@ -232,7 +292,7 @@ export const Cp204ModuleView: React.FC<Cp204ModuleViewProps> = ({ initialFilter 
         { key: 'pic', label: 'Default PIC' },
         { key: 'specialRemarks', label: 'Special Remarks' },
       ];
-      const rows = missingClients.map((c) => ({
+      const rows = displayedMissing.map((c) => ({
         clientName: c.clientName,
         clientId: c.clientId,
         fye: c.fye ? Number(c.fye) : '—',
@@ -247,7 +307,7 @@ export const Cp204ModuleView: React.FC<Cp204ModuleViewProps> = ({ initialFilter 
       key: c.key,
       label: c.label,
     }));
-    const rows = filteredRecords.map((rec) => {
+    const rows = displayedRecords.map((rec) => {
       const rev6 = getRevisionForMonth(rec, '6');
       const rev9 = getRevisionForMonth(rec, '9');
       const rev11 = getRevisionForMonth(rec, '11');
@@ -271,7 +331,7 @@ export const Cp204ModuleView: React.FC<Cp204ModuleViewProps> = ({ initialFilter 
     return {
       cols: activeCols,
       rows,
-      subtitle: `CP204 Corporate Tax Estimate Register (${filteredRecords.length} records)`,
+      subtitle: `CP204 Corporate Tax Estimate Register (${displayedRecords.length} records)`,
     };
   };
 
@@ -445,12 +505,12 @@ export const Cp204ModuleView: React.FC<Cp204ModuleViewProps> = ({ initialFilter 
         onExportExcel={handleExportExcel}
         onPrint={handlePrint}
         onSavePdf={handleSavePdf}
-        recordCount={isMissingMode ? missingClients.length : filteredRecords.length}
+        recordCount={isMissingMode ? displayedMissing.length : displayedRecords.length}
         totalCount={isMissingMode ? missingClients.length : cp204Records.length}
         summaryText={
           isMissingMode
-            ? `${missingClients.length} corporate client(s) missing CP204 for YA ${targetMissingYa}`
-            : `Showing ${filteredRecords.length.toLocaleString()} of ${cp204Records.length.toLocaleString()} CP204 records`
+            ? `${displayedMissing.length} corporate client(s) missing CP204 for YA ${targetMissingYa}`
+            : `Showing ${displayedRecords.length.toLocaleString()} of ${cp204Records.length.toLocaleString()} CP204 records`
         }
         filters={
           <>
@@ -535,29 +595,42 @@ export const Cp204ModuleView: React.FC<Cp204ModuleViewProps> = ({ initialFilter 
               <table className="w-full text-xs border-collapse">
                 <thead className="bg-slate-100 sticky top-0 z-10 border-b border-slate-200 text-slate-700">
                   <tr>
-                    <th className="px-3 py-2.5 text-left font-semibold whitespace-nowrap">
-                      Company Name
-                    </th>
-                    <th className="px-3 py-2.5 text-left font-semibold whitespace-nowrap">
-                      Client ID
-                    </th>
-                    <th className="px-3 py-2.5 text-left font-semibold whitespace-nowrap">FYE</th>
-                    <th className="px-3 py-2.5 text-left font-semibold whitespace-nowrap">
-                      Missing YA
-                    </th>
-                    <th className="px-3 py-2.5 text-left font-semibold whitespace-nowrap">
-                      Default PIC
-                    </th>
-                    <th className="px-3 py-2.5 text-left font-semibold whitespace-nowrap">
-                      Status
-                    </th>
+                    {(
+                      [
+                        { key: 'clientName', label: 'Company Name' },
+                        { key: 'clientId', label: 'Client ID' },
+                        { key: 'fye', label: 'FYE' },
+                        { key: 'ya', label: 'Missing YA' },
+                        { key: 'pic', label: 'Default PIC' },
+                        { key: 'status', label: 'Status' },
+                      ] as const
+                    ).map((col) => (
+                      <th
+                        key={col.key}
+                        className="px-3 py-2.5 text-left font-semibold whitespace-nowrap"
+                      >
+                        <ExcelColumnFilter
+                          columnKey={col.key}
+                          title={col.label}
+                          values={excelMissing.getColumnValues(col.key)}
+                          selectedValues={excelMissing.columnFilters[col.key]}
+                          onChangeSelected={(next) => excelMissing.setColumnFilter(col.key, next)}
+                          sortDirection={
+                            excelMissing.sortState?.key === col.key
+                              ? excelMissing.sortState.direction
+                              : null
+                          }
+                          onSort={(dir) => excelMissing.setColumnSort(col.key, dir)}
+                        />
+                      </th>
+                    ))}
                     <th className="px-3 py-2.5 text-right font-semibold whitespace-nowrap">
                       Action
                     </th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-slate-100">
-                  {missingClients.length === 0 ? (
+                  {displayedMissing.length === 0 ? (
                     <tr>
                       <td colSpan={7} className="px-4 py-10 text-center text-slate-500">
                         All active Corporate clients already have a CP204 record for YA{' '}
@@ -565,7 +638,7 @@ export const Cp204ModuleView: React.FC<Cp204ModuleViewProps> = ({ initialFilter 
                       </td>
                     </tr>
                   ) : (
-                    missingClients.map((client) => (
+                    displayedMissing.map((client) => (
                       <tr key={client.id} className="hover:bg-slate-50/80">
                         <td className="px-3 py-2">
                           <div className="font-medium text-slate-900">{client.clientName}</div>
@@ -616,72 +689,34 @@ export const Cp204ModuleView: React.FC<Cp204ModuleViewProps> = ({ initialFilter 
             <table className="w-full text-xs border-collapse">
               <thead className="bg-slate-100 sticky top-0 z-10 border-b border-slate-200 text-slate-700">
                 <tr>
-                  {visibleColumns.clientName && (
-                    <th className="px-3 py-2.5 text-left font-semibold whitespace-nowrap">
-                      Company Name
+                  {CP204_COLUMNS.filter((c) => visibleColumns[c.key]).map((col) => (
+                    <th
+                      key={col.key}
+                      className={`px-3 py-2.5 font-semibold whitespace-nowrap ${
+                        col.align === 'right' ? 'text-right' : 'text-left'
+                      }`}
+                    >
+                      <ExcelColumnFilter
+                        columnKey={col.key}
+                        title={col.label}
+                        values={excel.getColumnValues(col.key)}
+                        selectedValues={excel.columnFilters[col.key]}
+                        onChangeSelected={(next) => excel.setColumnFilter(col.key, next)}
+                        sortDirection={
+                          excel.sortState?.key === col.key ? excel.sortState.direction : null
+                        }
+                        onSort={(dir) => excel.setColumnSort(col.key, dir)}
+                        align={col.align === 'right' ? 'right' : 'left'}
+                      />
                     </th>
-                  )}
-                  {visibleColumns.clientId && (
-                    <th className="px-3 py-2.5 text-left font-semibold whitespace-nowrap">
-                      Client ID
-                    </th>
-                  )}
-                  {visibleColumns.fye && (
-                    <th className="px-3 py-2.5 text-left font-semibold whitespace-nowrap">FYE</th>
-                  )}
-                  {visibleColumns.ya && (
-                    <th className="px-3 py-2.5 text-left font-semibold whitespace-nowrap">YA</th>
-                  )}
-                  {visibleColumns.pic && (
-                    <th className="px-3 py-2.5 text-left font-semibold whitespace-nowrap">PIC</th>
-                  )}
-                  {visibleColumns.initialEstimate && (
-                    <th className="px-3 py-2.5 text-right font-semibold whitespace-nowrap">
-                      Initial Estimate
-                    </th>
-                  )}
-                  {visibleColumns.rev6 && (
-                    <th className="px-3 py-2.5 text-right font-semibold whitespace-nowrap">
-                      6th Month Revision
-                    </th>
-                  )}
-                  {visibleColumns.rev9 && (
-                    <th className="px-3 py-2.5 text-right font-semibold whitespace-nowrap">
-                      9th Month Revision
-                    </th>
-                  )}
-                  {visibleColumns.rev11 && (
-                    <th className="px-3 py-2.5 text-right font-semibold whitespace-nowrap">
-                      11th Month Revision
-                    </th>
-                  )}
-                  {visibleColumns.currentEstimatedTax && (
-                    <th className="px-3 py-2.5 text-right font-semibold whitespace-nowrap">
-                      Current Estimated Tax
-                    </th>
-                  )}
-                  {visibleColumns.instalmentsSummary && (
-                    <th className="px-3 py-2.5 text-left font-semibold whitespace-nowrap">
-                      Instalments
-                    </th>
-                  )}
-                  {visibleColumns.reviewer && (
-                    <th className="px-3 py-2.5 text-left font-semibold whitespace-nowrap">
-                      Reviewer
-                    </th>
-                  )}
-                  {visibleColumns.statutoryDueDate && (
-                    <th className="px-3 py-2.5 text-left font-semibold whitespace-nowrap">
-                      Statutory Due
-                    </th>
-                  )}
+                  ))}
                   <th className="px-3 py-2.5 text-right font-semibold whitespace-nowrap no-print">
                     Actions
                   </th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-slate-100">
-                {filteredRecords.length === 0 ? (
+                {displayedRecords.length === 0 ? (
                   <tr>
                     <td colSpan={14} className="px-4 py-12 text-center text-slate-500">
                       {cp204Records.length === 0
@@ -690,7 +725,7 @@ export const Cp204ModuleView: React.FC<Cp204ModuleViewProps> = ({ initialFilter 
                     </td>
                   </tr>
                 ) : (
-                  filteredRecords.map((rec: Cp204Record) => {
+                  displayedRecords.map((rec: Cp204Record) => {
                     const client = clientByIdMap.get(rec.clientId);
                     const rev6 = getRevisionForMonth(rec, '6');
                     const rev9 = getRevisionForMonth(rec, '9');

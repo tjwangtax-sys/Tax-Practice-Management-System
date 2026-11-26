@@ -33,6 +33,8 @@ import {
   downloadWorkDonePdf,
   exportBatchWorkDoneZip,
 } from './workDonePdfUtils';
+import { ExcelColumnFilter } from '../../components/ExcelColumnFilter';
+import { useExcelTableFilters } from '../../hooks/useExcelTableFilters';
 
 const WORK_DONE_COLUMNS: ColumnDef[] = [
   { key: 'workDoneId', label: 'WD ID', defaultVisible: true },
@@ -241,8 +243,41 @@ export const WorkDoneFinanceView: React.FC = () => {
     picFilter,
   ]);
 
+  const workDoneColumnGetters = useMemo(
+    () => ({
+      workDoneId: (r: WorkDoneRecord) => r.workDoneId,
+      clientName: (r: WorkDoneRecord) => r.clientName,
+      ya: (r: WorkDoneRecord) => r.ya,
+      jobType: (r: WorkDoneRecord) => r.jobType,
+      jobId: (r: WorkDoneRecord) => r.jobId,
+      pic: (r: WorkDoneRecord) => r.pic,
+      reviewer: (r: WorkDoneRecord) => r.reviewer,
+      pricingMode: (r: WorkDoneRecord) => r.pricingMode,
+      quotationPrice: (r: WorkDoneRecord) => formatOptionalMoney(r.quotationPrice),
+      hodPrice: (r: WorkDoneRecord) => formatOptionalMoney(r.hodPrice),
+      additionalCharges: (r: WorkDoneRecord) => formatCurrencyRM(r.additionalCharges),
+      finalPrice: (r: WorkDoneRecord) => formatCurrencyRM(r.finalPrice),
+      sstAmount: (r: WorkDoneRecord) => formatOptionalMoney(r.sstAmount),
+      totalInvoiceAmount: (r: WorkDoneRecord) => formatCurrencyRM(r.totalInvoiceAmount),
+      workDoneStatus: (r: WorkDoneRecord) => r.workDoneStatus,
+      financeInvoiceStatus: (r: WorkDoneRecord) => r.financeInvoiceStatus,
+      invoiceNo: (r: WorkDoneRecord) => r.invoiceNo,
+      issueDate: (r: WorkDoneRecord) => (r.issueDate ? formatDateDDMMYYYY(r.issueDate) : ''),
+      remarks: (r: WorkDoneRecord) => r.remarks,
+    }),
+    []
+  );
+
+  const excel = useExcelTableFilters(filtered, workDoneColumnGetters);
+
   const hasActiveFilters = Boolean(
-    search || wdStatusFilter || financeStatusFilter || pricingModeFilter || yaFilter || picFilter
+    search ||
+      wdStatusFilter ||
+      financeStatusFilter ||
+      pricingModeFilter ||
+      yaFilter ||
+      picFilter ||
+      excel.hasActiveColumnFilters
   );
 
   const resetFilters = () => {
@@ -252,6 +287,7 @@ export const WorkDoneFinanceView: React.FC = () => {
     setPricingModeFilter('');
     setYaFilter('');
     setPicFilter('');
+    excel.resetColumnFilters();
   };
 
   // KPI metrics
@@ -261,7 +297,7 @@ export const WorkDoneFinanceView: React.FC = () => {
     let invoicedTotal = 0;
     let totalPipeline = 0;
 
-    for (const r of filtered) {
+    for (const r of excel.rows) {
       if (r.workDoneStatus === 'Completed — Pending Finance') pendingFinance += 1;
       if (r.workDoneStatus === 'Ready for Invoicing') readyForInvoicing += 1;
       if (r.workDoneStatus === 'Invoiced') {
@@ -272,28 +308,28 @@ export const WorkDoneFinanceView: React.FC = () => {
       }
     }
     return { pendingFinance, readyForInvoicing, invoicedTotal, totalPipeline };
-  }, [filtered]);
+  }, [excel.rows]);
 
   // Selection helpers
   const selectedFilteredRecords = useMemo(
-    () => filtered.filter((r) => selectedIds[r.id]),
-    [filtered, selectedIds]
+    () => excel.rows.filter((r) => selectedIds[r.id]),
+    [excel.rows, selectedIds]
   );
 
   const allFilteredSelected =
-    filtered.length > 0 && filtered.every((r) => Boolean(selectedIds[r.id]));
+    excel.rows.length > 0 && excel.rows.every((r) => Boolean(selectedIds[r.id]));
 
   const toggleSelectAllFiltered = () => {
     if (allFilteredSelected) {
       setSelectedIds((prev) => {
         const next = { ...prev };
-        for (const r of filtered) delete next[r.id];
+        for (const r of excel.rows) delete next[r.id];
         return next;
       });
     } else {
       setSelectedIds((prev) => {
         const next = { ...prev };
-        for (const r of filtered) next[r.id] = true;
+        for (const r of excel.rows) next[r.id] = true;
         return next;
       });
     }
@@ -330,7 +366,7 @@ export const WorkDoneFinanceView: React.FC = () => {
 
   const exportRows = useMemo(
     () =>
-      filtered.map((r) => ({
+      excel.rows.map((r) => ({
         workDoneId: r.workDoneId,
         clientName: r.clientName,
         ya: r.ya || '—',
@@ -351,12 +387,35 @@ export const WorkDoneFinanceView: React.FC = () => {
         issueDate: r.issueDate ? formatDateDDMMYYYY(r.issueDate) : '—',
         remarks: r.remarks || '',
       })),
-    [filtered]
+    [excel.rows]
   );
 
   const visibleExportColumns = useMemo(
     () => WORK_DONE_COLUMNS.filter((c) => visibleColumns[c.key]),
     [visibleColumns]
+  );
+
+  const renderColHeader = (
+    key: string,
+    title: string,
+    align: 'left' | 'right' | 'center' = 'left'
+  ) => (
+    <th
+      className={`py-2.5 px-2.5 whitespace-nowrap ${
+        align === 'right' ? 'text-right' : align === 'center' ? 'text-center' : ''
+      }`}
+    >
+      <ExcelColumnFilter
+        columnKey={key}
+        title={title}
+        values={excel.getColumnValues(key)}
+        selectedValues={excel.columnFilters[key]}
+        onChangeSelected={(next) => excel.setColumnFilter(key, next)}
+        sortDirection={excel.sortState?.key === key ? excel.sortState.direction : null}
+        onSort={(dir) => excel.setColumnSort(key, dir)}
+        align={align}
+      />
+    </th>
   );
 
   return (
@@ -408,7 +467,7 @@ export const WorkDoneFinanceView: React.FC = () => {
             {formatCurrencyRM(kpis.totalPipeline)}
           </div>
           <div className="text-[11px] text-slate-400 mt-0.5">
-            {filtered.length} record{filtered.length === 1 ? '' : 's'} shown
+            {excel.rows.length} record{excel.rows.length === 1 ? '' : 's'} shown
           </div>
         </div>
       </div>
@@ -435,7 +494,7 @@ export const WorkDoneFinanceView: React.FC = () => {
         onPrint={() =>
           printRegisterHtml(
             'Work Done & Finance Register',
-            `Filtered records: ${filtered.length}`,
+            `Filtered records: ${excel.rows.length}`,
             visibleExportColumns,
             exportRows,
             false
@@ -444,13 +503,13 @@ export const WorkDoneFinanceView: React.FC = () => {
         onSavePdf={() =>
           printRegisterHtml(
             'Work Done & Finance Register',
-            `Filtered records: ${filtered.length}`,
+            `Filtered records: ${excel.rows.length}`,
             visibleExportColumns,
             exportRows,
             true
           )
         }
-        recordCount={filtered.length}
+        recordCount={excel.rows.length}
         totalCount={workDoneRecords.length}
         primaryAction={
           <div className="flex items-center gap-2">
@@ -564,46 +623,30 @@ export const WorkDoneFinanceView: React.FC = () => {
                     className="rounded border-slate-300 text-teal-700 focus:ring-teal-600"
                   />
                 </th>
-                {visibleColumns.workDoneId && <th className="py-2.5 px-2.5 whitespace-nowrap">WD ID</th>}
-                {visibleColumns.clientName && <th className="py-2.5 px-2.5 whitespace-nowrap">Client Name</th>}
-                {visibleColumns.ya && <th className="py-2.5 px-2.5 whitespace-nowrap">YA</th>}
-                {visibleColumns.jobType && <th className="py-2.5 px-2.5 whitespace-nowrap">Job Type</th>}
-                {visibleColumns.jobId && <th className="py-2.5 px-2.5 whitespace-nowrap">Job Ref</th>}
-                {visibleColumns.pic && <th className="py-2.5 px-2.5 whitespace-nowrap">PIC</th>}
-                {visibleColumns.reviewer && <th className="py-2.5 px-2.5 whitespace-nowrap">Reviewer</th>}
-                {visibleColumns.pricingMode && <th className="py-2.5 px-2.5 whitespace-nowrap">Pricing Mode</th>}
-                {visibleColumns.quotationPrice && (
-                  <th className="py-2.5 px-2.5 whitespace-nowrap text-right">Quotation</th>
-                )}
-                {visibleColumns.hodPrice && (
-                  <th className="py-2.5 px-2.5 whitespace-nowrap text-right">HOD Price</th>
-                )}
-                {visibleColumns.additionalCharges && (
-                  <th className="py-2.5 px-2.5 whitespace-nowrap text-right">Add. Charges</th>
-                )}
-                {visibleColumns.finalPrice && (
-                  <th className="py-2.5 px-2.5 whitespace-nowrap text-right">Final Price</th>
-                )}
-                {visibleColumns.sstAmount && (
-                  <th className="py-2.5 px-2.5 whitespace-nowrap text-right">SST</th>
-                )}
-                {visibleColumns.totalInvoiceAmount && (
-                  <th className="py-2.5 px-2.5 whitespace-nowrap text-right">Total Invoice</th>
-                )}
-                {visibleColumns.workDoneStatus && (
-                  <th className="py-2.5 px-2.5 whitespace-nowrap">Work Done Status</th>
-                )}
-                {visibleColumns.financeInvoiceStatus && (
-                  <th className="py-2.5 px-2.5 whitespace-nowrap">Finance Status</th>
-                )}
-                {visibleColumns.invoiceNo && <th className="py-2.5 px-2.5 whitespace-nowrap">Invoice No.</th>}
-                {visibleColumns.issueDate && <th className="py-2.5 px-2.5 whitespace-nowrap">Issue Date</th>}
-                {visibleColumns.remarks && <th className="py-2.5 px-2.5 whitespace-nowrap">Remarks</th>}
+                {visibleColumns.workDoneId && renderColHeader('workDoneId', 'WD ID')}
+                {visibleColumns.clientName && renderColHeader('clientName', 'Client Name')}
+                {visibleColumns.ya && renderColHeader('ya', 'YA')}
+                {visibleColumns.jobType && renderColHeader('jobType', 'Job Type')}
+                {visibleColumns.jobId && renderColHeader('jobId', 'Job Ref')}
+                {visibleColumns.pic && renderColHeader('pic', 'PIC')}
+                {visibleColumns.reviewer && renderColHeader('reviewer', 'Reviewer')}
+                {visibleColumns.pricingMode && renderColHeader('pricingMode', 'Pricing Mode')}
+                {visibleColumns.quotationPrice && renderColHeader('quotationPrice', 'Quotation', 'right')}
+                {visibleColumns.hodPrice && renderColHeader('hodPrice', 'HOD Price', 'right')}
+                {visibleColumns.additionalCharges && renderColHeader('additionalCharges', 'Add. Charges', 'right')}
+                {visibleColumns.finalPrice && renderColHeader('finalPrice', 'Final Price', 'right')}
+                {visibleColumns.sstAmount && renderColHeader('sstAmount', 'SST', 'right')}
+                {visibleColumns.totalInvoiceAmount && renderColHeader('totalInvoiceAmount', 'Total Invoice', 'right')}
+                {visibleColumns.workDoneStatus && renderColHeader('workDoneStatus', 'Work Done Status')}
+                {visibleColumns.financeInvoiceStatus && renderColHeader('financeInvoiceStatus', 'Finance Status')}
+                {visibleColumns.invoiceNo && renderColHeader('invoiceNo', 'Invoice No.')}
+                {visibleColumns.issueDate && renderColHeader('issueDate', 'Issue Date')}
+                {visibleColumns.remarks && renderColHeader('remarks', 'Remarks')}
                 <th className="py-2.5 px-3 text-right whitespace-nowrap">Actions</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-slate-100 text-xs">
-              {filtered.length === 0 ? (
+              {excel.rows.length === 0 ? (
                 <tr>
                   <td colSpan={22} className="py-12 text-center text-slate-400">
                     <Receipt className="w-8 h-8 mx-auto mb-2 text-slate-300" />
@@ -616,7 +659,7 @@ export const WorkDoneFinanceView: React.FC = () => {
                   </td>
                 </tr>
               ) : (
-                filtered.map((rec) => {
+                excel.rows.map((rec) => {
                   const isChecked = Boolean(selectedIds[rec.id]);
                   const isDeletingConfirm = confirmDeleteId === rec.id;
                   return (

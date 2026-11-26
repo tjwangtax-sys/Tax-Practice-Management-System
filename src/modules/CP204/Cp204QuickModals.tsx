@@ -1,6 +1,7 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { X, Save, AlertCircle, Search } from 'lucide-react';
 import {
+  ClientRecord,
   CP204_REVISION_MONTHS,
   CP204_REVISION_STATUS_OPTIONS,
   CP204_STATUS_OPTIONS,
@@ -15,6 +16,7 @@ import {
 } from '../../types/tpms';
 import { useAuth } from '../../context/AuthContext';
 import { useData } from '../../context/DataContext';
+import { ClientSelectorField } from '../../components/ClientSelectorField';
 import {
   computeCp204BasisDates,
   computeCp204CurrentEstimatedTax,
@@ -44,7 +46,6 @@ export const Cp204InitialQuickModal: React.FC<Cp204InitialQuickModalProps> = ({
   const { isReadOnly } = useAuth();
   const { clients, staff, saveCp204 } = useData();
 
-  const [clientSearch, setClientSearch] = useState('');
   const [clientId, setClientId] = useState('');
   const [clientName, setClientName] = useState('');
   const [ya, setYa] = useState(String(new Date().getFullYear()));
@@ -62,23 +63,6 @@ export const Cp204InitialQuickModal: React.FC<Cp204InitialQuickModalProps> = ({
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  const corporateClients = useMemo(
-    () =>
-      clients.filter((c) => c.category === 'Corporate' || c.category === 'Other'),
-    [clients]
-  );
-
-  const filteredClients = useMemo(() => {
-    const q = clientSearch.trim().toLowerCase();
-    if (!q) return corporateClients;
-    return corporateClients.filter(
-      (c) =>
-        c.clientName.toLowerCase().includes(q) ||
-        c.clientId.toLowerCase().includes(q) ||
-        (c.companyNo || '').toLowerCase().includes(q)
-    );
-  }, [corporateClients, clientSearch]);
-
   const activeStaffNames = useMemo(
     () => staff.filter((s) => s.active).map((s) => s.staffName),
     [staff]
@@ -87,7 +71,6 @@ export const Cp204InitialQuickModal: React.FC<Cp204InitialQuickModalProps> = ({
   useEffect(() => {
     if (!open) return;
     setError(null);
-    setClientSearch('');
     const targetYa = prefillYa || String(new Date().getFullYear());
     setYa(targetYa);
 
@@ -126,8 +109,7 @@ export const Cp204InitialQuickModal: React.FC<Cp204InitialQuickModalProps> = ({
 
   if (!open) return null;
 
-  const handleSelectClient = (selectedClientId: string) => {
-    const found = clients.find((c) => c.clientId === selectedClientId);
+  const handleSelectClient = (found: ClientRecord | null) => {
     if (!found) {
       setClientId('');
       setClientName('');
@@ -217,33 +199,15 @@ export const Cp204InitialQuickModal: React.FC<Cp204InitialQuickModalProps> = ({
           )}
 
           {/* Searchable Corporate Client Picker */}
-          <div className="space-y-2">
-            <label className={labelCls}>Company (Corporate Client) *</label>
-            <div className="relative">
-              <Search className="w-3.5 h-3.5 text-slate-400 absolute left-2.5 top-1/2 -translate-y-1/2 pointer-events-none" />
-              <input
-                type="text"
-                value={clientSearch}
-                onChange={(e) => setClientSearch(e.target.value)}
-                placeholder="Filter corporate clients by name, Client ID, or SSM No..."
-                className={`${inputCls} pl-8`}
-              />
-            </div>
-            <select
-              required
-              disabled={isReadOnly}
-              value={clientId}
-              onChange={(e) => handleSelectClient(e.target.value)}
-              className={inputCls}
-            >
-              <option value="">— Select Company —</option>
-              {filteredClients.map((c) => (
-                <option key={c.id} value={c.clientId}>
-                  {c.clientName} ({c.clientId}) {c.fye ? `· FYE ${Number(c.fye)}` : ''}
-                </option>
-              ))}
-            </select>
-          </div>
+          <ClientSelectorField
+            clients={clients}
+            value={clientId}
+            onSelectClient={handleSelectClient}
+            disabled={isReadOnly}
+            required
+            label="Company (Corporate Client)"
+            filterClients={(c) => c.category === 'Corporate' || c.category === 'Other'}
+          />
 
           <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
             <div>

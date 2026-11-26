@@ -1,4 +1,4 @@
-import React, { useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import {
   FileBarChart2,
   AlertTriangle,
@@ -20,6 +20,9 @@ import { useColumnVisibility } from '../../hooks/useColumnVisibility';
 import { RegisterToolbar } from '../../components/RegisterToolbar';
 import { exportToExcel, printRegisterHtml } from '../../lib/exportUtils';
 import { extractFyeMonth, formatDateDDMMYYYY, isIsoDateString } from '../../lib/deadlineUtils';
+import { ExcelColumnFilter } from '../../components/ExcelColumnFilter';
+import { useExcelTableFilters } from '../../hooks/useExcelTableFilters';
+import { buildDynamicSelectOptions } from '../../lib/settingsDropdown';
 
 type ReportTab =
   | 'job-status'
@@ -207,7 +210,7 @@ const COLUMNS_BY_REPORT: Record<ReportTab, ColumnDef[]> = {
 };
 
 export const BasicReportsView: React.FC = () => {
-  const { jobs, clients, correspondenceRecords } = useData();
+  const { jobs, clients, correspondenceRecords, getSettingsByGroup } = useData();
   const [activeTab, setActiveTab] = useState<ReportTab>('job-status');
 
   // Shared Operational Filters
@@ -520,13 +523,40 @@ export const BasicReportsView: React.FC = () => {
       });
   }, [activeTab, filteredJobs, clients, correspondenceRecords, clientMap, categoryFilter, fyeFilter, yaFilter, search, todayStr]);
 
+  const reportColumnGetters = useMemo(() => {
+    const getters: Record<string, (row: Record<string, string | number>) => unknown> = {};
+    for (const col of columns) {
+      getters[col.key] = (row) => row[col.key];
+    }
+    return getters;
+  }, [columns]);
+
+  const excel = useExcelTableFilters(reportRows, reportColumnGetters);
+
+  useEffect(() => {
+    excel.resetColumnFilters();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeTab]);
+
+  const jobTypeFilterOptions = useMemo(
+    () => buildDynamicSelectOptions(getSettingsByGroup('JOB_TYPE'), JOB_TYPES, jobTypeFilter),
+    [getSettingsByGroup, jobTypeFilter]
+  );
+
   const missingDateCount = useMemo(() => {
     if (activeTab !== 'submission-status') return 0;
-    return reportRows.filter((r) => r.auditFlag === 'Submission marked complete — date missing').length;
-  }, [activeTab, reportRows]);
+    return excel.rows.filter((r) => r.auditFlag === 'Submission marked complete — date missing')
+      .length;
+  }, [activeTab, excel.rows]);
 
   const hasActiveFilters = Boolean(
-    search || categoryFilter || fyeFilter || jobTypeFilter || yaFilter || submissionFilter
+    search ||
+      categoryFilter ||
+      fyeFilter ||
+      jobTypeFilter ||
+      yaFilter ||
+      submissionFilter ||
+      excel.hasActiveColumnFilters
   );
 
   const resetFilters = () => {
@@ -536,6 +566,7 @@ export const BasicReportsView: React.FC = () => {
     setJobTypeFilter('');
     setYaFilter('');
     setSubmissionFilter('');
+    excel.resetColumnFilters();
   };
 
   const activeTabLabel = REPORT_TABS.find((t) => t.id === activeTab)?.label || 'Report';
@@ -605,28 +636,28 @@ export const BasicReportsView: React.FC = () => {
             `TPMS_Report_${activeTab}_${new Date().toISOString().slice(0, 10)}.xlsx`,
             activeTabLabel,
             visibleCols,
-            reportRows
+            excel.rows
           )
         }
         onPrint={() =>
           printRegisterHtml(
             `Basic Report — ${activeTabLabel}`,
-            `Generated ${formatDateDDMMYYYY(todayStr)} • ${reportRows.length} rows`,
+            `Generated ${formatDateDDMMYYYY(todayStr)} • ${excel.rows.length} rows`,
             visibleCols,
-            reportRows,
+            excel.rows,
             false
           )
         }
         onSavePdf={() =>
           printRegisterHtml(
             `Basic Report — ${activeTabLabel}`,
-            `Generated ${formatDateDDMMYYYY(todayStr)} • ${reportRows.length} rows`,
+            `Generated ${formatDateDDMMYYYY(todayStr)} • ${excel.rows.length} rows`,
             visibleCols,
-            reportRows,
+            excel.rows,
             true
           )
         }
-        recordCount={reportRows.length}
+        recordCount={excel.rows.length}
         totalCount={reportRows.length}
         filters={
           <>
@@ -660,9 +691,9 @@ export const BasicReportsView: React.FC = () => {
               className="px-2 py-1 text-xs bg-white border border-slate-200 rounded-md text-slate-700"
             >
               <option value="">All Job Types</option>
-              {JOB_TYPES.map((jt) => (
-                <option key={jt} value={jt}>
-                  {jt}
+              {jobTypeFilterOptions.map((opt) => (
+                <option key={opt.value} value={opt.value}>
+                  {opt.label}
                 </option>
               ))}
             </select>
@@ -711,13 +742,24 @@ export const BasicReportsView: React.FC = () => {
                       col.align === 'right' ? 'text-right' : ''
                     }`}
                   >
-                    {col.label}
+                    <ExcelColumnFilter
+                      columnKey={col.key}
+                      title={col.label}
+                      values={excel.getColumnValues(col.key)}
+                      selectedValues={excel.columnFilters[col.key]}
+                      onChangeSelected={(next) => excel.setColumnFilter(col.key, next)}
+                      sortDirection={
+                        excel.sortState?.key === col.key ? excel.sortState.direction : null
+                      }
+                      onSort={(dir) => excel.setColumnSort(col.key, dir)}
+                      align={col.align === 'right' ? 'right' : 'left'}
+                    />
                   </th>
                 ))}
               </tr>
             </thead>
             <tbody className="divide-y divide-slate-100 text-xs">
-              {reportRows.length === 0 ? (
+              {excel.rows.length === 0 ? (
                 <tr>
                   <td
                     colSpan={Math.max(visibleCols.length, 1)}
@@ -727,7 +769,7 @@ export const BasicReportsView: React.FC = () => {
                   </td>
                 </tr>
               ) : (
-                reportRows.map((row) => (
+                excel.rows.map((row) => (
                   <tr key={String(row._id)} className="hover:bg-slate-50/70">
                     {visibleCols.map((col) => {
                       const val = row[col.key];

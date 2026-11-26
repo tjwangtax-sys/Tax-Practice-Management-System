@@ -7,10 +7,10 @@ import {
   X,
   Save,
   AlertCircle,
-  Search,
   RefreshCw,
 } from 'lucide-react';
 import {
+  ClientRecord,
   ColumnDef,
   formatCurrencyRM,
   safeNum,
@@ -26,6 +26,9 @@ import { useAuth } from '../../context/AuthContext';
 import { useData } from '../../context/DataContext';
 import { RegisterToolbar } from '../../components/RegisterToolbar';
 import { StatusPill } from '../../components/StatusPill';
+import { ClientSelectorField } from '../../components/ClientSelectorField';
+import { ExcelColumnFilter } from '../../components/ExcelColumnFilter';
+import { useExcelTableFilters } from '../../hooks/useExcelTableFilters';
 import { exportToExcel, printRegisterHtml } from '../../lib/exportUtils';
 import { formatDateDDMMYYYY } from '../../lib/deadlineUtils';
 
@@ -68,7 +71,6 @@ const TaxPaymentModal: React.FC<TaxPaymentModalProps> = ({ open, editing, onClos
   const { isReadOnly } = useAuth();
   const { clients, saveTaxPayment } = useData();
 
-  const [clientSearch, setClientSearch] = useState('');
   const [clientId, setClientId] = useState('');
   const [clientName, setClientName] = useState('');
   const [paymentType, setPaymentType] = useState<TaxPaymentType>('CP204 Instalment');
@@ -86,22 +88,9 @@ const TaxPaymentModal: React.FC<TaxPaymentModalProps> = ({ open, editing, onClos
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  const filteredClients = useMemo(() => {
-    const q = clientSearch.trim().toLowerCase();
-    if (!q) return clients;
-    return clients.filter(
-      (c) =>
-        c.clientName.toLowerCase().includes(q) ||
-        c.clientId.toLowerCase().includes(q) ||
-        (c.companyNo || '').toLowerCase().includes(q) ||
-        (c.tin || '').toLowerCase().includes(q)
-    );
-  }, [clients, clientSearch]);
-
   useEffect(() => {
     if (!open) return;
     setError(null);
-    setClientSearch('');
     if (editing) {
       setClientId(editing.clientId);
       setClientName(editing.clientName);
@@ -144,8 +133,7 @@ const TaxPaymentModal: React.FC<TaxPaymentModalProps> = ({ open, editing, onClos
     verificationStatus === 'Verified' &&
     (numPaid <= 0 || !paymentDate.trim() || !paymentReference.trim());
 
-  const handleClientSelect = (cid: string) => {
-    const found = clients.find((c) => c.clientId === cid);
+  const handleClientSelect = (found: ClientRecord | null) => {
     if (!found) {
       setClientId('');
       setClientName('');
@@ -239,34 +227,14 @@ const TaxPaymentModal: React.FC<TaxPaymentModalProps> = ({ open, editing, onClos
           )}
 
           {/* Client Picker */}
-          <div className="space-y-2">
-            <label className={labelCls}>Client *</label>
-            <div className="relative">
-              <Search className="w-3.5 h-3.5 text-slate-400 absolute left-2.5 top-1/2 -translate-y-1/2 pointer-events-none" />
-              <input
-                type="text"
-                disabled={isReadOnly}
-                value={clientSearch}
-                onChange={(e) => setClientSearch(e.target.value)}
-                placeholder="Filter clients by name, Client ID, SSM No., or TIN..."
-                className={`${inputCls} pl-8`}
-              />
-            </div>
-            <select
-              required
-              disabled={isReadOnly}
-              value={clientId}
-              onChange={(e) => handleClientSelect(e.target.value)}
-              className={inputCls}
-            >
-              <option value="">— Select Client —</option>
-              {filteredClients.map((c) => (
-                <option key={c.id} value={c.clientId}>
-                  {c.clientName} ({c.clientId}) · {c.category}
-                </option>
-              ))}
-            </select>
-          </div>
+          <ClientSelectorField
+            clients={clients}
+            value={clientId}
+            onSelectClient={handleClientSelect}
+            disabled={isReadOnly}
+            required
+            label="Client"
+          />
 
           <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
             <div>
@@ -512,12 +480,35 @@ export const TaxPaymentMonitorView: React.FC = () => {
     });
   }, [taxPayments, typeFilter, verificationFilter, followUpFilter, yaFilter, search]);
 
+  const paymentValueGetters = useMemo(
+    () => ({
+      paymentId: (p: TaxPaymentRecord) => p.paymentId,
+      clientName: (p: TaxPaymentRecord) => p.clientName,
+      paymentType: (p: TaxPaymentRecord) => p.paymentType,
+      ya: (p: TaxPaymentRecord) => p.ya || '',
+      referenceCaseNo: (p: TaxPaymentRecord) => p.referenceCaseNo || '',
+      dueDate: (p: TaxPaymentRecord) => formatDateDDMMYYYY(p.dueDate),
+      amountDue: (p: TaxPaymentRecord) => p.amountDue,
+      amountPaid: (p: TaxPaymentRecord) => p.amountPaid,
+      outstandingAmount: (p: TaxPaymentRecord) => p.outstandingAmount,
+      paymentDate: (p: TaxPaymentRecord) => formatDateDDMMYYYY(p.paymentDate),
+      paymentReference: (p: TaxPaymentRecord) => p.paymentReference || '',
+      verificationStatus: (p: TaxPaymentRecord) => p.verificationStatus,
+      followUpStatus: (p: TaxPaymentRecord) => p.followUpStatus,
+      remarks: (p: TaxPaymentRecord) => p.remarks || '',
+    }),
+    []
+  );
+
+  const excel = useExcelTableFilters(filteredPayments, paymentValueGetters);
+  const displayedPayments = excel.rows;
+
   const totals = useMemo(() => {
     let totalDue = 0;
     let totalPaid = 0;
     let totalOutstanding = 0;
     let overdueCount = 0;
-    for (const p of filteredPayments) {
+    for (const p of displayedPayments) {
       totalDue += safeNum(p.amountDue);
       totalPaid += safeNum(p.amountPaid);
       totalOutstanding += safeNum(p.outstandingAmount);
@@ -526,10 +517,15 @@ export const TaxPaymentMonitorView: React.FC = () => {
       }
     }
     return { totalDue, totalPaid, totalOutstanding, overdueCount };
-  }, [filteredPayments, todayStr]);
+  }, [displayedPayments, todayStr]);
 
   const hasActiveFilters = Boolean(
-    search.trim() || typeFilter || verificationFilter || followUpFilter || yaFilter
+    search.trim() ||
+      typeFilter ||
+      verificationFilter ||
+      followUpFilter ||
+      yaFilter ||
+      excel.hasActiveColumnFilters
   );
 
   const handleResetFilters = () => {
@@ -538,6 +534,7 @@ export const TaxPaymentMonitorView: React.FC = () => {
     setVerificationFilter('');
     setFollowUpFilter('');
     setYaFilter('');
+    excel.resetColumnFilters();
   };
 
   const handleToggleColumn = (key: string) => {
@@ -549,7 +546,7 @@ export const TaxPaymentMonitorView: React.FC = () => {
       key: c.key,
       label: c.label,
     }));
-    const rows = filteredPayments.map((p) => ({
+    const rows = displayedPayments.map((p) => ({
       paymentId: p.paymentId,
       clientName: `${p.clientName} (${p.clientId})`,
       paymentType: p.paymentType,
@@ -712,7 +709,7 @@ export const TaxPaymentMonitorView: React.FC = () => {
         onExportExcel={handleExportExcel}
         onPrint={handlePrint}
         onSavePdf={handleSavePdf}
-        recordCount={filteredPayments.length}
+        recordCount={displayedPayments.length}
         totalCount={taxPayments.length}
         primaryAction={
           !isReadOnly ? (
@@ -792,79 +789,34 @@ export const TaxPaymentMonitorView: React.FC = () => {
           <table className="w-full text-xs border-collapse">
             <thead className="bg-slate-100 sticky top-0 z-10 border-b border-slate-200 text-slate-700">
               <tr>
-                {visibleColumns.paymentId && (
-                  <th className="px-3 py-2.5 text-left font-semibold whitespace-nowrap">
-                    Payment ID
+                {PAYMENT_COLUMNS.filter((c) => visibleColumns[c.key]).map((col) => (
+                  <th
+                    key={col.key}
+                    className={`px-3 py-2.5 font-semibold whitespace-nowrap ${
+                      col.align === 'right' ? 'text-right' : 'text-left'
+                    }`}
+                  >
+                    <ExcelColumnFilter
+                      columnKey={col.key}
+                      title={col.label}
+                      values={excel.getColumnValues(col.key)}
+                      selectedValues={excel.columnFilters[col.key]}
+                      onChangeSelected={(next) => excel.setColumnFilter(col.key, next)}
+                      sortDirection={
+                        excel.sortState?.key === col.key ? excel.sortState.direction : null
+                      }
+                      onSort={(dir) => excel.setColumnSort(col.key, dir)}
+                      align={col.align === 'right' ? 'right' : 'left'}
+                    />
                   </th>
-                )}
-                {visibleColumns.clientName && (
-                  <th className="px-3 py-2.5 text-left font-semibold whitespace-nowrap">
-                    Client Name
-                  </th>
-                )}
-                {visibleColumns.paymentType && (
-                  <th className="px-3 py-2.5 text-left font-semibold whitespace-nowrap">
-                    Payment Type
-                  </th>
-                )}
-                {visibleColumns.ya && (
-                  <th className="px-3 py-2.5 text-left font-semibold whitespace-nowrap">YA</th>
-                )}
-                {visibleColumns.referenceCaseNo && (
-                  <th className="px-3 py-2.5 text-left font-semibold whitespace-nowrap">
-                    Reference / Case No.
-                  </th>
-                )}
-                {visibleColumns.dueDate && (
-                  <th className="px-3 py-2.5 text-left font-semibold whitespace-nowrap">
-                    Due Date
-                  </th>
-                )}
-                {visibleColumns.amountDue && (
-                  <th className="px-3 py-2.5 text-right font-semibold whitespace-nowrap">
-                    Amount Due
-                  </th>
-                )}
-                {visibleColumns.amountPaid && (
-                  <th className="px-3 py-2.5 text-right font-semibold whitespace-nowrap">
-                    Amount Paid
-                  </th>
-                )}
-                {visibleColumns.outstandingAmount && (
-                  <th className="px-3 py-2.5 text-right font-semibold whitespace-nowrap">
-                    Outstanding
-                  </th>
-                )}
-                {visibleColumns.paymentDate && (
-                  <th className="px-3 py-2.5 text-left font-semibold whitespace-nowrap">
-                    Payment Date
-                  </th>
-                )}
-                {visibleColumns.paymentReference && (
-                  <th className="px-3 py-2.5 text-left font-semibold whitespace-nowrap">
-                    Payment Ref
-                  </th>
-                )}
-                {visibleColumns.verificationStatus && (
-                  <th className="px-3 py-2.5 text-left font-semibold whitespace-nowrap">
-                    Verification
-                  </th>
-                )}
-                {visibleColumns.followUpStatus && (
-                  <th className="px-3 py-2.5 text-left font-semibold whitespace-nowrap">
-                    Follow-Up
-                  </th>
-                )}
-                {visibleColumns.remarks && (
-                  <th className="px-3 py-2.5 text-left font-semibold whitespace-nowrap">Remarks</th>
-                )}
+                ))}
                 <th className="px-3 py-2.5 text-right font-semibold whitespace-nowrap no-print">
                   Action
                 </th>
               </tr>
             </thead>
             <tbody className="divide-y divide-slate-100">
-              {filteredPayments.length === 0 ? (
+              {displayedPayments.length === 0 ? (
                 <tr>
                   <td colSpan={15} className="px-4 py-12 text-center text-slate-500">
                     {taxPayments.length === 0
@@ -873,7 +825,7 @@ export const TaxPaymentMonitorView: React.FC = () => {
                   </td>
                 </tr>
               ) : (
-                filteredPayments.map((p) => {
+                displayedPayments.map((p) => {
                   const isOverdue = p.outstandingAmount > 0 && Boolean(p.dueDate) && p.dueDate < todayStr;
                   return (
                     <tr key={p.id} className="hover:bg-slate-50/90 align-top">

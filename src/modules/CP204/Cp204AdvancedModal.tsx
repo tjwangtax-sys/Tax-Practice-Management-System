@@ -6,7 +6,6 @@ import {
   Trash2,
   AlertCircle,
   CheckCircle2,
-  Search,
   Layers,
   CalendarPlus,
   ExternalLink,
@@ -28,6 +27,7 @@ import {
 import { useAuth } from '../../context/AuthContext';
 import { Cp204SavePayload, useData } from '../../context/DataContext';
 import { StatusPill } from '../../components/StatusPill';
+import { ClientSelectorField } from '../../components/ClientSelectorField';
 import { formatDateDDMMYYYY } from '../../lib/deadlineUtils';
 import {
   computeCp204BasisDates,
@@ -66,7 +66,6 @@ export const Cp204AdvancedModal: React.FC<Cp204AdvancedModalProps> = ({
   const [successMsg, setSuccessMsg] = useState<string | null>(null);
 
   // Tab 1: Bulk Creator state
-  const [bulkClientSearch, setBulkClientSearch] = useState('');
   const [bulkClientId, setBulkClientId] = useState('');
   const [yaFrom, setYaFrom] = useState(String(new Date().getFullYear()));
   const [yaTo, setYaTo] = useState(String(new Date().getFullYear() + 2));
@@ -78,17 +77,6 @@ export const Cp204AdvancedModal: React.FC<Cp204AdvancedModalProps> = ({
     () => clients.filter((c) => c.category === 'Corporate' || c.category === 'Other'),
     [clients]
   );
-
-  const filteredBulkClients = useMemo(() => {
-    const q = bulkClientSearch.trim().toLowerCase();
-    if (!q) return corporateClients;
-    return corporateClients.filter(
-      (c) =>
-        c.clientName.toLowerCase().includes(q) ||
-        c.clientId.toLowerCase().includes(q) ||
-        (c.companyNo || '').toLowerCase().includes(q)
-    );
-  }, [corporateClients, bulkClientSearch]);
 
   const activeStaffNames = useMemo(
     () => staff.filter((s) => s.active).map((s) => s.staffName),
@@ -481,31 +469,15 @@ export const Cp204AdvancedModal: React.FC<Cp204AdvancedModalProps> = ({
           {tab === 'bulk' && (
             <div className="space-y-5">
               <div className="grid grid-cols-1 lg:grid-cols-12 gap-4 items-end p-4 rounded-lg border border-slate-200 bg-slate-50/70">
-                <div className="lg:col-span-5 space-y-1.5">
-                  <label className={labelCls}>Corporate Client *</label>
-                  <div className="relative">
-                    <Search className="w-3.5 h-3.5 text-slate-400 absolute left-2.5 top-1/2 -translate-y-1/2 pointer-events-none" />
-                    <input
-                      type="text"
-                      value={bulkClientSearch}
-                      onChange={(e) => setBulkClientSearch(e.target.value)}
-                      placeholder="Search company name or Client ID..."
-                      className={`${inputCls} pl-8`}
-                    />
-                  </div>
-                  <select
+                <div className="lg:col-span-5">
+                  <ClientSelectorField
+                    clients={clients}
                     value={bulkClientId}
-                    onChange={(e) => setBulkClientId(e.target.value)}
-                    className={inputCls}
-                  >
-                    <option value="">— Select Corporate Client —</option>
-                    {filteredBulkClients.map((c) => (
-                      <option key={c.id} value={c.clientId}>
-                        {c.clientName} ({c.clientId}) · FYE {c.fye ? Number(c.fye) : '—'} · PIC:{' '}
-                        {c.taxPic || 'Unassigned'}
-                      </option>
-                    ))}
-                  </select>
+                    onSelectClient={(c) => setBulkClientId(c?.clientId ?? '')}
+                    label="Corporate Client"
+                    required
+                    filterClients={(c) => c.category === 'Corporate' || c.category === 'Other'}
+                  />
                 </div>
 
                 <div className="lg:col-span-2">

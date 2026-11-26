@@ -85,7 +85,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
   collapsed,
   onToggleCollapse,
 }) => {
-  const { isAdmin } = useAuth();
+  const { isManagerOrAdmin } = useAuth();
 
   return (
     <aside
@@ -114,7 +114,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
 
       {/* Navigation Groups */}
       <nav className="flex-1 overflow-y-auto py-3 px-2 space-y-4">
-        {NAV_GROUPS.filter((g) => !g.adminOnly || isAdmin).map((group, gi) => (
+        {NAV_GROUPS.filter((g) => !g.adminOnly || isManagerOrAdmin).map((group, gi) => (
           <div key={group.title ?? `top-${gi}`}>
             {group.title && !collapsed && (
               <div className="px-2.5 pb-1.5 text-[11px] font-semibold tracking-wide text-slate-400">

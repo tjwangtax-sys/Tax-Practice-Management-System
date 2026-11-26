@@ -14,12 +14,13 @@ import {
   Search,
   FileText,
 } from 'lucide-react';
-import { CalendarEvent } from '../../types/tpms';
+import { CalendarEvent, ClientRecord } from '../../types/tpms';
 import { useAuth } from '../../context/AuthContext';
 import { useData } from '../../context/DataContext';
 import { exportTableToPdf, printTable, triggerBlobDownload } from '../../lib/exportUtils';
 import { formatDateDDMMYYYY } from '../../lib/deadlineUtils';
 import { showToast } from '../../lib/toast';
+import { ClientSelectorField } from '../../components/ClientSelectorField';
 
 type CalendarViewMode = 'month' | 'week' | 'day' | 'agenda';
 type CanonicalEventType = 'Company Holiday' | 'Staff Availability' | 'Internal Event';
@@ -234,7 +235,7 @@ function getMalaysiaPublicHolidays(year: number): PublicHolidayRef[] {
 
 function exportCalendarCsv(events: ParsedCalendarEvent[]): void {
   try {
-    const headers = ['Event Type', 'Title', 'Staff', 'Start Date', 'End Date', 'Notes'];
+    const headers = ['Event Type', 'Title', 'Staff', 'Client', 'Start Date', 'End Date', 'Notes'];
     const escapeCsv = (v: string) => `"${(v || '').replace(/"/g, '""')}"`;
     const lines = [
       headers.map(escapeCsv).join(','),
@@ -243,6 +244,9 @@ function exportCalendarCsv(events: ParsedCalendarEvent[]): void {
           e.canonicalType,
           e.displayTitle,
           e.staffName,
+          e.raw.clientName
+            ? `${e.raw.clientId ? `${e.raw.clientId} — ` : ''}${e.raw.clientName}`
+            : '',
           e.raw.startDate,
           e.raw.endDate || e.raw.startDate,
           e.raw.notes || '',
@@ -265,7 +269,7 @@ const WEEKDAY_NAMES = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
 
 export const TeamCalendarView: React.FC = () => {
   const { isReadOnly, isManagerOrAdmin } = useAuth();
-  const { calendarEvents, staff, saveCalendarEvent, deleteCalendarEvent } = useData();
+  const { calendarEvents, clients, staff, saveCalendarEvent, deleteCalendarEvent } = useData();
 
   const [viewMode, setViewMode] = useState<CalendarViewMode>('month');
   const [cursorDate, setCursorDate] = useState(() => new Date());
@@ -278,6 +282,8 @@ export const TeamCalendarView: React.FC = () => {
   const [editingId, setEditingId] = useState<string | null>(null);
   const [formType, setFormType] = useState<CanonicalEventType>('Internal Event');
   const [formStaff, setFormStaff] = useState('');
+  const [formClientId, setFormClientId] = useState('');
+  const [formClientName, setFormClientName] = useState('');
   const [formLabel, setFormLabel] = useState('');
   const [formStartDate, setFormStartDate] = useState(() => toIsoDate(new Date()));
   const [formEndDate, setFormEndDate] = useState(() => toIsoDate(new Date()));
@@ -306,7 +312,7 @@ export const TeamCalendarView: React.FC = () => {
         if (typeFilter && ev.canonicalType !== typeFilter) return false;
         if (staffFilter && ev.staffName.toLowerCase() !== staffFilter.toLowerCase()) return false;
         if (q) {
-          const hay = `${ev.displayTitle} ${ev.canonicalType} ${ev.staffName} ${ev.raw.notes || ''}`.toLowerCase();
+          const hay = `${ev.displayTitle} ${ev.canonicalType} ${ev.staffName} ${ev.raw.clientId || ''} ${ev.raw.clientName || ''} ${ev.raw.notes || ''}`.toLowerCase();
           if (!hay.includes(q)) return false;
         }
         return true;
@@ -378,6 +384,8 @@ export const TeamCalendarView: React.FC = () => {
     setEditingId(null);
     setFormType('Internal Event');
     setFormStaff('');
+    setFormClientId('');
+    setFormClientName('');
     setFormLabel('');
     const dt = defaultDate || toIsoDate(cursorDate);
     setFormStartDate(dt);
@@ -391,12 +399,27 @@ export const TeamCalendarView: React.FC = () => {
     setEditingId(ev.raw.id);
     setFormType(ev.canonicalType);
     setFormStaff(ev.staffName);
+    setFormClientId(ev.raw.clientId || '');
+    setFormClientName(ev.raw.clientName || '');
     setFormLabel(ev.cleanLabel);
     setFormStartDate(ev.raw.startDate || todayIso);
     setFormEndDate(ev.raw.endDate || ev.raw.startDate || todayIso);
     setFormNotes(ev.raw.notes || '');
     setFormError('');
     setModalOpen(true);
+  };
+
+  const handleSelectClient = (client: ClientRecord | null) => {
+    if (!client) {
+      setFormClientId('');
+      setFormClientName('');
+      return;
+    }
+    setFormClientId(client.clientId);
+    setFormClientName(client.clientName);
+    if (client.taxPic && !formStaff && formType !== 'Company Holiday') {
+      setFormStaff(client.taxPic);
+    }
   };
 
   const handleSaveEvent = async (e: React.FormEvent) => {
@@ -426,6 +449,8 @@ export const TeamCalendarView: React.FC = () => {
           startDate: formStartDate,
           endDate: effectiveEnd,
           assignedTo: formStaff.trim(),
+          clientId: formClientId.trim(),
+          clientName: formClientName.trim(),
           notes: formNotes.trim(),
         },
         editingId ?? undefined
@@ -443,6 +468,7 @@ export const TeamCalendarView: React.FC = () => {
       { key: 'type', label: 'Event Type' },
       { key: 'title', label: 'Event Title' },
       { key: 'staff', label: 'Staff' },
+      { key: 'client', label: 'Client' },
       { key: 'start', label: 'Start Date' },
       { key: 'end', label: 'End Date' },
       { key: 'notes', label: 'Notes' },
@@ -451,6 +477,9 @@ export const TeamCalendarView: React.FC = () => {
       type: e.canonicalType,
       title: e.displayTitle,
       staff: e.staffName || '—',
+      client: e.raw.clientName
+        ? `${e.raw.clientId ? `${e.raw.clientId} — ` : ''}${e.raw.clientName}`
+        : '—',
       start: formatDateDDMMYYYY(e.raw.startDate),
       end: formatDateDDMMYYYY(e.raw.endDate || e.raw.startDate),
       notes: e.raw.notes || '',
@@ -800,6 +829,9 @@ export const TeamCalendarView: React.FC = () => {
                           ? ` – ${formatDateDDMMYYYY(ev.raw.endDate)}`
                           : ''}
                         {ev.staffName ? ` • Staff: ${ev.staffName}` : ''}
+                        {ev.raw.clientName
+                          ? ` • Client: ${ev.raw.clientName}${ev.raw.clientId ? ` (${ev.raw.clientId})` : ''}`
+                          : ''}
                       </div>
                       {ev.raw.notes && <p className="text-xs text-slate-600">{ev.raw.notes}</p>}
                     </div>
@@ -829,6 +861,7 @@ export const TeamCalendarView: React.FC = () => {
                   <th className="py-2.5 px-4">Event Type</th>
                   <th className="py-2.5 px-4">Event Title</th>
                   <th className="py-2.5 px-4">Staff</th>
+                  <th className="py-2.5 px-4">Client</th>
                   <th className="py-2.5 px-4">Notes</th>
                   <th className="py-2.5 px-4 text-right">Actions</th>
                 </tr>
@@ -836,7 +869,7 @@ export const TeamCalendarView: React.FC = () => {
               <tbody className="divide-y divide-slate-100 text-xs">
                 {parsedEvents.length === 0 ? (
                   <tr>
-                    <td colSpan={7} className="py-10 text-center text-slate-400">
+                    <td colSpan={8} className="py-10 text-center text-slate-400">
                       No matching calendar events.
                     </td>
                   </tr>
@@ -861,6 +894,20 @@ export const TeamCalendarView: React.FC = () => {
                       <td className="py-2 px-4 font-medium text-slate-900">{ev.displayTitle}</td>
                       <td className="py-2 px-4 text-slate-700 whitespace-nowrap">
                         {ev.staffName || '—'}
+                      </td>
+                      <td className="py-2 px-4 text-slate-700 whitespace-nowrap">
+                        {ev.raw.clientName ? (
+                          <div>
+                            <div className="font-medium text-slate-800">{ev.raw.clientName}</div>
+                            {ev.raw.clientId && (
+                              <div className="text-[10px] font-mono text-slate-400">
+                                {ev.raw.clientId}
+                              </div>
+                            )}
+                          </div>
+                        ) : (
+                          '—'
+                        )}
                       </td>
                       <td className="py-2 px-4 text-slate-600 max-w-[240px] truncate">
                         {ev.raw.notes || '—'}
@@ -1023,6 +1070,15 @@ export const TeamCalendarView: React.FC = () => {
                   </select>
                 </div>
               </div>
+
+              <ClientSelectorField
+                clients={clients}
+                value={formClientId}
+                onSelectClient={handleSelectClient}
+                label="Related Client (Optional)"
+                selectPlaceholder="-- Select Client ID (Optional) --"
+                disabled={isReadOnly}
+              />
 
               <div>
                 <label className="block text-[11px] font-medium text-slate-700 mb-1">
