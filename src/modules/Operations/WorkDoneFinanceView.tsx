@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
   Plus,
   FileDown,
@@ -10,6 +10,7 @@ import {
   X,
   FileText,
   Receipt,
+  Printer,
 } from 'lucide-react';
 import {
   ColumnDef,
@@ -25,6 +26,7 @@ import { useColumnVisibility } from '../../hooks/useColumnVisibility';
 import { RegisterToolbar } from '../../components/RegisterToolbar';
 import { exportToExcel, printRegisterHtml } from '../../lib/exportUtils';
 import { formatDateDDMMYYYY } from '../../lib/deadlineUtils';
+import { showToast } from '../../lib/toast';
 import { WorkDoneModal } from './WorkDoneModal';
 import {
   createWorkDonePdfPreviewUrl,
@@ -125,6 +127,7 @@ export const WorkDoneFinanceView: React.FC = () => {
   // In-app PDF Preview modal
   const [previewRecord, setPreviewRecord] = useState<WorkDoneRecord | null>(null);
   const [previewUrl, setPreviewUrl] = useState<string | null>(null);
+  const previewIframeRef = useRef<HTMLIFrameElement | null>(null);
 
   // Inline Delete Confirmation (Admin only)
   const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null);
@@ -144,9 +147,46 @@ export const WorkDoneFinanceView: React.FC = () => {
       return url;
     });
     return () => {
-      URL.revokeObjectURL(url);
+      if (url) URL.revokeObjectURL(url);
     };
   }, [previewRecord]);
+
+  const handlePrintPreviewIframe = () => {
+    const win = previewIframeRef.current?.contentWindow;
+    if (!win) {
+      showToast(
+        'Preview sandbox blocked printing — click Open in New Tab (↗) or use Export to PDF.',
+        'warning',
+        7000
+      );
+      return;
+    }
+    let beforePrintFired = false;
+    const onBeforePrint = () => {
+      beforePrintFired = true;
+    };
+    try {
+      win.addEventListener('beforeprint', onBeforePrint, { once: true });
+      win.focus();
+      win.print();
+    } catch {
+      showToast(
+        'Preview sandbox blocked printing — click Open in New Tab (↗) or use Export to PDF.',
+        'warning',
+        7000
+      );
+      return;
+    }
+    window.setTimeout(() => {
+      if (!beforePrintFired) {
+        showToast(
+          'Preview sandbox blocked printing — click Open in New Tab (↗) or use Export to PDF.',
+          'warning',
+          7000
+        );
+      }
+    }, 250);
+  };
 
   const distinctYas = useMemo(
     () =>
@@ -805,6 +845,15 @@ export const WorkDoneFinanceView: React.FC = () => {
               <div className="flex items-center gap-2">
                 <button
                   type="button"
+                  onClick={handlePrintPreviewIframe}
+                  disabled={!previewUrl}
+                  className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-slate-700 bg-white border border-slate-200 rounded-md hover:bg-slate-100 disabled:opacity-40 whitespace-nowrap"
+                >
+                  <Printer className="w-3.5 h-3.5" />
+                  Print PDF
+                </button>
+                <button
+                  type="button"
                   onClick={() => downloadWorkDonePdf(previewRecord)}
                   className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-white bg-teal-700 rounded-md hover:bg-teal-800 whitespace-nowrap"
                 >
@@ -824,6 +873,7 @@ export const WorkDoneFinanceView: React.FC = () => {
             <div className="flex-1 bg-slate-100">
               {previewUrl ? (
                 <iframe
+                  ref={previewIframeRef}
                   src={previewUrl}
                   title={`PDF Preview ${previewRecord.workDoneId}`}
                   className="w-full h-full border-0"

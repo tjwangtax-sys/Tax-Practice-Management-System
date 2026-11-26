@@ -6,6 +6,7 @@ import { LoginScreen } from './components/LoginScreen';
 import { Sidebar } from './components/Sidebar';
 import { Header } from './components/Header';
 import { NotificationDrawer } from './components/NotificationDrawer';
+import { ToastHost } from './components/ToastHost';
 import { DashboardView } from './modules/Dashboard/DashboardView';
 import { TeamCalendarView } from './modules/Calendar/TeamCalendarView';
 import { ClientMasterView } from './modules/ClientMaster/ClientMasterView';
@@ -133,6 +134,7 @@ export default function App() {
       <AuthProvider>
         <DataProvider>
           <AppWorkspace />
+          <ToastHost />
         </DataProvider>
       </AuthProvider>
     </ErrorBoundary>

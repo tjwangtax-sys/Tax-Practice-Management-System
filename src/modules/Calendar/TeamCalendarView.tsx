@@ -12,12 +12,14 @@ import {
   X,
   Flag,
   Search,
+  FileText,
 } from 'lucide-react';
 import { CalendarEvent } from '../../types/tpms';
 import { useAuth } from '../../context/AuthContext';
 import { useData } from '../../context/DataContext';
-import { printRegisterHtml } from '../../lib/exportUtils';
+import { exportTableToPdf, printTable, triggerBlobDownload } from '../../lib/exportUtils';
 import { formatDateDDMMYYYY } from '../../lib/deadlineUtils';
+import { showToast } from '../../lib/toast';
 
 type CalendarViewMode = 'month' | 'week' | 'day' | 'agenda';
 type CanonicalEventType = 'Company Holiday' | 'Staff Availability' | 'Internal Event';
@@ -231,32 +233,32 @@ function getMalaysiaPublicHolidays(year: number): PublicHolidayRef[] {
 }
 
 function exportCalendarCsv(events: ParsedCalendarEvent[]): void {
-  const headers = ['Event Type', 'Title', 'Staff', 'Start Date', 'End Date', 'Notes'];
-  const escapeCsv = (v: string) => `"${(v || '').replace(/"/g, '""')}"`;
-  const lines = [
-    headers.map(escapeCsv).join(','),
-    ...events.map((e) =>
-      [
-        e.canonicalType,
-        e.displayTitle,
-        e.staffName,
-        e.raw.startDate,
-        e.raw.endDate || e.raw.startDate,
-        e.raw.notes || '',
-      ]
-        .map(escapeCsv)
-        .join(',')
-    ),
-  ];
-  const blob = new Blob([lines.join('\n')], { type: 'text/csv;charset=utf-8;' });
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement('a');
-  a.href = url;
-  a.download = `TPMS_Team_Calendar_${new Date().toISOString().slice(0, 10)}.csv`;
-  document.body.appendChild(a);
-  a.click();
-  document.body.removeChild(a);
-  setTimeout(() => URL.revokeObjectURL(url), 3000);
+  try {
+    const headers = ['Event Type', 'Title', 'Staff', 'Start Date', 'End Date', 'Notes'];
+    const escapeCsv = (v: string) => `"${(v || '').replace(/"/g, '""')}"`;
+    const lines = [
+      headers.map(escapeCsv).join(','),
+      ...events.map((e) =>
+        [
+          e.canonicalType,
+          e.displayTitle,
+          e.staffName,
+          e.raw.startDate,
+          e.raw.endDate || e.raw.startDate,
+          e.raw.notes || '',
+        ]
+          .map(escapeCsv)
+          .join(',')
+      ),
+    ];
+    const filename = `TPMS_Team_Calendar_${new Date().toISOString().slice(0, 10)}.csv`;
+    const blob = new Blob([lines.join('\n')], { type: 'text/csv;charset=utf-8;' });
+    triggerBlobDownload(blob, filename);
+    showToast(`Downloaded ${filename}`, 'success', 3200);
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    showToast(`CSV export failed: ${msg}`, 'error');
+  }
 }
 
 const WEEKDAY_NAMES = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
@@ -436,7 +438,7 @@ export const TeamCalendarView: React.FC = () => {
     }
   };
 
-  const handlePrintCalendar = () => {
+  const buildCalendarExport = () => {
     const cols = [
       { key: 'type', label: 'Event Type' },
       { key: 'title', label: 'Event Title' },
@@ -453,7 +455,24 @@ export const TeamCalendarView: React.FC = () => {
       end: formatDateDDMMYYYY(e.raw.endDate || e.raw.startDate),
       notes: e.raw.notes || '',
     }));
-    printRegisterHtml('Team Calendar Schedule', periodTitle, cols, rows, false);
+    const filterSummary = [
+      periodTitle,
+      typeFilter ? `Type: ${typeFilter}` : '',
+      staffFilter ? `Staff: ${staffFilter}` : '',
+    ]
+      .filter(Boolean)
+      .join(' • ');
+    return { cols, rows, filterSummary };
+  };
+
+  const handlePrintCalendar = () => {
+    const { cols, rows, filterSummary } = buildCalendarExport();
+    printTable('Team Calendar Schedule', filterSummary, cols, rows);
+  };
+
+  const handleExportCalendarPdf = () => {
+    const { cols, rows, filterSummary } = buildCalendarExport();
+    exportTableToPdf('Team Calendar Schedule', filterSummary, cols, rows);
   };
 
   const cursorIso = toIsoDate(cursorDate);
@@ -477,6 +496,14 @@ export const TeamCalendarView: React.FC = () => {
           >
             <Printer className="w-3.5 h-3.5 text-slate-500" />
             Print
+          </button>
+          <button
+            type="button"
+            onClick={handleExportCalendarPdf}
+            className="inline-flex items-center gap-1.5 px-2.5 py-1.5 text-xs font-medium text-slate-700 bg-white border border-slate-200 rounded-md hover:bg-slate-50 whitespace-nowrap"
+          >
+            <FileText className="w-3.5 h-3.5 text-rose-700" />
+            Export PDF
           </button>
           <button
             type="button"

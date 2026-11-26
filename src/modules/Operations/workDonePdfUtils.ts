@@ -2,6 +2,8 @@ import { jsPDF } from 'jspdf';
 import JSZip from 'jszip';
 import { formatCurrencyRM, WorkDoneRecord } from '../../types/tpms';
 import { formatDateDDMMYYYY } from '../../lib/deadlineUtils';
+import { triggerBlobDownload } from '../../lib/exportUtils';
+import { showToast } from '../../lib/toast';
 
 function formatOptionalRM(val: number | null | undefined): string {
   if (val === null || val === undefined || !Number.isFinite(val)) return '—';
@@ -376,49 +378,70 @@ export function buildWorkDoneFilename(record: WorkDoneRecord): string {
 /**
  * Creates a Blob URL for in-app A4 PDF preview modal (caller must revoke on unmount).
  */
-export function createWorkDonePdfPreviewUrl(record: WorkDoneRecord): string {
-  const doc = generateWorkDonePdfDoc(record);
-  const blob = doc.output('blob');
-  return URL.createObjectURL(blob);
+export function createWorkDonePdfPreviewUrl(record: WorkDoneRecord): string | null {
+  try {
+    const doc = generateWorkDonePdfDoc(record);
+    const blob = doc.output('blob');
+    return URL.createObjectURL(blob);
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    showToast(`Failed to render Work Done PDF preview: ${msg}`, 'error');
+    return null;
+  }
 }
 
 /**
- * Triggers a direct client-side download of a single Work Done A4 PDF.
+ * Triggers a sandbox-safe direct download of a single Work Done A4 PDF via URL.createObjectURL + <a download>.
  */
 export function downloadWorkDonePdf(record: WorkDoneRecord): void {
-  const doc = generateWorkDonePdfDoc(record);
-  doc.save(buildWorkDoneFilename(record));
+  try {
+    const doc = generateWorkDonePdfDoc(record);
+    const blob = doc.output('blob');
+    const filename = buildWorkDoneFilename(record);
+    triggerBlobDownload(blob, filename);
+    showToast(`Downloaded ${filename}`, 'success', 3200);
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    showToast(`Failed to download Work Done PDF: ${msg}`, 'error');
+  }
 }
 
 /**
  * Generates PDFs for all selected Work Done records, bundles them into a ZIP using JSZip,
- * and triggers an automatic download.
+ * and triggers an automatic blob download via URL.createObjectURL + <a download>.
  */
 export async function exportBatchWorkDoneZip(records: WorkDoneRecord[]): Promise<void> {
-  if (records.length === 0) return;
-  const zip = new JSZip();
-  const usedNames = new Set<string>();
-
-  for (const record of records) {
-    const doc = generateWorkDonePdfDoc(record);
-    const arrayBuffer = doc.output('arraybuffer');
-    let filename = buildWorkDoneFilename(record);
-    let suffix = 2;
-    while (usedNames.has(filename)) {
-      filename = filename.replace(/\.pdf$/i, `_${suffix}.pdf`);
-      suffix += 1;
-    }
-    usedNames.add(filename);
-    zip.file(filename, arrayBuffer);
+  if (records.length === 0) {
+    showToast('Select at least one Work Done record to export.', 'warning', 4000);
+    return;
   }
+  try {
+    const zip = new JSZip();
+    const usedNames = new Set<string>();
 
-  const zipBlob = await zip.generateAsync({ type: 'blob' });
-  const url = URL.createObjectURL(zipBlob);
-  const a = document.createElement('a');
-  a.href = url;
-  a.download = `TPMS_WorkDone_PDFs_${new Date().toISOString().slice(0, 10)}.zip`;
-  document.body.appendChild(a);
-  a.click();
-  document.body.removeChild(a);
-  setTimeout(() => URL.revokeObjectURL(url), 4000);
+    for (const record of records) {
+      const doc = generateWorkDonePdfDoc(record);
+      const arrayBuffer = doc.output('arraybuffer');
+      let filename = buildWorkDoneFilename(record);
+      let suffix = 2;
+      while (usedNames.has(filename)) {
+        filename = filename.replace(/\.pdf$/i, `_${suffix}.pdf`);
+        suffix += 1;
+      }
+      usedNames.add(filename);
+      zip.file(filename, arrayBuffer);
+    }
+
+    const zipBlob = await zip.generateAsync({ type: 'blob' });
+    const zipName = `TPMS_WorkDone_PDFs_${new Date().toISOString().slice(0, 10)}.zip`;
+    triggerBlobDownload(zipBlob, zipName);
+    showToast(
+      `Downloaded ${zipName} (${records.length} PDF${records.length === 1 ? '' : 's'})`,
+      'success',
+      3500
+    );
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    showToast(`Batch ZIP PDF export failed: ${msg}`, 'error');
+  }
 }

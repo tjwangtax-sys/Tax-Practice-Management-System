@@ -21,6 +21,9 @@ import {
   AlertTriangle,
   CheckCircle2,
   Briefcase,
+  Printer,
+  FileText,
+  FileSpreadsheet,
 } from 'lucide-react';
 import { TaxJob } from '../../types/tpms';
 import { useAuth } from '../../context/AuthContext';
@@ -32,6 +35,12 @@ import {
   isIsoDateString,
   latestIsoDate,
 } from '../../lib/deadlineUtils';
+import {
+  ExportColumn,
+  exportTableToPdf,
+  exportToExcel,
+  printTable,
+} from '../../lib/exportUtils';
 
 type PeriodPreset =
   | 'this-month'
@@ -447,6 +456,171 @@ export const KpiPerformanceView: React.FC = () => {
     };
   }, [jobs]);
 
+  const buildActiveKpiExport = (): {
+    title: string;
+    subtitle: string;
+    columns: ExportColumn[];
+    rows: Record<string, unknown>[];
+  } => {
+    const scopeNote = isManagerOrAdmin
+      ? 'Scope: Firm-Wide'
+      : `Scope: ${staffProfile?.staffName || 'Current User'} (Role-Scoped)`;
+
+    if (activeTab === 'executive') {
+      const columns: ExportColumn[] = [
+        { key: 'section', label: 'Category' },
+        { key: 'metric', label: 'KPI / Module' },
+        { key: 'primaryValue', label: 'Current / Open', align: 'right' },
+        { key: 'secondaryValue', label: 'Prior / Completed', align: 'right' },
+      ];
+      const rows: Record<string, unknown>[] = [
+        {
+          section: 'Executive KPI',
+          metric: `Completed Jobs (${period.label})`,
+          primaryValue: executiveMetrics.completedInPeriod,
+          secondaryValue: period.prevStart ? executiveMetrics.completedInPrior : '—',
+        },
+        {
+          section: 'Executive KPI',
+          metric: 'Active Open Workload',
+          primaryValue: executiveMetrics.activeWorkload,
+          secondaryValue: '—',
+        },
+        {
+          section: 'Executive KPI',
+          metric: 'Overdue Open Jobs',
+          primaryValue: executiveMetrics.overdueCount,
+          secondaryValue: '—',
+        },
+        {
+          section: 'Executive KPI',
+          metric: 'Upcoming 30-Day Deadlines',
+          primaryValue: executiveMetrics.upcoming30Days,
+          secondaryValue: '—',
+        },
+        {
+          section: 'Executive KPI',
+          metric: `Average Open Jobs / Active Staff (${activeStaffCount})`,
+          primaryValue: executiveMetrics.avgJobsPerStaff,
+          secondaryValue: '—',
+        },
+        ...executiveMetrics.moduleChartData.map((m) => ({
+          section: 'Module Breakdown',
+          metric: m.module,
+          primaryValue: m.Open,
+          secondaryValue: m.Completed,
+        })),
+      ];
+      return {
+        title: 'KPI Executive Summary',
+        subtitle: `Period: ${period.label} • ${scopeNote}`,
+        columns,
+        rows,
+      };
+    }
+
+    if (activeTab === 'staff') {
+      const columns: ExportColumn[] = [
+        { key: 'role', label: 'Role' },
+        { key: 'name', label: 'Staff Name' },
+        { key: 'completedPeriod', label: 'Completed (Period)', align: 'right' },
+        { key: 'onTimePct', label: 'On-Time %', align: 'right' },
+        { key: 'activeOpen', label: 'Active Open', align: 'right' },
+        { key: 'overdueOpen', label: 'Overdue Open', align: 'right' },
+        { key: 'totalAssigned', label: 'Total Assigned', align: 'right' },
+      ];
+      const rows: Record<string, unknown>[] = [
+        ...picRows.map((r) => ({
+          role: 'PIC',
+          name: r.name,
+          completedPeriod: r.completedPeriod,
+          onTimePct:
+            r.completedPeriod > 0
+              ? `${Math.round((r.onTimeCompleted / r.completedPeriod) * 100)}%`
+              : '—',
+          activeOpen: r.activeOpen,
+          overdueOpen: r.overdueOpen,
+          totalAssigned: r.totalAssigned,
+        })),
+        ...reviewerRows.map((r) => ({
+          role: 'Reviewer',
+          name: r.name,
+          completedPeriod: r.completedPeriod,
+          onTimePct:
+            r.completedPeriod > 0
+              ? `${Math.round((r.onTimeCompleted / r.completedPeriod) * 100)}%`
+              : '—',
+          activeOpen: r.activeOpen,
+          overdueOpen: r.overdueOpen,
+          totalAssigned: r.totalAssigned,
+        })),
+      ];
+      return {
+        title: 'KPI Staff Performance',
+        subtitle: `Period: ${period.label} • ${scopeNote}`,
+        columns,
+        rows,
+      };
+    }
+
+    const columns: ExportColumn[] = [
+      { key: 'dimension', label: 'Dimension' },
+      { key: 'bucket', label: 'Period / FYE / YA' },
+      { key: 'open', label: 'Open Jobs', align: 'right' },
+      { key: 'completed', label: 'Completed Jobs', align: 'right' },
+      { key: 'total', label: 'Total', align: 'right' },
+    ];
+    const rows: Record<string, unknown>[] = [
+      ...monthlyTrendData.map((m) => ({
+        dimension: 'Monthly Completion',
+        bucket: m.label,
+        open: '—',
+        completed: m.completed,
+        total: m.completed,
+      })),
+      ...fyeDistribution.map((f) => ({
+        dimension: 'FYE Distribution',
+        bucket: f.label,
+        open: f.open,
+        completed: f.completed,
+        total: f.open + f.completed,
+      })),
+      ...yaDistribution.map((y) => ({
+        dimension: 'YA Distribution',
+        bucket: y.ya,
+        open: y.open,
+        completed: y.completed,
+        total: y.total,
+      })),
+    ];
+    return {
+      title: 'KPI Filing & FYE Trends',
+      subtitle: `Period: ${period.label} • Firm-Wide Aggregate`,
+      columns,
+      rows,
+    };
+  };
+
+  const handlePrintKpi = () => {
+    const exp = buildActiveKpiExport();
+    printTable(exp.title, exp.subtitle, exp.columns, exp.rows);
+  };
+
+  const handleExportKpiPdf = () => {
+    const exp = buildActiveKpiExport();
+    exportTableToPdf(exp.title, exp.subtitle, exp.columns, exp.rows);
+  };
+
+  const handleExportKpiExcel = () => {
+    const exp = buildActiveKpiExport();
+    exportToExcel(
+      `TPMS_${exp.title.replace(/\s+/g, '_')}_${todayStr}.xlsx`,
+      exp.title,
+      exp.columns,
+      exp.rows
+    );
+  };
+
   return (
     <div className="space-y-4">
       {/* Header + Period Preset Selector */}
@@ -500,44 +674,73 @@ export const KpiPerformanceView: React.FC = () => {
         </div>
       )}
 
-      {/* 3 Sub-Tabs */}
-      <div className="flex flex-wrap items-center gap-1.5 border-b border-slate-200 pb-2">
-        <button
-          type="button"
-          onClick={() => setActiveTab('executive')}
-          className={`inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-md border whitespace-nowrap ${
-            activeTab === 'executive'
-              ? 'bg-teal-700 text-white border-teal-700'
-              : 'bg-white text-slate-700 border-slate-200 hover:bg-slate-50'
-          }`}
-        >
-          <BarChart3 className="w-3.5 h-3.5" />
-          Executive Summary
-        </button>
-        <button
-          type="button"
-          onClick={() => setActiveTab('staff')}
-          className={`inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-md border whitespace-nowrap ${
-            activeTab === 'staff'
-              ? 'bg-teal-700 text-white border-teal-700'
-              : 'bg-white text-slate-700 border-slate-200 hover:bg-slate-50'
-          }`}
-        >
-          <Users className="w-3.5 h-3.5" />
-          Staff Performance
-        </button>
-        <button
-          type="button"
-          onClick={() => setActiveTab('trends')}
-          className={`inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-md border whitespace-nowrap ${
-            activeTab === 'trends'
-              ? 'bg-teal-700 text-white border-teal-700'
-              : 'bg-white text-slate-700 border-slate-200 hover:bg-slate-50'
-          }`}
-        >
-          <CalendarDays className="w-3.5 h-3.5" />
-          Filing & FYE Trends
-        </button>
+      {/* 3 Sub-Tabs + Export / Print Bar */}
+      <div className="flex flex-wrap items-center justify-between gap-2 border-b border-slate-200 pb-2">
+        <div className="flex flex-wrap items-center gap-1.5">
+          <button
+            type="button"
+            onClick={() => setActiveTab('executive')}
+            className={`inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-md border whitespace-nowrap ${
+              activeTab === 'executive'
+                ? 'bg-teal-700 text-white border-teal-700'
+                : 'bg-white text-slate-700 border-slate-200 hover:bg-slate-50'
+            }`}
+          >
+            <BarChart3 className="w-3.5 h-3.5" />
+            Executive Summary
+          </button>
+          <button
+            type="button"
+            onClick={() => setActiveTab('staff')}
+            className={`inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-md border whitespace-nowrap ${
+              activeTab === 'staff'
+                ? 'bg-teal-700 text-white border-teal-700'
+                : 'bg-white text-slate-700 border-slate-200 hover:bg-slate-50'
+            }`}
+          >
+            <Users className="w-3.5 h-3.5" />
+            Staff Performance
+          </button>
+          <button
+            type="button"
+            onClick={() => setActiveTab('trends')}
+            className={`inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-md border whitespace-nowrap ${
+              activeTab === 'trends'
+                ? 'bg-teal-700 text-white border-teal-700'
+                : 'bg-white text-slate-700 border-slate-200 hover:bg-slate-50'
+            }`}
+          >
+            <CalendarDays className="w-3.5 h-3.5" />
+            Filing & FYE Trends
+          </button>
+        </div>
+
+        <div className="flex flex-wrap items-center gap-1.5 no-print">
+          <button
+            type="button"
+            onClick={handleExportKpiExcel}
+            className="inline-flex items-center gap-1.5 px-2.5 py-1.5 text-xs font-medium text-slate-700 bg-white border border-slate-200 rounded-md hover:bg-slate-50 whitespace-nowrap"
+          >
+            <FileSpreadsheet className="w-3.5 h-3.5 text-emerald-700" />
+            Excel
+          </button>
+          <button
+            type="button"
+            onClick={handlePrintKpi}
+            className="inline-flex items-center gap-1.5 px-2.5 py-1.5 text-xs font-medium text-slate-700 bg-white border border-slate-200 rounded-md hover:bg-slate-50 whitespace-nowrap"
+          >
+            <Printer className="w-3.5 h-3.5 text-slate-600" />
+            Print
+          </button>
+          <button
+            type="button"
+            onClick={handleExportKpiPdf}
+            className="inline-flex items-center gap-1.5 px-2.5 py-1.5 text-xs font-medium text-slate-700 bg-white border border-slate-200 rounded-md hover:bg-slate-50 whitespace-nowrap"
+          >
+            <FileText className="w-3.5 h-3.5 text-rose-700" />
+            Export PDF
+          </button>
+        </div>
       </div>
 
       {/* TAB 1: EXECUTIVE SUMMARY */}
