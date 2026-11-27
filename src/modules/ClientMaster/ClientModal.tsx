@@ -215,7 +215,9 @@ export const ClientModal: React.FC<ClientModalProps> = ({
     form.secondYaStatus
   );
 
-  const activeStaffNames = staff.filter((s) => s.active).map((s) => s.staffName);
+  const activeStaffNames = Array.from(
+    new Set(staff.filter((s) => s.active).map((s) => s.staffName.trim()).filter(Boolean))
+  );
 
   const setField = <K extends keyof ClientFormState>(key: K, val: ClientFormState[K]) => {
     setForm((prev) => ({ ...prev, [key]: val }));

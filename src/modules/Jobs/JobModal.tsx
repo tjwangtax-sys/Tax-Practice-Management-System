@@ -369,7 +369,9 @@ export const JobModal: React.FC<JobModalProps> = ({
       : ['LHDN Desk Audit', 'LHDN Field Audit', 'Section 78 / 81 Query', 'Form Q Appeal', 'Tax Refund Follow-up'];
   })();
 
-  const activeStaffNames = staff.filter((s) => s.active).map((s) => s.staffName);
+  const activeStaffNames = Array.from(
+    new Set(staff.filter((s) => s.active).map((s) => s.staffName.trim()).filter(Boolean))
+  );
 
   const patchForm = (
     partial: Partial<JobSavePayload>,

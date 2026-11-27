@@ -141,10 +141,14 @@ export const WorkDoneModal: React.FC<WorkDoneModalProps> = ({ open, record, onCl
 
   const activeStaffNames = useMemo(
     () =>
-      staff
-        .filter((s) => s.active)
-        .map((s) => s.staffName)
-        .sort((a, b) => a.localeCompare(b)),
+      Array.from(
+        new Set(
+          staff
+            .filter((s) => s.active)
+            .map((s) => s.staffName.trim())
+            .filter(Boolean)
+        )
+      ).sort((a, b) => a.localeCompare(b)),
     [staff]
   );
 

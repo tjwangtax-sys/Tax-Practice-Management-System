@@ -64,7 +64,10 @@ export const Cp204InitialQuickModal: React.FC<Cp204InitialQuickModalProps> = ({
   const [error, setError] = useState<string | null>(null);
 
   const activeStaffNames = useMemo(
-    () => staff.filter((s) => s.active).map((s) => s.staffName),
+    () =>
+      Array.from(
+        new Set(staff.filter((s) => s.active).map((s) => s.staffName.trim()).filter(Boolean))
+      ),
     [staff]
   );
 
@@ -437,7 +440,10 @@ export const Cp204RevisionQuickModal: React.FC<Cp204RevisionQuickModalProps> = (
   }, [cp204Records, recordSearch]);
 
   const activeStaffNames = useMemo(
-    () => staff.filter((s) => s.active).map((s) => s.staffName),
+    () =>
+      Array.from(
+        new Set(staff.filter((s) => s.active).map((s) => s.staffName.trim()).filter(Boolean))
+      ),
     [staff]
   );
 

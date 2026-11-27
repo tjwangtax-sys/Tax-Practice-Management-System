@@ -211,12 +211,15 @@ export const TeamCalendarView: React.FC<TeamCalendarViewProps> = ({ onNavigate }
   }, [activeStaff, staffFilter]);
 
   const activeStaffNames = useMemo(
-    () => activeStaff.map((s) => s.staffName),
+    () => Array.from(new Set(activeStaff.map((s) => s.staffName.trim()).filter(Boolean))),
     [activeStaff]
   );
 
   const filterStaffNames = useMemo(
-    () => (viewMode === 'matrix' ? matrixEligibleStaff.map((s) => s.staffName) : activeStaffNames),
+    () =>
+      viewMode === 'matrix'
+        ? Array.from(new Set(matrixEligibleStaff.map((s) => s.staffName.trim()).filter(Boolean)))
+        : activeStaffNames,
     [viewMode, matrixEligibleStaff, activeStaffNames]
   );
 

@@ -108,7 +108,10 @@ const CorrespondenceModal: React.FC<CorrespondenceModalProps> = ({ open, editing
   );
 
   const activeStaffNames = useMemo(
-    () => staff.filter((s) => s.active).map((s) => s.staffName),
+    () =>
+      Array.from(
+        new Set(staff.filter((s) => s.active).map((s) => s.staffName.trim()).filter(Boolean))
+      ),
     [staff]
   );
 

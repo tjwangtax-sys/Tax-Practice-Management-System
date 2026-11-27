@@ -283,7 +283,9 @@ export const BatchAddJobsModal: React.FC<BatchAddJobsModalProps> = ({
     }
   };
 
-  const activeStaffNames = staff.filter((s) => s.active).map((s) => s.staffName);
+  const activeStaffNames = Array.from(
+    new Set(staff.filter((s) => s.active).map((s) => s.staffName.trim()).filter(Boolean))
+  );
   const willCreateCount = previewRows.filter((r) => !r.duplicate).length;
   const duplicateSelectedCount = previewRows.filter((r) => r.duplicate).length;
 
