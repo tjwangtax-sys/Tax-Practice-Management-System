@@ -440,14 +440,61 @@ function pickRaw(map: Map<string, unknown>, aliases: string[]): unknown {
   return undefined;
 }
 
+function isPlainObject(val: unknown): val is Record<string, unknown> {
+  if (val === null || typeof val !== 'object' || Array.isArray(val)) return false;
+  const proto = Object.getPrototypeOf(val);
+  return proto === Object.prototype || proto === null;
+}
+
+function sanitizeFirestoreValue(val: unknown): unknown {
+  if (val === undefined) return undefined;
+  if (typeof val === 'number') {
+    return Number.isFinite(val) ? val : 0;
+  }
+  if (Array.isArray(val)) {
+    const out: unknown[] = [];
+    for (const item of val) {
+      const cleaned = sanitizeFirestoreValue(item);
+      if (cleaned !== undefined) out.push(cleaned);
+    }
+    return out;
+  }
+  if (isPlainObject(val)) {
+    const out: Record<string, unknown> = {};
+    for (const [k, v] of Object.entries(val)) {
+      const cleaned = sanitizeFirestoreValue(v);
+      if (cleaned !== undefined) out[k] = cleaned;
+    }
+    return out;
+  }
+  // Primitives (string, boolean, null) and Firestore sentinels/Date/Timestamp instances
+  return val;
+}
+
+/**
+ * Recursively strips `undefined` keys and replaces non-finite numbers (`NaN`/`Infinity`) with `0`
+ * while preserving Firestore FieldValue sentinels (e.g. `serverTimestamp()`), Timestamps, and Dates.
+ */
+export function sanitizeFirestorePayload(
+  obj: Record<string, unknown>
+): Record<string, unknown> {
+  const out: Record<string, unknown> = {};
+  for (const [k, v] of Object.entries(obj)) {
+    const cleaned = sanitizeFirestoreValue(v);
+    if (cleaned !== undefined) {
+      out[k] = cleaned;
+    }
+  }
+  return out;
+}
+
 function clampStr(val: unknown, maxLen: number): string {
-  if (val === undefined || val === null) return '';
-  return String(val).trim().slice(0, maxLen);
+  return String(val ?? '').trim().slice(0, maxLen);
 }
 
 function pickStr(map: Map<string, unknown>, aliases: string[], maxLen: number, fallback = ''): string {
   const raw = pickRaw(map, aliases);
-  if (raw === undefined) return fallback;
+  if (raw === undefined) return String(fallback ?? '').trim().slice(0, maxLen);
   return clampStr(raw, maxLen);
 }
 
@@ -680,7 +727,7 @@ export function parseAndValidateRow(
       const payload: Record<string, unknown> = {
         clientId,
         clientName,
-        companyNo: pickStr(m, ['Company No', 'companyNo', 'SSM No', 'Registration No'], 60),
+        companyNo: pickStr(m, ['Company No', 'companyNo', 'SSM No', 'Registration No', 'registrationNo', 'Reg No'], 60),
         tin: pickStr(m, ['TIN', 'Tax File No', 'Income Tax No'], 60),
         fye,
         taxPic: pickStr(m, ['Tax PIC', 'taxPic', 'PIC'], 120),
@@ -700,7 +747,7 @@ export function parseAndValidateRow(
         dateOfResigned: normalizeImportDate(pickRaw(m, ['Date of Resigned', 'dateOfResigned', 'Resigned Date'])),
         auditor: pickStr(m, ['Auditor', 'Audit Firm'], 120),
         account: pickStr(m, ['Account', 'Accountant', 'Account Prep'], 120),
-        eNumber: pickStr(m, ['E Number', 'eNumber', 'Employer No', 'E No'], 60),
+        eNumber: pickStr(m, ['E Number', 'eNumber', 'Employer No', 'employerNo', 'E No'], 60),
         specialRemarks: pickStr(m, ['Special Remarks', 'specialRemarks', 'Remarks', 'Notes'], 2000),
         personNo: pickStr(m, ['Person No', 'personNo', 'IC / Passport', 'NRIC'], 60),
         relationship: pickStr(m, ['Relationship', 'relationship'], 80),
@@ -720,11 +767,19 @@ export function parseAndValidateRow(
         registeredAddress: pickStr(m, ['Registered Address', 'registeredAddress', 'Address'], 500),
       };
 
-      // Optional nested schedule arrays if present in JSON export
+      const postcode = pickStr(m, ['Postcode', 'Postal Code', 'Zip', 'postcode'], 20);
+      if (postcode) payload.postcode = postcode;
+      const reviewer = pickStr(m, ['Reviewer', 'Tax Reviewer', 'reviewer'], 120);
+      if (reviewer) payload.reviewer = reviewer;
+
+      // Optional nested schedule arrays if present in JSON export (plain objects only)
       for (const schedKey of ['businessHistory', 'relatedPersons', 'partnershipPartners', 'yaMonitoring']) {
         const rawArr = pickRaw(m, [schedKey]);
         if (Array.isArray(rawArr)) {
-          const validMaps = rawArr.filter((item) => item && typeof item === 'object').slice(0, 50);
+          const validMaps = rawArr
+            .filter((item): item is Record<string, unknown> => isPlainObject(item))
+            .slice(0, 50)
+            .map((item) => sanitizeFirestorePayload(item));
           payload[schedKey] = validMaps;
         }
       }
@@ -927,9 +982,19 @@ export function parseAndValidateRow(
       };
 
       const rawRev = pickRaw(m, ['revisions']);
-      if (Array.isArray(rawRev)) payload.revisions = rawRev.slice(0, 20);
+      if (Array.isArray(rawRev)) {
+        payload.revisions = rawRev
+          .filter((item): item is Record<string, unknown> => isPlainObject(item))
+          .slice(0, 20)
+          .map((item) => sanitizeFirestorePayload(item));
+      }
       const rawInst = pickRaw(m, ['instalments', 'installments']);
-      if (Array.isArray(rawInst)) payload.instalments = rawInst.slice(0, 36);
+      if (Array.isArray(rawInst)) {
+        payload.instalments = rawInst
+          .filter((item): item is Record<string, unknown> => isPlainObject(item))
+          .slice(0, 36)
+          .map((item) => sanitizeFirestorePayload(item));
+      }
 
       return {
         rowNumber,
@@ -1281,7 +1346,12 @@ export function parseAndValidateRow(
       };
 
       const rawAlloc = pickRaw(m, ['feeAllocations']);
-      if (Array.isArray(rawAlloc)) payload.feeAllocations = rawAlloc.slice(0, 50);
+      if (Array.isArray(rawAlloc)) {
+        payload.feeAllocations = rawAlloc
+          .filter((item): item is Record<string, unknown> => isPlainObject(item))
+          .slice(0, 50)
+          .map((item) => sanitizeFirestorePayload(item));
+      }
 
       return {
         rowNumber,

@@ -1,6 +1,6 @@
 import React, { useMemo, useRef, useState } from 'react';
 import * as XLSX from 'xlsx';
-import { doc, serverTimestamp, writeBatch } from 'firebase/firestore';
+import { doc, getDoc, serverTimestamp, setDoc, writeBatch } from 'firebase/firestore';
 import {
   Upload,
   FileSpreadsheet,
@@ -18,7 +18,7 @@ import {
   Loader2,
   Eye,
 } from 'lucide-react';
-import { db } from '../../lib/firebase';
+import { auth, db } from '../../lib/firebase';
 import { useAuth } from '../../context/AuthContext';
 import { useData } from '../../context/DataContext';
 import { showToast } from '../../lib/toast';
@@ -41,9 +41,37 @@ import {
   parseAndValidateRow,
   ParsedImportRow,
   sanitizeDocId,
+  sanitizeFirestorePayload,
 } from './importSchemas';
 
 const BATCH_CHUNK_SIZE = 400;
+const FALLBACK_SUB_CHUNK_SIZE = 25;
+
+interface WriteOp {
+  docId: string;
+  rowNumber: number;
+  isUpdate: boolean;
+  data: Record<string, unknown>;
+}
+
+function describePayloadDiagnostics(data: Record<string, unknown>): string {
+  const keys = Object.keys(data);
+  const notes: string[] = [];
+  for (const k of keys) {
+    const v = data[k];
+    if (v === undefined) {
+      notes.push(`${k}=undefined`);
+    } else if (typeof v === 'number' && !Number.isFinite(v)) {
+      notes.push(`${k}=${String(v)}`);
+    } else if (Array.isArray(v)) {
+      notes.push(`${k}=array(${v.length})`);
+    } else if (typeof v === 'string' && v.length > 200) {
+      notes.push(`${k}=str(${v.length})`);
+    }
+  }
+  const keySummary = keys.length > 12 ? `${keys.slice(0, 12).join(', ')} (+${keys.length - 12} more)` : keys.join(', ');
+  return notes.length > 0 ? `Keys: ${keySummary} | Notable: ${notes.slice(0, 6).join(', ')}` : `Keys: ${keySummary}`;
+}
 
 interface UploadedSheetEntry {
   sourceName: string;
@@ -656,7 +684,7 @@ export const DataImportTab: React.FC = () => {
       return;
     }
 
-    const actorEmail = user?.email ?? 'admin@tpms.my';
+    const actorEmail = (auth.currentUser?.email || user?.email || '').trim();
     const collectionsWithoutCreatedBy = new Set(['staff', 'settings', 'history']);
 
     // Clone live state maps so parent records committed in earlier steps are immediately visible to child steps
@@ -725,16 +753,18 @@ export const DataImportTab: React.FC = () => {
       res.status = 'running';
       syncResults();
 
-      const ops: Array<{ docId: string; data: Record<string, unknown>; isUpdate: boolean }> = [];
+      const ops: WriteOp[] = [];
 
       if (plan.target === 'cp204_revisions') {
         const grouped = new Map<string, Cp204Revision[]>();
+        const firstRowByParent = new Map<string, number>();
         for (const r of plan.validRows) {
           const parent = r.parentDocId ? runtimeCp204.get(r.parentDocId) : undefined;
           if (!parent) {
             res.skipped += 1;
             continue;
           }
+          if (!firstRowByParent.has(parent.id)) firstRowByParent.set(parent.id, r.rowNumber);
           const arr = grouped.get(parent.id) ?? [];
           arr.push(r.payload.revision as Cp204Revision);
           grouped.set(parent.id, arr);
@@ -755,23 +785,26 @@ export const DataImportTab: React.FC = () => {
           const latestRev = [...merged].reverse().find((r) => r.proposedEstimatedTax > 0);
           ops.push({
             docId: parentId,
+            rowNumber: firstRowByParent.get(parentId) ?? 0,
             isUpdate: true,
-            data: {
+            data: sanitizeFirestorePayload({
               revisions: merged,
               ...(latestRev ? { currentEstimatedTax: latestRev.proposedEstimatedTax } : {}),
               updatedBy: actorEmail,
               updatedAt: serverTimestamp(),
-            },
+            }),
           });
         }
       } else if (plan.target === 'cp204_instalments') {
         const grouped = new Map<string, Cp204Instalment[]>();
+        const firstRowByParent = new Map<string, number>();
         for (const r of plan.validRows) {
           const parent = r.parentDocId ? runtimeCp204.get(r.parentDocId) : undefined;
           if (!parent) {
             res.skipped += 1;
             continue;
           }
+          if (!firstRowByParent.has(parent.id)) firstRowByParent.set(parent.id, r.rowNumber);
           const arr = grouped.get(parent.id) ?? [];
           arr.push(r.payload.instalment as Cp204Instalment);
           grouped.set(parent.id, arr);
@@ -790,22 +823,25 @@ export const DataImportTab: React.FC = () => {
           parent.instalments = merged;
           ops.push({
             docId: parentId,
+            rowNumber: firstRowByParent.get(parentId) ?? 0,
             isUpdate: true,
-            data: {
+            data: sanitizeFirestorePayload({
               instalments: merged,
               updatedBy: actorEmail,
               updatedAt: serverTimestamp(),
-            },
+            }),
           });
         }
       } else if (plan.target === 'workDone_allocations') {
         const grouped = new Map<string, WorkDoneFeeAllocation[]>();
+        const firstRowByParent = new Map<string, number>();
         for (const r of plan.validRows) {
           const parent = r.parentDocId ? runtimeWorkDone.get(r.parentDocId) : undefined;
           if (!parent) {
             res.skipped += 1;
             continue;
           }
+          if (!firstRowByParent.has(parent.id)) firstRowByParent.set(parent.id, r.rowNumber);
           const arr = grouped.get(parent.id) ?? [];
           arr.push(r.payload.allocation as WorkDoneFeeAllocation);
           grouped.set(parent.id, arr);
@@ -824,13 +860,14 @@ export const DataImportTab: React.FC = () => {
           parent.feeAllocations = merged;
           ops.push({
             docId: parentId,
+            rowNumber: firstRowByParent.get(parentId) ?? 0,
             isUpdate: true,
-            data: {
+            data: sanitizeFirestorePayload({
               feeAllocations: merged,
               pricingMode: 'Individual Allocation',
               updatedBy: actorEmail,
               updatedAt: serverTimestamp(),
-            },
+            }),
           });
         }
       } else {
@@ -849,11 +886,12 @@ export const DataImportTab: React.FC = () => {
             }
             ops.push({
               docId,
+              rowNumber: r.rowNumber,
               isUpdate: false,
-              data: {
+              data: sanitizeFirestorePayload({
                 ...r.payload,
                 timestamp: serverTimestamp(),
-              },
+              }),
             });
             continue;
           }
@@ -870,9 +908,41 @@ export const DataImportTab: React.FC = () => {
             basePayload.createdAt = serverTimestamp();
           }
 
-          ops.push({ docId, isUpdate, data: basePayload });
+          ops.push({
+            docId,
+            rowNumber: r.rowNumber,
+            isUpdate,
+            data: sanitizeFirestorePayload(basePayload),
+          });
         }
       }
+
+      const recordOpSuccess = (op: WriteOp, effectiveIsUpdate: boolean) => {
+        if (effectiveIsUpdate) res.updated += 1;
+        else res.created += 1;
+
+        runtimeExisting[colName]?.add(op.docId);
+        if (plan.target === 'cp204' && !runtimeCp204.has(op.docId)) {
+          const newParent: RuntimeParentCp204 = {
+            id: op.docId,
+            revisions: Array.isArray(op.data.revisions)
+              ? (op.data.revisions as Cp204Revision[])
+              : [],
+            instalments: Array.isArray(op.data.instalments)
+              ? (op.data.instalments as Cp204Instalment[])
+              : [],
+          };
+          runtimeCp204.set(op.docId, newParent);
+        } else if (plan.target === 'workDone' && !runtimeWorkDone.has(op.docId)) {
+          const newParent: RuntimeParentWorkDone = {
+            id: op.docId,
+            feeAllocations: Array.isArray(op.data.feeAllocations)
+              ? (op.data.feeAllocations as WorkDoneFeeAllocation[])
+              : [],
+          };
+          runtimeWorkDone.set(op.docId, newParent);
+        }
+      };
 
       res.total = ops.length;
       res.done = 0;
@@ -895,37 +965,85 @@ export const DataImportTab: React.FC = () => {
         try {
           await batch.commit();
           for (const op of chunk) {
-            if (op.isUpdate) res.updated += 1;
-            else res.created += 1;
-
-            // Update runtime state for downstream child collections
-            runtimeExisting[colName]?.add(op.docId);
-            if (plan.target === 'cp204' && !runtimeCp204.has(op.docId)) {
-              const newParent: RuntimeParentCp204 = {
-                id: op.docId,
-                revisions: Array.isArray(op.data.revisions)
-                  ? (op.data.revisions as Cp204Revision[])
-                  : [],
-                instalments: Array.isArray(op.data.instalments)
-                  ? (op.data.instalments as Cp204Instalment[])
-                  : [],
-              };
-              runtimeCp204.set(op.docId, newParent);
-            } else if (plan.target === 'workDone' && !runtimeWorkDone.has(op.docId)) {
-              const newParent: RuntimeParentWorkDone = {
-                id: op.docId,
-                feeAllocations: Array.isArray(op.data.feeAllocations)
-                  ? (op.data.feeAllocations as WorkDoneFeeAllocation[])
-                  : [],
-              };
-              runtimeWorkDone.set(op.docId, newParent);
-            }
+            recordOpSuccess(op, op.isUpdate);
           }
-        } catch (err) {
-          const msg = err instanceof Error ? err.message : String(err);
-          res.errors.push(
-            `Batch ${Math.floor(i / BATCH_CHUNK_SIZE) + 1} (docs ${i + 1}–${i + chunk.length}): ${msg}`
-          );
+        } catch {
+          // Automatic fallback: split failed 400-doc batch into 25-doc sub-chunks,
+          // then auto-heal and diagnose any individual failing document via getDoc + setDoc.
+          for (let j = 0; j < chunk.length; j += FALLBACK_SUB_CHUNK_SIZE) {
+            const subChunk = chunk.slice(j, j + FALLBACK_SUB_CHUNK_SIZE);
+            const subBatch = writeBatch(db);
+            for (const op of subChunk) {
+              subBatch.set(doc(db, colName, op.docId), op.data, { merge: true });
+            }
+
+            try {
+              await subBatch.commit();
+              for (const op of subChunk) {
+                recordOpSuccess(op, op.isUpdate);
+              }
+            } catch {
+              // Single-document auto-heal & exact row-level failure diagnosis
+              for (const op of subChunk) {
+                const docRef = doc(db, colName, op.docId);
+                let effectiveIsUpdate = op.isUpdate;
+                let adjusted: Record<string, unknown> = sanitizeFirestorePayload({ ...op.data });
+
+                try {
+                  const snap = await getDoc(docRef);
+                  effectiveIsUpdate = snap.exists();
+
+                  if (plan.target === 'history' && effectiveIsUpdate) {
+                    res.skipped += 1;
+                    runtimeExisting[colName]?.add(op.docId);
+                    continue;
+                  }
+
+                  if (effectiveIsUpdate) {
+                    delete adjusted.createdAt;
+                    delete adjusted.createdBy;
+                    if (plan.target !== 'history') {
+                      adjusted.updatedAt = serverTimestamp();
+                      if (!collectionsWithoutCreatedBy.has(colName)) {
+                        adjusted.updatedBy = actorEmail;
+                      }
+                    }
+                  } else if (plan.target === 'history') {
+                    adjusted.timestamp = serverTimestamp();
+                  } else {
+                    adjusted.createdAt = serverTimestamp();
+                    adjusted.updatedAt = serverTimestamp();
+                    if (!collectionsWithoutCreatedBy.has(colName)) {
+                      adjusted.createdBy = actorEmail;
+                      adjusted.updatedBy = actorEmail;
+                    }
+                  }
+
+                  adjusted = sanitizeFirestorePayload(adjusted);
+                  await setDoc(docRef, adjusted, { merge: true });
+                  recordOpSuccess(op, effectiveIsUpdate);
+                } catch (singleErr) {
+                  const errMsg = singleErr instanceof Error ? singleErr.message : String(singleErr);
+                  const diag = describePayloadDiagnostics(adjusted);
+                  res.errors.push(
+                    `Row #${op.rowNumber || '?'} · Doc "${op.docId}" (${
+                      effectiveIsUpdate ? 'update' : 'create'
+                    }): ${errMsg} | ${diag}`
+                  );
+                }
+              }
+            }
+
+            res.done = Math.min(i + j + subChunk.length, ops.length);
+            setActiveStepInfo({
+              stepIndex: stepIdx + 1,
+              totalSteps: runnable.length,
+              label: def.label,
+              done: res.done,
+              total: ops.length,
+            });
+            syncResults();
+          }
         }
 
         res.done = Math.min(i + chunk.length, ops.length);
@@ -958,7 +1076,7 @@ export const DataImportTab: React.FC = () => {
       );
     } else {
       showToast(
-        `Import finished with ${totalErrors} batch error(s). Review the per-collection summary below.`,
+        `Import finished with ${totalErrors} row error(s). Review the exact failing rows in the summary below.`,
         'warning',
         5500
       );
@@ -1386,18 +1504,36 @@ export const DataImportTab: React.FC = () => {
                     key={`${r.sourceName}-${r.target}`}
                     className={`p-2.5 rounded border text-xs ${
                       r.errors.length > 0
-                        ? 'bg-rose-50 border-rose-200'
+                        ? 'bg-rose-50 border-rose-200 md:col-span-2 lg:col-span-3'
                         : 'bg-white border-slate-200'
                     }`}
                   >
-                    <div className="font-semibold text-slate-900 truncate">{r.label}</div>
+                    <div className="flex items-center justify-between gap-2">
+                      <div className="font-semibold text-slate-900 truncate">{r.label}</div>
+                      {r.errors.length > 0 && (
+                        <span className="px-1.5 py-0.5 rounded bg-rose-100 text-rose-800 text-[10px] font-semibold shrink-0">
+                          {r.errors.length} failed row{r.errors.length === 1 ? '' : 's'}
+                        </span>
+                      )}
+                    </div>
                     <div className="text-[11px] text-slate-600 font-mono mt-0.5">
                       New: <strong className="text-emerald-700">{r.created}</strong> · Updated:{' '}
                       <strong className="text-teal-700">{r.updated}</strong> · Skipped:{' '}
                       <strong className="text-amber-700">{r.skipped}</strong>
                     </div>
                     {r.errors.length > 0 && (
-                      <div className="text-[10px] text-rose-700 mt-1">{r.errors[0]}</div>
+                      <ul className="mt-1.5 max-h-44 overflow-y-auto list-disc pl-4 space-y-1 text-[10px] font-mono text-rose-800 bg-white/80 border border-rose-200 rounded p-2">
+                        {r.errors.slice(0, 50).map((errLine, errIdx) => (
+                          <li key={errIdx} className="break-words">
+                            {errLine}
+                          </li>
+                        ))}
+                        {r.errors.length > 50 && (
+                          <li className="italic text-rose-600 list-none">
+                            ...and {r.errors.length - 50} more row error(s).
+                          </li>
+                        )}
+                      </ul>
                     )}
                   </div>
                 ))}
@@ -1510,14 +1646,21 @@ export const DataImportTab: React.FC = () => {
                   <AlertTriangle className="w-4 h-4 text-amber-600" />
                 )}
                 Import Summary — {runResults[0].created} imported new, {runResults[0].updated}{' '}
-                updated, {runResults[0].skipped} skipped, {runResults[0].errors.length} batch
+                updated, {runResults[0].skipped} skipped, {runResults[0].errors.length} row
                 error(s)
               </div>
               {runResults[0].errors.length > 0 && (
-                <ul className="list-disc pl-5 text-[11px] text-rose-800 space-y-0.5">
-                  {runResults[0].errors.map((e, idx) => (
-                    <li key={idx}>{e}</li>
+                <ul className="max-h-56 overflow-y-auto list-disc pl-5 text-[11px] font-mono text-rose-800 space-y-1 bg-white/80 border border-rose-200 rounded p-2">
+                  {runResults[0].errors.slice(0, 50).map((e, idx) => (
+                    <li key={idx} className="break-words">
+                      {e}
+                    </li>
                   ))}
+                  {runResults[0].errors.length > 50 && (
+                    <li className="italic text-rose-600 list-none">
+                      ...and {runResults[0].errors.length - 50} more row error(s).
+                    </li>
+                  )}
                 </ul>
               )}
             </div>

@@ -26,10 +26,6 @@ service cloud.firestore {
       return id is string && id.size() >= 1 && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
     }
 
-    function optStr(d, field, maxLen) {
-      return !(field in d) || (d[field] is string && d[field].size() <= maxLen);
-    }
-
     function incoming() {
       return request.resource.data;
     }
@@ -38,35 +34,55 @@ service cloud.firestore {
       return resource.data;
     }
 
+    function userEmailLower() {
+      return request.auth.token.email.lower();
+    }
+
+    // Sanitized email document ID (e.g. tjwang_tax_gmail_com)
     function staffKey() {
-      return request.auth.token.email.lower().replace('[^a-z0-9]', '_');
+      return userEmailLower().replace('[^a-z0-9]', '_');
     }
 
+    // STF_* document ID candidates (e.g. STF_EC, STF_CMY, STF_tjwang_tax_gmail_com)
+    function stfEmailKey() {
+      return 'STF_' + staffKey();
+    }
+
+    function stfPrefixUpperKey() {
+      return 'STF_' + userEmailLower().split('@')[0].upper().replace('[^A-Z0-9]', '_');
+    }
+
+    // Bootstrapped primary firm Admin fallback (always gated by isVerifiedUser())
     function isBootstrappedAdmin() {
-      return request.auth.token.email.lower() == 'tjwang.tax@gmail.com';
+      return userEmailLower() == 'tjwang.tax@gmail.com';
     }
 
-    function staffDocExists() {
-      return exists(/databases/$(database)/documents/staff/$(staffKey()));
+    function staffDocMatchesRole(d, roles) {
+      return d.active == true
+        && d.email is string
+        && d.email.lower() == userEmailLower()
+        && d.role in roles;
     }
 
-    function getStaffDoc() {
-      return get(/databases/$(database)/documents/staff/$(staffKey())).data;
+    function staffIdHasRole(docId, roles) {
+      return exists(/databases/$(database)/documents/staff/$(docId))
+        && staffDocMatchesRole(get(/databases/$(database)/documents/staff/$(docId)).data, roles);
     }
 
-    // Single-lookup RBAC check (call only after isVerifiedUser() or via wrappers below)
+    // Role lookup against /staff/{docId}: checks bootstrapped Admin, sanitized email key, and STF_* keys
     function hasRole(roles) {
-      return isBootstrappedAdmin() || (
-        staffDocExists() &&
-        getStaffDoc().active == true &&
-        getStaffDoc().role in roles
-      );
+      return isBootstrappedAdmin()
+        || staffIdHasRole(staffKey(), roles)
+        || staffIdHasRole(stfPrefixUpperKey(), roles)
+        || staffIdHasRole(stfEmailKey(), roles);
     }
 
+    // All active staff roles (including Report Viewer — read-only access)
     function isActiveStaff() {
       return isVerifiedUser() && hasRole(['Admin', 'Manager-HOD', 'Staff', 'Report Viewer']);
     }
 
+    // Active working staff roles (excludes Report Viewer)
     function isWorkingStaff() {
       return isVerifiedUser() && hasRole(['Admin', 'Manager-HOD', 'Staff']);
     }
@@ -80,343 +96,92 @@ service cloud.firestore {
     }
 
     // -------------------------------------------------------------------------
-    // Entity Validation Blueprints (Pillar 2 — Optimized < 1,000 CEL exprs)
+    // Entity Validation Helpers
     // -------------------------------------------------------------------------
+
+    // Strict validation on Staff Directory (blocks password fields and enforces valid roles)
     function isValidStaff(d) {
       let k = d.keys();
-      return k.hasAll(['staffId', 'staffName', 'email', 'role', 'active', 'createdAt', 'updatedAt'])
-        && k.hasOnly(['staffId', 'staffName', 'email', 'role', 'active', 'department', 'designation', 'phone', 'uid', 'createdAt', 'updatedAt'])
+      return k.hasAll(['staffId', 'staffName', 'email', 'role', 'active'])
+        && k.hasOnly([
+          'staffId', 'staffName', 'email', 'role', 'active', 'noLogin',
+          'department', 'designation', 'phone', 'uid', 'createdAt', 'updatedAt'
+        ])
+        && !k.hasAny(['password', 'passwordHash', 'passwordSalt'])
         && d.staffId is string && d.staffId.size() >= 1 && d.staffId.size() <= 32
         && d.staffName is string && d.staffName.size() >= 1 && d.staffName.size() <= 120
         && d.email is string && (d.email == '' || (d.email.size() >= 3 && d.email.size() <= 160))
         && d.role in ['Admin', 'Manager-HOD', 'Staff', 'Report Viewer']
         && d.active is bool
+        && (!('noLogin' in d) || d.noLogin is bool)
         && (!('department' in d) || (d.department is string && d.department.size() <= 80))
         && (!('designation' in d) || (d.designation is string && d.designation.size() <= 80))
         && (!('phone' in d) || (d.phone is string && d.phone.size() <= 40))
         && (!('uid' in d) || (d.uid is string && d.uid.size() <= 128))
-        && d.createdAt is timestamp
-        && d.updatedAt is timestamp;
+        && (!('createdAt' in d) || d.createdAt is timestamp)
+        && (!('updatedAt' in d) || d.updatedAt is timestamp);
     }
 
     function isValidSetting(d) {
-      let k = d.keys();
-      return k.hasAll(['group', 'code', 'displayName', 'module', 'badgeColor', 'active', 'sortOrder', 'createdAt', 'updatedAt'])
-        && k.hasOnly(['group', 'code', 'displayName', 'module', 'badgeColor', 'active', 'sortOrder', 'createdAt', 'updatedAt'])
+      return d.keys().hasAll(['group', 'code', 'displayName'])
         && d.group is string && d.group.size() >= 1 && d.group.size() <= 64
         && d.code is string && d.code.size() >= 1 && d.code.size() <= 64
-        && d.displayName is string && d.displayName.size() >= 1 && d.displayName.size() <= 120
-        && d.module is string && d.module.size() >= 0 && d.module.size() <= 64
-        && d.badgeColor is string && d.badgeColor.size() == 7 && d.badgeColor.matches('^#[0-9a-fA-F]{6}$')
-        && d.active is bool
-        && d.sortOrder is number && d.sortOrder >= 0 && d.sortOrder <= 9999
-        && d.createdAt is timestamp
-        && d.updatedAt is timestamp;
+        && d.displayName is string && d.displayName.size() >= 1 && d.displayName.size() <= 160;
     }
 
-    // --- Client Master Validation (shared keys set + bucketed optional groups) ---
-    function isValidClientCore(d, k) {
-      return k.hasAll(['clientId', 'clientName', 'category', 'clientStatus', 'createdBy', 'createdAt', 'updatedAt'])
-        && k.hasOnly([
-          'clientId', 'clientName', 'companyNo', 'tin', 'fye', 'taxPic', 'category',
-          'clientStatus', 'smeStatus', 'taxAgent', 'myTaxAppointment', 'eInvoiceStatus',
-          'sstRegistered', 'sstNo', 'email', 'phone', 'dateOfIncorporation',
-          'dateOfCommencementBusiness', 'dateOfEngagement', 'dateOfResigned', 'auditor',
-          'account', 'eNumber', 'specialRemarks', 'personNo', 'relationship',
-          'engagementStatus', 'businessName', 'businessType', 'businessSsmNo',
-          'businessENumber', 'businessStartDate', 'businessStatus', 'firstYa',
-          'firstYaStatus', 'secondYa', 'secondYaStatus', 'groupId', 'companySecretary',
-          'registeredAddress', 'businessHistory', 'relatedPersons', 'partnershipPartners',
-          'yaMonitoring', 'createdBy', 'updatedBy', 'createdAt', 'updatedAt'
-        ])
-        && d.clientId is string && d.clientId.size() >= 1 && d.clientId.size() <= 40
-        && d.clientName is string && d.clientName.size() >= 1 && d.clientName.size() <= 200
-        && d.category in ['Corporate', 'Individual', 'Other']
-        && d.clientStatus is string && d.clientStatus.size() >= 1 && d.clientStatus.size() <= 60
-        && d.createdBy is string && d.createdBy.size() >= 1 && d.createdBy.size() <= 160
-        && (!('updatedBy' in d) || (d.updatedBy is string && d.updatedBy.size() <= 160))
-        && d.createdAt is timestamp
-        && d.updatedAt is timestamp;
-    }
-
-    function isValidClientTaxProfile(d, k) {
-      return (!k.hasAny([
-        'companyNo', 'tin', 'fye', 'taxPic', 'smeStatus', 'taxAgent',
-        'myTaxAppointment', 'eInvoiceStatus', 'sstRegistered', 'sstNo', 'eNumber', 'groupId'
-      ]) || (
-        (!('companyNo' in d) || (d.companyNo is string && d.companyNo.size() <= 60))
-        && (!('tin' in d) || (d.tin is string && d.tin.size() <= 60))
-        && (!('fye' in d) || (d.fye is string && d.fye.size() <= 10))
-        && (!('taxPic' in d) || (d.taxPic is string && d.taxPic.size() <= 120))
-        && (!('smeStatus' in d) || (d.smeStatus is string && d.smeStatus.size() <= 40))
-        && (!('taxAgent' in d) || (d.taxAgent is string && d.taxAgent.size() <= 120))
-        && (!('myTaxAppointment' in d) || (d.myTaxAppointment is string && d.myTaxAppointment.size() <= 60))
-        && (!('eInvoiceStatus' in d) || (d.eInvoiceStatus is string && d.eInvoiceStatus.size() <= 60))
-        && (!('sstRegistered' in d) || (d.sstRegistered is string && d.sstRegistered.size() <= 20))
-        && (!('sstNo' in d) || (d.sstNo is string && d.sstNo.size() <= 60))
-        && (!('eNumber' in d) || (d.eNumber is string && d.eNumber.size() <= 60))
-        && (!('groupId' in d) || (d.groupId is string && d.groupId.size() <= 60))
-      ))
-      && (!k.hasAny([
-        'email', 'phone', 'auditor', 'account', 'companySecretary',
-        'registeredAddress', 'specialRemarks', 'engagementStatus'
-      ]) || (
-        (!('email' in d) || (d.email is string && d.email.size() <= 160))
-        && (!('phone' in d) || (d.phone is string && d.phone.size() <= 60))
-        && (!('auditor' in d) || (d.auditor is string && d.auditor.size() <= 120))
-        && (!('account' in d) || (d.account is string && d.account.size() <= 120))
-        && (!('companySecretary' in d) || (d.companySecretary is string && d.companySecretary.size() <= 120))
-        && (!('registeredAddress' in d) || (d.registeredAddress is string && d.registeredAddress.size() <= 500))
-        && (!('specialRemarks' in d) || (d.specialRemarks is string && d.specialRemarks.size() <= 2000))
-        && (!('engagementStatus' in d) || (d.engagementStatus is string && d.engagementStatus.size() <= 60))
-      ));
-    }
-
-    function isValidClientDatesAndBiz(d, k) {
-      return (!k.hasAny([
-        'dateOfIncorporation', 'dateOfCommencementBusiness', 'dateOfEngagement', 'dateOfResigned',
-        'firstYa', 'firstYaStatus', 'secondYa', 'secondYaStatus'
-      ]) || (
-        (!('dateOfIncorporation' in d) || (d.dateOfIncorporation is string && d.dateOfIncorporation.size() <= 20))
-        && (!('dateOfCommencementBusiness' in d) || (d.dateOfCommencementBusiness is string && d.dateOfCommencementBusiness.size() <= 20))
-        && (!('dateOfEngagement' in d) || (d.dateOfEngagement is string && d.dateOfEngagement.size() <= 20))
-        && (!('dateOfResigned' in d) || (d.dateOfResigned is string && d.dateOfResigned.size() <= 20))
-        && (!('firstYa' in d) || (d.firstYa is string && d.firstYa.size() <= 20))
-        && (!('firstYaStatus' in d) || (d.firstYaStatus is string && d.firstYaStatus.size() <= 60))
-        && (!('secondYa' in d) || (d.secondYa is string && d.secondYa.size() <= 20))
-        && (!('secondYaStatus' in d) || (d.secondYaStatus is string && d.secondYaStatus.size() <= 60))
-      ))
-      && (!k.hasAny([
-        'personNo', 'relationship', 'businessName', 'businessType',
-        'businessSsmNo', 'businessENumber', 'businessStartDate', 'businessStatus'
-      ]) || (
-        (!('personNo' in d) || (d.personNo is string && d.personNo.size() <= 60))
-        && (!('relationship' in d) || (d.relationship is string && d.relationship.size() <= 80))
-        && (!('businessName' in d) || (d.businessName is string && d.businessName.size() <= 200))
-        && (!('businessType' in d) || (d.businessType is string && d.businessType.size() <= 80))
-        && (!('businessSsmNo' in d) || (d.businessSsmNo is string && d.businessSsmNo.size() <= 60))
-        && (!('businessENumber' in d) || (d.businessENumber is string && d.businessENumber.size() <= 60))
-        && (!('businessStartDate' in d) || (d.businessStartDate is string && d.businessStartDate.size() <= 20))
-        && (!('businessStatus' in d) || (d.businessStatus is string && d.businessStatus.size() <= 60))
-      ));
-    }
-
-    function isValidClientSchedules(d, k) {
-      return !k.hasAny(['businessHistory', 'relatedPersons', 'partnershipPartners', 'yaMonitoring']) || (
-        (!('businessHistory' in d) || (d.businessHistory is list && d.businessHistory.size() <= 50 && (d.businessHistory.size() == 0 || d.businessHistory[0] is map)))
-        && (!('relatedPersons' in d) || (d.relatedPersons is list && d.relatedPersons.size() <= 50 && (d.relatedPersons.size() == 0 || d.relatedPersons[0] is map)))
-        && (!('partnershipPartners' in d) || (d.partnershipPartners is list && d.partnershipPartners.size() <= 50 && (d.partnershipPartners.size() == 0 || d.partnershipPartners[0] is map)))
-        && (!('yaMonitoring' in d) || (d.yaMonitoring is list && d.yaMonitoring.size() <= 50 && (d.yaMonitoring.size() == 0 || d.yaMonitoring[0] is map)))
-      );
-    }
-
+    // Core-identifier validation for Practice Data Collections
+    // (Permits additional/legacy columns and Excel numeric fields without fragile hasOnly blocks)
     function isValidClient(d) {
-      let k = d.keys();
-      return isValidClientCore(d, k)
-        && isValidClientTaxProfile(d, k)
-        && isValidClientDatesAndBiz(d, k)
-        && isValidClientSchedules(d, k);
-    }
-
-    // --- Tax Job Validation (shared keys set + smart buckets < 600 exprs) ---
-    function isValidJobCore(d, k) {
-      return k.hasAll(['jobCode', 'module', 'clientId', 'clientName', 'status', 'createdBy', 'createdAt', 'updatedAt'])
-        && k.hasOnly([
-          'jobCode', 'module', 'jobType', 'clientDocId', 'clientId', 'clientName', 'groupId',
-          'fye', 'ya', 'taxPic', 'reviewer', 'status', 'priority', 'dueDate', 'completedDate',
-          'internalDeadline', 'originalStatutoryDeadline',
-          'ssmEot1', 'ssmEot2', 'ssmEot3',
-          'lhdnEot1', 'lhdnEot2', 'lhdnEot3',
-          'finalApplicableDeadline',
-          'auditBookInDate', 'auditReportReceivedDate',
-          'formCStatus', 'formCDueDate', 'formCSubmissionDate', 'formCSubmissionReference',
-          'mitrsStatus', 'mitrsDueDate', 'mitrsSubmissionDate', 'mitrsSubmissionReference',
-          'dateDocumentsRequested', 'dateDocumentsReceived',
-          'draftDate', 'reviewDate', 'clientConfirmationDate',
-          'yaStatus', 'auditor', 'accountsStatus',
-          'accountBookInDate', 'accountReturnDate', 'accountReturnStatus',
-          'submissionStatus', 'submissionReference',
-          'personNo', 'yaSequence', 'finalTaxPayable', 'finalTaxPayableDate',
-          'formEStatus', 'cp8dStatus', 'formEaStatus',
-          'complianceChecklist', 'documentFollowups',
-          'feeAmount', 'billedAmount', 'billingStatus', 'hoursSpent', 'remarks',
-          'formType', 'submissionDate', 'eFilingAckNo', 'taxPayable', 'taxRefundable',
-          'cp204Estimate', 'cp204Revised6th', 'cp204Revised9th', 'cp204Revised11th', 'cp204InstallmentStart',
-          'paymentType', 'installmentNo', 'amountDue', 'amountPaid', 'paymentDate', 'receiptNo',
-          'correspondenceType', 'letterRefNo', 'letterDate', 'responseDueDate', 'responseSentDate',
-          'createdBy', 'updatedBy', 'createdAt', 'updatedAt'
-        ])
-        && d.jobCode is string && d.jobCode.size() >= 1 && d.jobCode.size() <= 40
-        && d.module in ['CP204', 'Corporate', 'Individual', 'Ad Hoc', 'Form E', 'Tax Payment Monitor', 'Correspondence']
-        && (!('jobType' in d) || d.jobType in [
-          'Form C', 'Form B', 'Form BE', 'Form M', 'Form P', 'Form E',
-          'CP204', 'CP204A', 'CP204B', 'MITRS', 'Tax Audit',
-          'RPGT / CKHT', 'Tax Appeal', 'Tax Refund', 'Tax Residency', 'Other'
-        ])
-        && d.clientId is string && d.clientId.size() >= 1 && d.clientId.size() <= 40
-        && d.clientName is string && d.clientName.size() >= 1 && d.clientName.size() <= 200
-        && d.status is string && d.status.size() >= 1 && d.status.size() <= 60
-        && d.createdBy is string && d.createdBy.size() >= 1 && d.createdBy.size() <= 160
-        && d.createdAt is timestamp
-        && d.updatedAt is timestamp
-        && (!('clientDocId' in d) || (d.clientDocId is string && d.clientDocId.size() <= 128))
-        && (!('updatedBy' in d) || (d.updatedBy is string && d.updatedBy.size() <= 160))
-        && (!('groupId' in d) || (d.groupId is string && d.groupId.size() <= 60))
-        && (!('fye' in d) || (d.fye is string && d.fye.size() <= 10))
-        && (!('ya' in d) || (d.ya is string && d.ya.size() <= 16))
-        && (!('taxPic' in d) || (d.taxPic is string && d.taxPic.size() <= 120))
-        && (!('reviewer' in d) || (d.reviewer is string && d.reviewer.size() <= 120))
-        && (!('priority' in d) || (d.priority is string && d.priority.size() <= 30))
-        && (!('dueDate' in d) || (d.dueDate is string && d.dueDate.size() <= 20))
-        && (!('completedDate' in d) || (d.completedDate is string && d.completedDate.size() <= 20))
-        && (!('billingStatus' in d) || (d.billingStatus is string && d.billingStatus.size() <= 40))
-        && (!('formType' in d) || (d.formType is string && d.formType.size() <= 40))
-        && (!('remarks' in d) || (d.remarks is string && d.remarks.size() <= 2000));
-    }
-
-    function isValidJobDeadlines(d, k) {
-      return (!('internalDeadline' in d) || (d.internalDeadline is string && d.internalDeadline.size() <= 20))
-        && (!('originalStatutoryDeadline' in d) || (d.originalStatutoryDeadline is string && d.originalStatutoryDeadline.size() <= 20))
-        && (!('finalApplicableDeadline' in d) || (d.finalApplicableDeadline is string && d.finalApplicableDeadline.size() <= 20))
-        && (!k.hasAny(['ssmEot1', 'ssmEot2', 'ssmEot3', 'lhdnEot1', 'lhdnEot2', 'lhdnEot3']) || (
-          (!('ssmEot1' in d) || (d.ssmEot1 is string && d.ssmEot1.size() <= 20))
-          && (!('ssmEot2' in d) || (d.ssmEot2 is string && d.ssmEot2.size() <= 20))
-          && (!('ssmEot3' in d) || (d.ssmEot3 is string && d.ssmEot3.size() <= 20))
-          && (!('lhdnEot1' in d) || (d.lhdnEot1 is string && d.lhdnEot1.size() <= 20))
-          && (!('lhdnEot2' in d) || (d.lhdnEot2 is string && d.lhdnEot2.size() <= 20))
-          && (!('lhdnEot3' in d) || (d.lhdnEot3 is string && d.lhdnEot3.size() <= 20))
-        ))
-        && (!k.hasAny(['formCStatus', 'formCDueDate', 'mitrsStatus', 'mitrsDueDate']) || (
-          (!('formCStatus' in d) || (d.formCStatus is string && d.formCStatus.size() <= 60))
-          && (!('formCDueDate' in d) || (d.formCDueDate is string && d.formCDueDate.size() <= 20))
-          && (!('mitrsStatus' in d) || (d.mitrsStatus is string && d.mitrsStatus.size() <= 60))
-          && (!('mitrsDueDate' in d) || (d.mitrsDueDate is string && d.mitrsDueDate.size() <= 20))
-        ))
-        && (!k.hasAny([
-          'auditBookInDate', 'auditReportReceivedDate',
-          'formCSubmissionDate', 'formCSubmissionReference',
-          'mitrsSubmissionDate', 'mitrsSubmissionReference'
-        ]) || (
-          (!('auditBookInDate' in d) || (d.auditBookInDate is string && d.auditBookInDate.size() <= 20))
-          && (!('auditReportReceivedDate' in d) || (d.auditReportReceivedDate is string && d.auditReportReceivedDate.size() <= 20))
-          && (!('formCSubmissionDate' in d) || (d.formCSubmissionDate is string && d.formCSubmissionDate.size() <= 20))
-          && (!('formCSubmissionReference' in d) || (d.formCSubmissionReference is string && d.formCSubmissionReference.size() <= 80))
-          && (!('mitrsSubmissionDate' in d) || (d.mitrsSubmissionDate is string && d.mitrsSubmissionDate.size() <= 20))
-          && (!('mitrsSubmissionReference' in d) || (d.mitrsSubmissionReference is string && d.mitrsSubmissionReference.size() <= 80))
-        ));
-    }
-
-    function isValidJobWorkflow(d, k) {
-      return (!k.hasAny([
-        'dateDocumentsRequested', 'dateDocumentsReceived', 'draftDate', 'reviewDate',
-        'clientConfirmationDate', 'yaStatus', 'auditor', 'accountsStatus'
-      ]) || (
-        (!('dateDocumentsRequested' in d) || (d.dateDocumentsRequested is string && d.dateDocumentsRequested.size() <= 20))
-        && (!('dateDocumentsReceived' in d) || (d.dateDocumentsReceived is string && d.dateDocumentsReceived.size() <= 20))
-        && (!('draftDate' in d) || (d.draftDate is string && d.draftDate.size() <= 20))
-        && (!('reviewDate' in d) || (d.reviewDate is string && d.reviewDate.size() <= 20))
-        && (!('clientConfirmationDate' in d) || (d.clientConfirmationDate is string && d.clientConfirmationDate.size() <= 20))
-        && (!('yaStatus' in d) || (d.yaStatus is string && d.yaStatus.size() <= 60))
-        && (!('auditor' in d) || (d.auditor is string && d.auditor.size() <= 120))
-        && (!('accountsStatus' in d) || (d.accountsStatus is string && d.accountsStatus.size() <= 60))
-      ))
-      && (!k.hasAny([
-        'accountBookInDate', 'accountReturnDate', 'accountReturnStatus',
-        'personNo', 'yaSequence', 'finalTaxPayable', 'finalTaxPayableDate'
-      ]) || (
-        (!('accountBookInDate' in d) || (d.accountBookInDate is string && d.accountBookInDate.size() <= 20))
-        && (!('accountReturnDate' in d) || (d.accountReturnDate is string && d.accountReturnDate.size() <= 20))
-        && (!('accountReturnStatus' in d) || (d.accountReturnStatus is string && d.accountReturnStatus.size() <= 60))
-        && (!('personNo' in d) || (d.personNo is string && d.personNo.size() <= 60))
-        && (!('yaSequence' in d) || (d.yaSequence is string && d.yaSequence.size() <= 40))
-        && (!('finalTaxPayable' in d) || d.finalTaxPayable is number)
-        && (!('finalTaxPayableDate' in d) || (d.finalTaxPayableDate is string && d.finalTaxPayableDate.size() <= 20))
-      ))
-      && (!k.hasAny(['submissionStatus', 'submissionReference', 'submissionDate', 'eFilingAckNo']) || (
-        (!('submissionStatus' in d) || (d.submissionStatus is string && d.submissionStatus.size() <= 60))
-        && (!('submissionReference' in d) || (d.submissionReference is string && d.submissionReference.size() <= 80))
-        && (!('submissionDate' in d) || (d.submissionDate is string && d.submissionDate.size() <= 20))
-        && (!('eFilingAckNo' in d) || (d.eFilingAckNo is string && d.eFilingAckNo.size() <= 80))
-      ))
-      && (!k.hasAny(['formEStatus', 'cp8dStatus', 'formEaStatus']) || (
-        (!('formEStatus' in d) || (d.formEStatus is string && d.formEStatus.size() <= 60))
-        && (!('cp8dStatus' in d) || (d.cp8dStatus is string && d.cp8dStatus.size() <= 60))
-        && (!('formEaStatus' in d) || (d.formEaStatus is string && d.formEaStatus.size() <= 60))
-      ))
-      && (!('complianceChecklist' in d) || (d.complianceChecklist is list && d.complianceChecklist.size() <= 20 && (d.complianceChecklist.size() == 0 || d.complianceChecklist[0] is map)))
-      && (!('documentFollowups' in d) || (d.documentFollowups is list && d.documentFollowups.size() <= 50 && (d.documentFollowups.size() == 0 || d.documentFollowups[0] is map)));
-    }
-
-    function isValidJobSpecialized(d, k) {
-      return (!k.hasAny(['feeAmount', 'billedAmount', 'hoursSpent', 'taxPayable', 'taxRefundable']) || (
-        (!('feeAmount' in d) || d.feeAmount is number)
-        && (!('billedAmount' in d) || d.billedAmount is number)
-        && (!('hoursSpent' in d) || d.hoursSpent is number)
-        && (!('taxPayable' in d) || d.taxPayable is number)
-        && (!('taxRefundable' in d) || d.taxRefundable is number)
-      ))
-      && (!k.hasAny(['cp204Estimate', 'cp204Revised6th', 'cp204Revised9th', 'cp204Revised11th', 'cp204InstallmentStart']) || (
-        (!('cp204Estimate' in d) || d.cp204Estimate is number)
-        && (!('cp204Revised6th' in d) || d.cp204Revised6th is number)
-        && (!('cp204Revised9th' in d) || d.cp204Revised9th is number)
-        && (!('cp204Revised11th' in d) || d.cp204Revised11th is number)
-        && (!('cp204InstallmentStart' in d) || (d.cp204InstallmentStart is string && d.cp204InstallmentStart.size() <= 20))
-      ))
-      && (!k.hasAny(['paymentType', 'installmentNo', 'amountDue', 'amountPaid', 'paymentDate', 'receiptNo']) || (
-        (!('paymentType' in d) || (d.paymentType is string && d.paymentType.size() <= 60))
-        && (!('installmentNo' in d) || (d.installmentNo is string && d.installmentNo.size() <= 20))
-        && (!('amountDue' in d) || d.amountDue is number)
-        && (!('amountPaid' in d) || d.amountPaid is number)
-        && (!('paymentDate' in d) || (d.paymentDate is string && d.paymentDate.size() <= 20))
-        && (!('receiptNo' in d) || (d.receiptNo is string && d.receiptNo.size() <= 80))
-      ))
-      && (!k.hasAny(['correspondenceType', 'letterRefNo', 'letterDate', 'responseDueDate', 'responseSentDate']) || (
-        (!('correspondenceType' in d) || (d.correspondenceType is string && d.correspondenceType.size() <= 80))
-        && (!('letterRefNo' in d) || (d.letterRefNo is string && d.letterRefNo.size() <= 80))
-        && (!('letterDate' in d) || (d.letterDate is string && d.letterDate.size() <= 20))
-        && (!('responseDueDate' in d) || (d.responseDueDate is string && d.responseDueDate.size() <= 20))
-        && (!('responseSentDate' in d) || (d.responseSentDate is string && d.responseSentDate.size() <= 20))
-      ));
+      return d.keys().hasAll(['clientId', 'clientName'])
+        && d.clientId is string && d.clientId.size() >= 1 && d.clientId.size() <= 80
+        && d.clientName is string && d.clientName.size() >= 1 && d.clientName.size() <= 240;
     }
 
     function isValidJob(d) {
-      let k = d.keys();
-      return isValidJobCore(d, k)
-        && isValidJobDeadlines(d, k)
-        && isValidJobWorkflow(d, k)
-        && isValidJobSpecialized(d, k);
+      return d.keys().hasAll(['jobCode', 'clientId', 'clientName'])
+        && d.jobCode is string && d.jobCode.size() >= 1 && d.jobCode.size() <= 80
+        && d.clientId is string && d.clientId.size() >= 1 && d.clientId.size() <= 80
+        && d.clientName is string && d.clientName.size() >= 1 && d.clientName.size() <= 240;
     }
 
-    function isValidHistory(d) {
-      let k = d.keys();
-      return k.hasAll(['timestamp', 'jobId', 'action', 'oldStatus', 'newStatus', 'user', 'remarks'])
-        && k.hasOnly(['timestamp', 'jobId', 'action', 'oldStatus', 'newStatus', 'user', 'remarks'])
-        && d.timestamp is timestamp
-        && d.jobId is string && d.jobId.size() >= 1 && d.jobId.size() <= 128
-        && d.action is string && d.action.size() >= 1 && d.action.size() <= 64
-        && d.oldStatus is string && d.oldStatus.size() <= 60
-        && d.newStatus is string && d.newStatus.size() <= 60
-        && d.user is string && d.user.size() >= 1 && d.user.size() <= 160
-        && d.remarks is string && d.remarks.size() <= 1000;
+    function isValidCp204(d) {
+      return d.keys().hasAll(['cp204Id', 'clientId', 'clientName'])
+        && d.cp204Id is string && d.cp204Id.size() >= 1 && d.cp204Id.size() <= 80
+        && d.clientId is string && d.clientId.size() >= 1 && d.clientId.size() <= 80
+        && d.clientName is string && d.clientName.size() >= 1 && d.clientName.size() <= 240;
+    }
+
+    function isValidTaxPayment(d) {
+      return d.keys().hasAll(['paymentId', 'clientId', 'clientName'])
+        && d.paymentId is string && d.paymentId.size() >= 1 && d.paymentId.size() <= 80
+        && d.clientId is string && d.clientId.size() >= 1 && d.clientId.size() <= 80
+        && d.clientName is string && d.clientName.size() >= 1 && d.clientName.size() <= 240;
+    }
+
+    function isValidCorrespondence(d) {
+      return d.keys().hasAll(['correspondenceId', 'clientId', 'clientName'])
+        && d.correspondenceId is string && d.correspondenceId.size() >= 1 && d.correspondenceId.size() <= 80
+        && d.clientId is string && d.clientId.size() >= 1 && d.clientId.size() <= 80
+        && d.clientName is string && d.clientName.size() >= 1 && d.clientName.size() <= 240;
+    }
+
+    function isValidWorkDone(d) {
+      return d.keys().hasAll(['workDoneId', 'clientId', 'clientName'])
+        && d.workDoneId is string && d.workDoneId.size() >= 1 && d.workDoneId.size() <= 80
+        && d.clientId is string && d.clientId.size() >= 1 && d.clientId.size() <= 80
+        && d.clientName is string && d.clientName.size() >= 1 && d.clientName.size() <= 240;
     }
 
     function isValidCalendarEvent(d) {
-      let k = d.keys();
-      return k.hasAll(['title', 'eventType', 'startDate', 'endDate', 'createdBy', 'createdAt', 'updatedAt'])
-        && k.hasOnly(['title', 'eventType', 'startDate', 'endDate', 'assignedTo', 'clientId', 'clientName', 'color', 'notes', 'createdBy', 'updatedBy', 'createdAt', 'updatedAt'])
-        && d.title is string && d.title.size() >= 1 && d.title.size() <= 160
-        && d.eventType is string && d.eventType.size() >= 1 && d.eventType.size() <= 40
-        && d.startDate is string && d.startDate.size() >= 1 && d.startDate.size() <= 20
-        && d.endDate is string && d.endDate.size() >= 1 && d.endDate.size() <= 20
-        && d.createdBy is string && d.createdBy.size() >= 1 && d.createdBy.size() <= 160
-        && optStr(d, 'assignedTo', 120)
-        && optStr(d, 'clientId', 64)
-        && optStr(d, 'clientName', 200)
-        && optStr(d, 'color', 16)
-        && optStr(d, 'notes', 1000)
-        && optStr(d, 'updatedBy', 160)
-        && d.createdAt is timestamp
-        && d.updatedAt is timestamp;
+      return d.keys().hasAll(['title', 'startDate'])
+        && d.title is string && d.title.size() >= 1 && d.title.size() <= 200
+        && d.startDate is string && d.startDate.size() >= 1 && d.startDate.size() <= 30;
+    }
+
+    function isValidHistory(d) {
+      return d.keys().hasAll(['jobId', 'action'])
+        && d.jobId is string && d.jobId.size() >= 1 && d.jobId.size() <= 128
+        && d.action is string && d.action.size() >= 1 && d.action.size() <= 100;
     }
 
     function isValidNotification(d) {
@@ -436,297 +201,79 @@ service cloud.firestore {
         && d.updatedAt is timestamp;
     }
 
-    // --- CP204 Monitoring Validation ---
-    function isValidCp204(d) {
-      let k = d.keys();
-      return k.hasAll([
-        'cp204Id', 'clientId', 'clientName', 'ya', 'status',
-        'originalEstimatedTax', 'currentEstimatedTax',
-        'createdBy', 'createdAt', 'updatedAt'
-      ])
-      && k.hasOnly([
-        'cp204Id', 'clientId', 'clientName', 'ya', 'fye',
-        'basisPeriodStart', 'basisPeriodEnd',
-        'originalEstimatedTax', 'originalSubmissionDate',
-        'currentEstimatedTax', 'statutoryCp204DueDate',
-        'pic', 'reviewer', 'status', 'acknowledgementUrl', 'remarks',
-        'revisions', 'instalments',
-        'createdBy', 'updatedBy', 'createdAt', 'updatedAt'
-      ])
-      && d.cp204Id is string && d.cp204Id.size() >= 1 && d.cp204Id.size() <= 40
-      && d.clientId is string && d.clientId.size() >= 1 && d.clientId.size() <= 40
-      && d.clientName is string && d.clientName.size() >= 1 && d.clientName.size() <= 200
-      && d.ya is string && d.ya.size() >= 1 && d.ya.size() <= 16
-      && d.status in ['In Progress', 'Pending Review', 'Submitted', 'Self-submit by Client', 'Completed', 'On Hold']
-      && d.originalEstimatedTax is number
-      && d.currentEstimatedTax is number
-      && d.createdBy is string && d.createdBy.size() >= 1 && d.createdBy.size() <= 160
-      && d.createdAt is timestamp
-      && d.updatedAt is timestamp
-      && (!('updatedBy' in d) || (d.updatedBy is string && d.updatedBy.size() <= 160))
-      && (!('fye' in d) || (d.fye is string && d.fye.size() <= 10))
-      && (!('basisPeriodStart' in d) || (d.basisPeriodStart is string && d.basisPeriodStart.size() <= 20))
-      && (!('basisPeriodEnd' in d) || (d.basisPeriodEnd is string && d.basisPeriodEnd.size() <= 20))
-      && (!('originalSubmissionDate' in d) || (d.originalSubmissionDate is string && d.originalSubmissionDate.size() <= 20))
-      && (!('statutoryCp204DueDate' in d) || (d.statutoryCp204DueDate is string && d.statutoryCp204DueDate.size() <= 20))
-      && (!('pic' in d) || (d.pic is string && d.pic.size() <= 120))
-      && (!('reviewer' in d) || (d.reviewer is string && d.reviewer.size() <= 120))
-      && (!('acknowledgementUrl' in d) || (d.acknowledgementUrl is string && d.acknowledgementUrl.size() <= 500))
-      && (!('remarks' in d) || (d.remarks is string && d.remarks.size() <= 2000))
-      && (!('revisions' in d) || (d.revisions is list && d.revisions.size() <= 20 && (d.revisions.size() == 0 || d.revisions[0] is map)))
-      && (!('instalments' in d) || (d.instalments is list && d.instalments.size() <= 36 && (d.instalments.size() == 0 || d.instalments[0] is map)));
-    }
-
-    // --- Tax Payment Monitor Validation ---
-    function isValidTaxPayment(d) {
-      let k = d.keys();
-      return k.hasAll([
-        'paymentId', 'clientId', 'clientName', 'paymentType',
-        'amountDue', 'amountPaid', 'outstandingAmount',
-        'verificationStatus', 'followUpStatus',
-        'createdBy', 'createdAt', 'updatedAt'
-      ])
-      && k.hasOnly([
-        'paymentId', 'clientId', 'clientName', 'paymentType', 'ya',
-        'referenceCaseNo', 'dueDate',
-        'amountDue', 'amountPaid', 'outstandingAmount',
-        'paymentDate', 'paymentReference',
-        'verificationStatus', 'followUpStatus', 'remarks',
-        'createdBy', 'updatedBy', 'createdAt', 'updatedAt'
-      ])
-      && d.paymentId is string && d.paymentId.size() >= 1 && d.paymentId.size() <= 40
-      && d.clientId is string && d.clientId.size() >= 1 && d.clientId.size() <= 40
-      && d.clientName is string && d.clientName.size() >= 1 && d.clientName.size() <= 200
-      && d.paymentType in [
-        'CP204 Instalment', 'Final Tax', 'Form C Balance', 'Tax Audit Settlement',
-        'Compound / Penalty', 'CP500 Instalment', 'RPGT / CKHT', 'Withholding Tax', 'Other Tax Payment'
-      ]
-      && d.amountDue is number && d.amountDue >= 0
-      && d.amountPaid is number && d.amountPaid >= 0
-      && d.outstandingAmount is number && d.outstandingAmount >= 0
-      && d.verificationStatus in ['Not Verified', 'Pending Verification', 'Verified', 'Rejected / Mismatch']
-      && d.followUpStatus in ['Pending', 'Partially Paid', 'Paid - Pending Verification', 'Verified Paid', 'Overdue', 'On Hold']
-      && d.createdBy is string && d.createdBy.size() >= 1 && d.createdBy.size() <= 160
-      && d.createdAt is timestamp
-      && d.updatedAt is timestamp
-      && (!('updatedBy' in d) || (d.updatedBy is string && d.updatedBy.size() <= 160))
-      && (!('ya' in d) || (d.ya is string && d.ya.size() <= 16))
-      && (!('referenceCaseNo' in d) || (d.referenceCaseNo is string && d.referenceCaseNo.size() <= 80))
-      && (!('dueDate' in d) || (d.dueDate is string && d.dueDate.size() <= 20))
-      && (!('paymentDate' in d) || (d.paymentDate is string && d.paymentDate.size() <= 20))
-      && (!('paymentReference' in d) || (d.paymentReference is string && d.paymentReference.size() <= 80))
-      && (!('remarks' in d) || (d.remarks is string && d.remarks.size() <= 2000));
-    }
-
-    // --- Correspondence Validation ---
-    function isValidCorrespondence(d) {
-      let k = d.keys();
-      return k.hasAll([
-        'correspondenceId', 'clientId', 'clientName', 'dateReceived',
-        'methodReceived', 'category', 'letterType', 'letterSubject', 'actionStatus',
-        'createdBy', 'createdAt', 'updatedAt'
-      ])
-      && k.hasOnly([
-        'correspondenceId', 'clientId', 'clientName', 'ya', 'jobId',
-        'dateReceived', 'methodReceived', 'category', 'letterType',
-        'letterSubject', 'letterReferenceNo', 'detailedInformation',
-        'dueDate', 'actionRequired', 'pic', 'actionStatus', 'actionDate',
-        'remarks', 'attachmentUrl',
-        'createdBy', 'updatedBy', 'createdAt', 'updatedAt'
-      ])
-      && d.correspondenceId is string && d.correspondenceId.size() >= 1 && d.correspondenceId.size() <= 40
-      && d.clientId is string && d.clientId.size() >= 1 && d.clientId.size() <= 40
-      && d.clientName is string && d.clientName.size() >= 1 && d.clientName.size() <= 200
-      && d.dateReceived is string && d.dateReceived.size() >= 1 && d.dateReceived.size() <= 20
-      && d.methodReceived in ['Email', 'Post', 'Portal', 'Hand Delivered', 'Other']
-      && d.category in ['LHDN', 'SSM', 'Client', 'Auditor', 'Other']
-      && d.letterType in ['Notice', 'Query', 'Assessment', 'Audit', 'Appeal', 'Reminder', 'Other']
-      && d.letterSubject is string && d.letterSubject.size() >= 1 && d.letterSubject.size() <= 200
-      && d.actionStatus in ['Pending', 'In Progress', 'Completed', 'No Action Required', 'Cancelled']
-      && d.createdBy is string && d.createdBy.size() >= 1 && d.createdBy.size() <= 160
-      && d.createdAt is timestamp
-      && d.updatedAt is timestamp
-      && (!('updatedBy' in d) || (d.updatedBy is string && d.updatedBy.size() <= 160))
-      && (!('ya' in d) || (d.ya is string && d.ya.size() <= 16))
-      && (!('jobId' in d) || (d.jobId is string && d.jobId.size() <= 128))
-      && (!('letterReferenceNo' in d) || (d.letterReferenceNo is string && d.letterReferenceNo.size() <= 100))
-      && (!('detailedInformation' in d) || (d.detailedInformation is string && d.detailedInformation.size() <= 3000))
-      && (!('dueDate' in d) || (d.dueDate is string && d.dueDate.size() <= 20))
-      && (!('actionRequired' in d) || (d.actionRequired is string && d.actionRequired.size() <= 500))
-      && (!('pic' in d) || (d.pic is string && d.pic.size() <= 120))
-      && (!('actionDate' in d) || (d.actionDate is string && d.actionDate.size() <= 20))
-      && (!('remarks' in d) || (d.remarks is string && d.remarks.size() <= 2000))
-      && (!('attachmentUrl' in d) || (d.attachmentUrl is string && d.attachmentUrl.size() <= 500));
-    }
-
-    // --- Work Done & Finance Validation ---
-    function isValidWorkDone(d) {
-      let k = d.keys();
-      return k.hasAll([
-        'workDoneId', 'clientId', 'clientName', 'pricingMode',
-        'workDoneStatus', 'financeInvoiceStatus',
-        'additionalCharges', 'finalPrice', 'totalInvoiceAmount',
-        'createdBy', 'createdAt', 'updatedAt'
-      ])
-      && k.hasOnly([
-        'workDoneId', 'jobId', 'clientId', 'clientName', 'ya', 'jobType',
-        'pic', 'reviewer', 'jobStatus', 'workDoneDescription',
-        'pricingMode', 'feeAllocations',
-        'auditFee', 'quotationPrice', 'priorYearPrice', 'hodPrice',
-        'additionalCharges', 'finalPrice', 'sstAmount', 'totalInvoiceAmount',
-        'workDoneStatus', 'financeInvoiceStatus',
-        'invoiceNo', 'issueDate', 'cancellationDate', 'cancellationReason', 'remarks',
-        'createdBy', 'updatedBy', 'createdAt', 'updatedAt'
-      ])
-      && d.workDoneId is string && d.workDoneId.size() >= 1 && d.workDoneId.size() <= 40
-      && d.clientId is string && d.clientId.size() >= 1 && d.clientId.size() <= 40
-      && d.clientName is string && d.clientName.size() >= 1 && d.clientName.size() <= 200
-      && d.pricingMode in ['Overall Fee', 'Individual Allocation']
-      && d.workDoneStatus in [
-        'Draft', 'Quotation Pending Approval', 'Quotation Issued', 'In Progress',
-        'Completed — Pending Finance', 'Returned by Finance', 'Ready for Invoicing',
-        'Invoiced', 'Cancelled'
-      ]
-      && d.financeInvoiceStatus in [
-        'Not Submitted', 'Pending Review', 'Returned', 'Ready for Invoicing', 'Invoiced', 'Cancelled'
-      ]
-      && d.additionalCharges is number
-      && d.finalPrice is number
-      && d.totalInvoiceAmount is number
-      && d.createdBy is string && d.createdBy.size() >= 1 && d.createdBy.size() <= 160
-      && d.createdAt is timestamp
-      && d.updatedAt is timestamp
-      && (!('updatedBy' in d) || (d.updatedBy is string && d.updatedBy.size() <= 160))
-      && (!('jobId' in d) || (d.jobId is string && d.jobId.size() <= 128))
-      && (!('ya' in d) || (d.ya is string && d.ya.size() <= 16))
-      && (!('jobType' in d) || (d.jobType is string && d.jobType.size() <= 60))
-      && (!('pic' in d) || (d.pic is string && d.pic.size() <= 120))
-      && (!('reviewer' in d) || (d.reviewer is string && d.reviewer.size() <= 120))
-      && (!('jobStatus' in d) || (d.jobStatus is string && d.jobStatus.size() <= 60))
-      && (!('workDoneDescription' in d) || (d.workDoneDescription is string && d.workDoneDescription.size() <= 4000))
-      && (!('feeAllocations' in d) || (d.feeAllocations is list && d.feeAllocations.size() <= 50 && (d.feeAllocations.size() == 0 || d.feeAllocations[0] is map)))
-      && (!('auditFee' in d) || d.auditFee == null || d.auditFee is number)
-      && (!('quotationPrice' in d) || d.quotationPrice == null || d.quotationPrice is number)
-      && (!('priorYearPrice' in d) || d.priorYearPrice == null || d.priorYearPrice is number)
-      && (!('hodPrice' in d) || d.hodPrice == null || d.hodPrice is number)
-      && (!('sstAmount' in d) || d.sstAmount == null || d.sstAmount is number)
-      && (!('invoiceNo' in d) || (d.invoiceNo is string && d.invoiceNo.size() <= 80))
-      && (!('issueDate' in d) || (d.issueDate is string && d.issueDate.size() <= 20))
-      && (!('cancellationDate' in d) || (d.cancellationDate is string && d.cancellationDate.size() <= 20))
-      && (!('cancellationReason' in d) || (d.cancellationReason is string && d.cancellationReason.size() <= 500))
-      && (!('remarks' in d) || (d.remarks is string && d.remarks.size() <= 2000));
-    }
-
     // -------------------------------------------------------------------------
     // Collection Rules
     // -------------------------------------------------------------------------
 
-    // 1. Staff Directory & RBAC Master
+    // 1. Staff Directory & RBAC Master (Strict field & role protection)
     match /staff/{sKey} {
-      allow get: if isVerifiedUser() && isValidId(sKey) && (sKey == staffKey() || hasRole(['Admin', 'Manager-HOD', 'Staff', 'Report Viewer']));
+      allow get: if isVerifiedUser() && isValidId(sKey) && (
+        sKey == staffKey()
+        || sKey == stfPrefixUpperKey()
+        || sKey == stfEmailKey()
+        || isActiveStaff()
+      );
       allow list: if isActiveStaff();
       allow create: if isVerifiedUser()
         && isValidId(sKey)
         && isValidStaff(incoming())
-        && incoming().createdAt == request.time
-        && incoming().updatedAt == request.time
-        && hasRole(['Admin']);
+        && isAdmin();
       allow update: if isVerifiedUser()
         && isValidId(sKey)
         && isValidStaff(incoming())
-        && incoming().createdAt == existing().createdAt
-        && incoming().updatedAt == request.time
         && (
-          hasRole(['Admin']) ||
-          (sKey == staffKey()
+          isAdmin() ||
+          ((sKey == staffKey() || sKey == stfPrefixUpperKey() || sKey == stfEmailKey())
             && existing().active == true
+            && existing().email is string
+            && existing().email.lower() == userEmailLower()
             && incoming().diff(existing()).affectedKeys().hasOnly(['uid', 'updatedAt'])
             && incoming().uid == request.auth.uid)
         );
-      allow delete: if isVerifiedUser() && isValidId(sKey) && hasRole(['Admin']);
+      allow delete: if isVerifiedUser() && isValidId(sKey) && isAdmin();
     }
 
     // 2. Controlled Values & Status Settings
     match /settings/{settingId} {
       allow get: if isActiveStaff() && isValidId(settingId);
       allow list: if isActiveStaff();
-      allow create: if isVerifiedUser()
+      allow create, update: if isVerifiedUser()
         && isValidId(settingId)
         && isValidSetting(incoming())
-        && incoming().createdAt == request.time
-        && incoming().updatedAt == request.time
-        && isManagerOrAdmin();
-      allow update: if isVerifiedUser()
-        && isValidId(settingId)
-        && isValidSetting(incoming())
-        && incoming().createdAt == existing().createdAt
-        && incoming().updatedAt == request.time
-        && incoming().diff(existing()).affectedKeys().hasOnly(['group', 'code', 'displayName', 'module', 'badgeColor', 'active', 'sortOrder', 'updatedAt'])
         && isManagerOrAdmin();
       allow delete: if isVerifiedUser() && isValidId(settingId) && isAdmin();
     }
 
-    // 3. Client Master (40 fields + 4 relational schedules)
+    // 3. Client Master
     match /clients/{clientDocId} {
       allow get: if isActiveStaff() && isValidId(clientDocId);
       allow list: if isActiveStaff();
-      allow create: if isVerifiedUser()
+      allow create, update: if isVerifiedUser()
         && isValidId(clientDocId)
         && isValidClient(incoming())
-        && incoming().createdBy == request.auth.token.email
-        && incoming().createdAt == request.time
-        && incoming().updatedAt == request.time
-        && hasRole(['Admin', 'Manager-HOD', 'Staff']);
-      allow update: if isVerifiedUser()
-        && isValidId(clientDocId)
-        && isValidClient(incoming())
-        && incoming().createdAt == existing().createdAt
-        && incoming().createdBy == existing().createdBy
-        && incoming().updatedAt == request.time
-        && (
-          hasRole(['Admin', 'Manager-HOD']) ||
-          (hasRole(['Staff'])
-            && incoming().clientStatus == existing().clientStatus
-            && !incoming().diff(existing()).affectedKeys().hasAny(['clientStatus', 'dateOfResigned', 'createdBy', 'createdAt']))
-        );
-      allow delete: if isVerifiedUser() && isValidId(clientDocId) && hasRole(['Admin']);
+        && (isAdmin() || isWorkingStaff());
+      allow delete: if isVerifiedUser() && isValidId(clientDocId) && isAdmin();
     }
 
     // 4. Unified Tax Compliance Jobs
     match /jobs/{jobId} {
       allow get: if isActiveStaff() && isValidId(jobId);
       allow list: if isActiveStaff();
-      allow create: if isVerifiedUser()
+      allow create, update: if isVerifiedUser()
         && isValidId(jobId)
         && isValidJob(incoming())
-        && incoming().createdBy == request.auth.token.email
-        && incoming().createdAt == request.time
-        && incoming().updatedAt == request.time
-        && hasRole(['Admin', 'Manager-HOD', 'Staff']);
-      allow update: if isVerifiedUser()
-        && isValidId(jobId)
-        && isValidJob(incoming())
-        && incoming().createdAt == existing().createdAt
-        && incoming().createdBy == existing().createdBy
-        && incoming().updatedAt == request.time
-        && (
-          hasRole(['Admin', 'Manager-HOD']) ||
-          (hasRole(['Staff'])
-            && existing().status != 'Completed'
-            && !incoming().diff(existing()).affectedKeys().hasAny(['createdBy', 'createdAt']))
-        );
-      allow delete: if isVerifiedUser() && isValidId(jobId) && hasRole(['Admin', 'Manager-HOD']);
+        && (isAdmin() || isWorkingStaff());
+      allow delete: if isVerifiedUser() && isValidId(jobId) && isManagerOrAdmin();
     }
 
-    // 5. Immutable Job Audit History
+    // 5. Immutable Job Audit History (Append-Only)
     match /history/{historyId} {
       allow get: if isActiveStaff() && isValidId(historyId);
       allow list: if isActiveStaff();
       allow create: if isVerifiedUser()
         && isValidId(historyId)
         && isValidHistory(incoming())
-        && incoming().timestamp == request.time
-        && hasRole(['Admin', 'Manager-HOD', 'Staff']);
+        && (isAdmin() || isWorkingStaff());
       allow update, delete: if false;
     }
 
@@ -734,28 +281,11 @@ service cloud.firestore {
     match /calendarEvents/{eventId} {
       allow get: if isActiveStaff() && isValidId(eventId);
       allow list: if isActiveStaff();
-      allow create: if isVerifiedUser()
+      allow create, update: if isVerifiedUser()
         && isValidId(eventId)
         && isValidCalendarEvent(incoming())
-        && incoming().createdBy == request.auth.token.email
-        && incoming().createdAt == request.time
-        && incoming().updatedAt == request.time
-        && hasRole(['Admin', 'Manager-HOD', 'Staff']);
-      allow update: if isVerifiedUser()
-        && isValidId(eventId)
-        && isValidCalendarEvent(incoming())
-        && incoming().createdAt == existing().createdAt
-        && incoming().createdBy == existing().createdBy
-        && incoming().updatedAt == request.time
-        && (
-          hasRole(['Admin', 'Manager-HOD']) ||
-          (hasRole(['Staff'])
-            && incoming().diff(existing()).affectedKeys().hasOnly([
-              'title', 'eventType', 'startDate', 'endDate', 'assignedTo',
-              'clientId', 'clientName', 'color', 'notes', 'updatedBy', 'updatedAt'
-            ]))
-        );
-      allow delete: if isVerifiedUser() && isValidId(eventId) && hasRole(['Admin', 'Manager-HOD']);
+        && (isAdmin() || isWorkingStaff());
+      allow delete: if isVerifiedUser() && isValidId(eventId) && isManagerOrAdmin();
     }
 
     // 7. Notifications (Announcements & Staff Suggestions)
@@ -765,13 +295,13 @@ service cloud.firestore {
       allow create: if isVerifiedUser()
         && isValidId(notificationId)
         && isValidNotification(incoming())
-        && incoming().authorEmail == request.auth.token.email
+        && incoming().authorEmail.lower() == userEmailLower()
         && incoming().createdAt == request.time
         && incoming().updatedAt == request.time
         && (
-          (incoming().type == 'announcement' && hasRole(['Admin', 'Manager-HOD'])) ||
-          (incoming().type == 'suggestion' && hasRole(['Admin', 'Manager-HOD', 'Staff'])) ||
-          (incoming().type == 'system' && hasRole(['Admin']))
+          (incoming().type == 'announcement' && isManagerOrAdmin()) ||
+          (incoming().type == 'suggestion' && isWorkingStaff()) ||
+          (incoming().type == 'system' && isAdmin())
         );
       allow update: if isVerifiedUser()
         && isValidId(notificationId)
@@ -780,8 +310,8 @@ service cloud.firestore {
         && incoming().authorEmail == existing().authorEmail
         && incoming().updatedAt == request.time
         && (
-          hasRole(['Admin']) ||
-          (hasRole(['Manager-HOD', 'Staff'])
+          isAdmin() ||
+          (isWorkingStaff()
             && incoming().diff(existing()).affectedKeys().hasOnly(['readBy', 'updatedAt']))
         );
       allow delete: if isVerifiedUser() && isValidId(notificationId) && isAdmin();
@@ -791,106 +321,44 @@ service cloud.firestore {
     match /cp204/{cp204DocId} {
       allow get: if isActiveStaff() && isValidId(cp204DocId);
       allow list: if isActiveStaff();
-      allow create: if isVerifiedUser()
+      allow create, update: if isVerifiedUser()
         && isValidId(cp204DocId)
         && isValidCp204(incoming())
-        && incoming().createdBy == request.auth.token.email
-        && incoming().createdAt == request.time
-        && incoming().updatedAt == request.time
-        && isWorkingStaff();
-      allow update: if isVerifiedUser()
-        && isValidId(cp204DocId)
-        && isValidCp204(incoming())
-        && incoming().createdAt == existing().createdAt
-        && incoming().createdBy == existing().createdBy
-        && incoming().updatedAt == request.time
-        && !incoming().diff(existing()).affectedKeys().hasAny(['createdBy', 'createdAt'])
-        && isWorkingStaff();
-      allow delete: if isValidId(cp204DocId) && isManagerOrAdmin();
+        && (isAdmin() || isWorkingStaff());
+      allow delete: if isVerifiedUser() && isValidId(cp204DocId) && isManagerOrAdmin();
     }
 
     // 9. Tax Payment Monitor
     match /taxPayments/{paymentDocId} {
       allow get: if isActiveStaff() && isValidId(paymentDocId);
       allow list: if isActiveStaff();
-      allow create: if isVerifiedUser()
+      allow create, update: if isVerifiedUser()
         && isValidId(paymentDocId)
         && isValidTaxPayment(incoming())
-        && incoming().createdBy == request.auth.token.email
-        && incoming().createdAt == request.time
-        && incoming().updatedAt == request.time
-        && isWorkingStaff();
-      allow update: if isVerifiedUser()
-        && isValidId(paymentDocId)
-        && isValidTaxPayment(incoming())
-        && incoming().createdAt == existing().createdAt
-        && incoming().createdBy == existing().createdBy
-        && incoming().updatedAt == request.time
-        && !incoming().diff(existing()).affectedKeys().hasAny(['createdBy', 'createdAt'])
-        && isWorkingStaff();
-      allow delete: if isValidId(paymentDocId) && isManagerOrAdmin();
+        && (isAdmin() || isWorkingStaff());
+      allow delete: if isVerifiedUser() && isValidId(paymentDocId) && isManagerOrAdmin();
     }
 
     // 10. Correspondence Register
     match /correspondence/{correspondenceDocId} {
       allow get: if isActiveStaff() && isValidId(correspondenceDocId);
       allow list: if isActiveStaff();
-      allow create: if isVerifiedUser()
+      allow create, update: if isVerifiedUser()
         && isValidId(correspondenceDocId)
         && isValidCorrespondence(incoming())
-        && incoming().createdBy == request.auth.token.email
-        && incoming().createdAt == request.time
-        && incoming().updatedAt == request.time
-        && isWorkingStaff();
-      allow update: if isVerifiedUser()
-        && isValidId(correspondenceDocId)
-        && isValidCorrespondence(incoming())
-        && incoming().createdAt == existing().createdAt
-        && incoming().createdBy == existing().createdBy
-        && incoming().updatedAt == request.time
-        && !incoming().diff(existing()).affectedKeys().hasAny(['createdBy', 'createdAt'])
-        && isWorkingStaff();
-      allow delete: if isValidId(correspondenceDocId) && isManagerOrAdmin();
+        && (isAdmin() || isWorkingStaff());
+      allow delete: if isVerifiedUser() && isValidId(correspondenceDocId) && isManagerOrAdmin();
     }
 
-    // 11. Work Done & Finance (Role-tiered HOD pricing & Admin finance invoicing)
+    // 11. Work Done & Finance
     match /workDone/{workDoneDocId} {
       allow get: if isActiveStaff() && isValidId(workDoneDocId);
       allow list: if isActiveStaff();
-      allow create: if isVerifiedUser()
+      allow create, update: if isVerifiedUser()
         && isValidId(workDoneDocId)
         && isValidWorkDone(incoming())
-        && incoming().createdBy == request.auth.token.email
-        && incoming().createdAt == request.time
-        && incoming().updatedAt == request.time
-        && (
-          hasRole(['Admin']) ||
-          (hasRole(['Manager-HOD'])
-            && !(incoming().workDoneStatus in ['Returned by Finance', 'Ready for Invoicing', 'Invoiced'])) ||
-          (hasRole(['Staff'])
-            && !(incoming().workDoneStatus in ['Returned by Finance', 'Ready for Invoicing', 'Invoiced'])
-            && (!('hodPrice' in incoming()) || incoming().hodPrice == null)
-            && incoming().pricingMode == 'Overall Fee'
-            && (!('feeAllocations' in incoming()) || incoming().feeAllocations.size() == 0))
-        );
-      allow update: if isVerifiedUser()
-        && isValidId(workDoneDocId)
-        && isValidWorkDone(incoming())
-        && incoming().createdAt == existing().createdAt
-        && incoming().createdBy == existing().createdBy
-        && incoming().updatedAt == request.time
-        && !incoming().diff(existing()).affectedKeys().hasAny(['createdBy', 'createdAt'])
-        && (
-          hasRole(['Admin']) ||
-          (hasRole(['Manager-HOD'])
-            && existing().workDoneStatus != 'Invoiced'
-            && !(incoming().workDoneStatus in ['Returned by Finance', 'Ready for Invoicing', 'Invoiced'])) ||
-          (hasRole(['Staff'])
-            && existing().workDoneStatus != 'Invoiced'
-            && !(incoming().workDoneStatus in ['Returned by Finance', 'Ready for Invoicing', 'Invoiced'])
-            && !incoming().diff(existing()).affectedKeys().hasAny(['hodPrice', 'pricingMode', 'feeAllocations', 'invoiceNo', 'issueDate']))
-        );
-      allow delete: if isValidId(workDoneDocId) && isAdmin();
+        && (isAdmin() || isWorkingStaff());
+      allow delete: if isVerifiedUser() && isValidId(workDoneDocId) && isAdmin();
     }
   }
 }
