@@ -47,6 +47,25 @@ const CLIENT_COLUMNS: ColumnDef[] = [
   { key: 'specialRemarks', label: 'Special Remarks', defaultVisible: false, optional: true },
 ];
 
+const CLIENT_COL_WIDTHS: Record<string, string> = {
+  clientId: 'w-[110px] min-w-[110px]',
+  clientName: 'min-w-[230px]',
+  category: 'min-w-[105px]',
+  groupId: 'min-w-[115px]',
+  fye: 'min-w-[75px]',
+  taxPic: 'min-w-[130px]',
+  clientStatus: 'min-w-[130px]',
+  taxAgent: 'min-w-[160px]',
+  companyNo: 'min-w-[165px]',
+  tin: 'min-w-[145px]',
+  eNumber: 'min-w-[135px]',
+  myTaxAppointment: 'min-w-[160px]',
+  dateOfIncorporation: 'min-w-[145px]',
+  dateOfCommencementBusiness: 'min-w-[160px]',
+  companySecretary: 'min-w-[175px]',
+  specialRemarks: 'min-w-[220px]',
+};
+
 type ClientTab = 'Corporate' | 'Individual' | 'All';
 
 interface ClientMasterViewProps {
@@ -384,29 +403,46 @@ export const ClientMasterView: React.FC<ClientMasterViewProps> = ({ initialFilte
 
       {/* High-Density Sticky Header Table */}
       <div className="bg-white border border-slate-200 rounded-lg overflow-hidden">
-        <div className="overflow-auto max-h-[calc(100vh-290px)]">
+        <div className="overflow-x-auto overflow-y-auto max-h-[calc(100vh-290px)]">
           <table className="w-full text-xs border-collapse">
-            <thead className="sticky top-0 z-10 bg-slate-100 border-b border-slate-200 text-slate-700">
+            <thead className="sticky top-0 z-20 bg-slate-100 border-b border-slate-200 text-slate-700">
               <tr>
-                {activeExportCols.map((col) => (
-                  <th
-                    key={col.key}
-                    className="px-3 py-2 text-left font-semibold whitespace-nowrap border-b border-slate-200"
-                  >
-                    <ExcelColumnFilter
-                      columnKey={col.key}
-                      title={col.label}
-                      values={excel.getColumnValues(col.key)}
-                      selectedValues={excel.columnFilters[col.key]}
-                      onChangeSelected={(next) => excel.setColumnFilter(col.key, next)}
-                      sortDirection={
-                        excel.sortState?.key === col.key ? excel.sortState.direction : null
-                      }
-                      onSort={(dir) => excel.setColumnSort(col.key, dir)}
-                    />
-                  </th>
-                ))}
-                <th className="px-3 py-2 text-right font-semibold whitespace-nowrap border-b border-slate-200 no-print">
+                {activeExportCols.map((col) => {
+                  const isStickyId = col.key === 'clientId';
+                  const isStickyName = col.key === 'clientName';
+                  const stickyThCls = isStickyId
+                    ? `sticky left-0 z-30 bg-slate-100 ${
+                        !visibleColumns.clientName
+                          ? 'shadow-[inset_-1px_0_0_#e2e8f0,2px_0_4px_-2px_rgba(15,23,42,0.12)]'
+                          : 'shadow-[inset_-1px_0_0_#e2e8f0]'
+                      }`
+                    : isStickyName
+                    ? `sticky ${
+                        visibleColumns.clientId ? 'left-[110px]' : 'left-0'
+                      } z-30 bg-slate-100 shadow-[inset_-1px_0_0_#e2e8f0,2px_0_4px_-2px_rgba(15,23,42,0.12)]`
+                    : '';
+                  return (
+                    <th
+                      key={col.key}
+                      className={`px-3 py-2 text-left font-semibold whitespace-nowrap border-b border-slate-200 ${
+                        CLIENT_COL_WIDTHS[col.key] || 'min-w-[120px]'
+                      } ${stickyThCls}`}
+                    >
+                      <ExcelColumnFilter
+                        columnKey={col.key}
+                        title={col.label}
+                        values={excel.getColumnValues(col.key)}
+                        selectedValues={excel.columnFilters[col.key]}
+                        onChangeSelected={(next) => excel.setColumnFilter(col.key, next)}
+                        sortDirection={
+                          excel.sortState?.key === col.key ? excel.sortState.direction : null
+                        }
+                        onSort={(dir) => excel.setColumnSort(col.key, dir)}
+                      />
+                    </th>
+                  );
+                })}
+                <th className="px-3 py-2 text-right font-semibold whitespace-nowrap border-b border-slate-200 min-w-[115px] no-print">
                   Actions
                 </th>
               </tr>
@@ -448,14 +484,24 @@ export const ClientMasterView: React.FC<ClientMasterViewProps> = ({ initialFilte
                 displayedClients.map((c) => {
                   const isResigned = c.clientStatus.toLowerCase() === 'resigned';
                   return (
-                    <tr key={c.id} className="hover:bg-slate-50/90 transition-colors">
+                    <tr key={c.id} className="group hover:bg-slate-50 transition-colors">
                       {visibleColumns.clientId && (
-                        <td className="px-3 py-2 font-mono font-medium text-slate-900 whitespace-nowrap">
+                        <td
+                          className={`sticky left-0 z-10 bg-white group-hover:bg-slate-50 w-[110px] min-w-[110px] px-3 py-2 font-mono font-medium text-slate-900 whitespace-nowrap ${
+                            !visibleColumns.clientName
+                              ? 'shadow-[inset_-1px_0_0_#e2e8f0,2px_0_4px_-2px_rgba(15,23,42,0.12)]'
+                              : 'shadow-[inset_-1px_0_0_#e2e8f0]'
+                          }`}
+                        >
                           {c.clientId}
                         </td>
                       )}
                       {visibleColumns.clientName && (
-                        <td className="px-3 py-2 font-medium text-slate-900 min-w-[200px]">
+                        <td
+                          className={`sticky ${
+                            visibleColumns.clientId ? 'left-[110px]' : 'left-0'
+                          } z-10 bg-white group-hover:bg-slate-50 min-w-[230px] px-3 py-2 font-medium text-slate-900 shadow-[inset_-1px_0_0_#e2e8f0,2px_0_4px_-2px_rgba(15,23,42,0.12)]`}
+                        >
                           <button
                             type="button"
                             onClick={() => {

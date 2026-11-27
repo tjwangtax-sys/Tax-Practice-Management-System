@@ -174,8 +174,8 @@ export const Cp204InitialQuickModal: React.FC<Cp204InitialQuickModalProps> = ({
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/50">
-      <div className="bg-white border border-slate-200 rounded-xl shadow-2xl w-full max-w-2xl max-h-[92vh] flex flex-col overflow-hidden">
-        <div className="px-5 py-3.5 border-b border-slate-200 flex items-center justify-between">
+      <div className="bg-white border border-slate-200 rounded-xl shadow-2xl w-full max-w-2xl max-h-[90vh] flex flex-col overflow-hidden">
+        <div className="shrink-0 px-5 py-3.5 border-b border-slate-200 flex items-center justify-between bg-slate-50/70">
           <div>
             <h3 className="font-display font-bold text-sm text-slate-900">
               Add CP204 Initial Estimate
@@ -193,7 +193,8 @@ export const Cp204InitialQuickModal: React.FC<Cp204InitialQuickModalProps> = ({
           </button>
         </div>
 
-        <form onSubmit={handleSubmit} className="flex-1 overflow-y-auto p-5 space-y-4">
+        <form onSubmit={handleSubmit} className="flex-1 flex flex-col min-h-0 overflow-hidden">
+          <div className="flex-1 min-h-0 overflow-y-auto p-5 space-y-4">
           {error && (
             <div className="flex items-start gap-2 p-2.5 rounded-md bg-rose-50 border border-rose-200 text-xs text-rose-700">
               <AlertCircle className="w-4 h-4 shrink-0 mt-0.5" />
@@ -371,7 +372,9 @@ export const Cp204InitialQuickModal: React.FC<Cp204InitialQuickModalProps> = ({
             />
           </div>
 
-          <div className="pt-3 border-t border-slate-200 flex items-center justify-end gap-2">
+          </div>
+
+          <div className="shrink-0 px-5 py-3 border-t border-slate-200 bg-slate-50 flex items-center justify-end gap-2">
             <button
               type="button"
               onClick={onClose}
@@ -571,8 +574,8 @@ export const Cp204RevisionQuickModal: React.FC<Cp204RevisionQuickModalProps> = (
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/50">
-      <div className="bg-white border border-slate-200 rounded-xl shadow-2xl w-full max-w-2xl max-h-[92vh] flex flex-col overflow-hidden">
-        <div className="px-5 py-3.5 border-b border-slate-200 flex items-center justify-between">
+      <div className="bg-white border border-slate-200 rounded-xl shadow-2xl w-full max-w-2xl max-h-[90vh] flex flex-col overflow-hidden">
+        <div className="shrink-0 px-5 py-3.5 border-b border-slate-200 flex items-center justify-between bg-slate-50/70">
           <div>
             <h3 className="font-display font-bold text-sm text-slate-900">
               Add CP204A Revision (6th / 9th / 11th Month)
@@ -590,7 +593,8 @@ export const Cp204RevisionQuickModal: React.FC<Cp204RevisionQuickModalProps> = (
           </button>
         </div>
 
-        <form onSubmit={handleSubmit} className="flex-1 overflow-y-auto p-5 space-y-4">
+        <form onSubmit={handleSubmit} className="flex-1 flex flex-col min-h-0 overflow-hidden">
+          <div className="flex-1 min-h-0 overflow-y-auto p-5 space-y-4">
           {error && (
             <div className="flex items-start gap-2 p-2.5 rounded-md bg-rose-50 border border-rose-200 text-xs text-rose-700">
               <AlertCircle className="w-4 h-4 shrink-0 mt-0.5" />
@@ -803,7 +807,9 @@ export const Cp204RevisionQuickModal: React.FC<Cp204RevisionQuickModalProps> = (
             />
           </div>
 
-          <div className="pt-3 border-t border-slate-200 flex items-center justify-end gap-2">
+          </div>
+
+          <div className="shrink-0 px-5 py-3 border-t border-slate-200 bg-slate-50 flex items-center justify-end gap-2">
             <button
               type="button"
               onClick={onClose}

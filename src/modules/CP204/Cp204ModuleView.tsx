@@ -38,8 +38,8 @@ import { Cp204InitialQuickModal, Cp204RevisionQuickModal } from './Cp204QuickMod
 import { Cp204AdvancedModal, Cp204AdvancedTab } from './Cp204AdvancedModal';
 
 const CP204_COLUMNS: ColumnDef[] = [
-  { key: 'clientName', label: 'Company Name', defaultVisible: true },
   { key: 'clientId', label: 'Client ID', defaultVisible: true },
+  { key: 'clientName', label: 'Company Name', defaultVisible: true },
   { key: 'fye', label: 'FYE', defaultVisible: true },
   { key: 'ya', label: 'YA', defaultVisible: true },
   { key: 'pic', label: 'PIC', defaultVisible: true },
@@ -52,6 +52,22 @@ const CP204_COLUMNS: ColumnDef[] = [
   { key: 'reviewer', label: 'Reviewer', defaultVisible: false },
   { key: 'statutoryDueDate', label: 'Statutory Due Date', defaultVisible: false },
 ];
+
+const CP204_COL_WIDTHS: Record<string, string> = {
+  clientId: 'w-[110px] min-w-[110px]',
+  clientName: 'min-w-[230px]',
+  fye: 'min-w-[75px]',
+  ya: 'min-w-[80px]',
+  pic: 'min-w-[125px]',
+  initialEstimate: 'min-w-[155px]',
+  rev6: 'min-w-[155px]',
+  rev9: 'min-w-[155px]',
+  rev11: 'min-w-[155px]',
+  currentEstimatedTax: 'min-w-[160px]',
+  instalmentsSummary: 'min-w-[125px]',
+  reviewer: 'min-w-[125px]',
+  statutoryDueDate: 'min-w-[135px]',
+};
 
 const DEFAULT_VISIBLE = CP204_COLUMNS.reduce<Record<string, boolean>>((acc, col) => {
   acc[col.key] = col.defaultVisible;
@@ -591,23 +607,23 @@ export const Cp204ModuleView: React.FC<Cp204ModuleViewProps> = ({ initialFilter 
               </button>
             </div>
 
-            <div className="overflow-x-auto max-h-[65vh]">
+            <div className="overflow-x-auto overflow-y-auto max-h-[65vh]">
               <table className="w-full text-xs border-collapse">
-                <thead className="bg-slate-100 sticky top-0 z-10 border-b border-slate-200 text-slate-700">
+                <thead className="bg-slate-100 sticky top-0 z-20 border-b border-slate-200 text-slate-700">
                   <tr>
                     {(
                       [
-                        { key: 'clientName', label: 'Company Name' },
-                        { key: 'clientId', label: 'Client ID' },
-                        { key: 'fye', label: 'FYE' },
-                        { key: 'ya', label: 'Missing YA' },
-                        { key: 'pic', label: 'Default PIC' },
-                        { key: 'status', label: 'Status' },
+                        { key: 'clientId', label: 'Client ID', width: 'w-[110px] min-w-[110px] sticky left-0 z-30 bg-slate-100 shadow-[inset_-1px_0_0_#e2e8f0]' },
+                        { key: 'clientName', label: 'Company Name', width: 'min-w-[230px] sticky left-[110px] z-30 bg-slate-100 shadow-[inset_-1px_0_0_#e2e8f0,2px_0_4px_-2px_rgba(15,23,42,0.12)]' },
+                        { key: 'fye', label: 'FYE', width: 'min-w-[75px]' },
+                        { key: 'ya', label: 'Missing YA', width: 'min-w-[95px]' },
+                        { key: 'pic', label: 'Default PIC', width: 'min-w-[130px]' },
+                        { key: 'status', label: 'Status', width: 'min-w-[165px]' },
                       ] as const
                     ).map((col) => (
                       <th
                         key={col.key}
-                        className="px-3 py-2.5 text-left font-semibold whitespace-nowrap"
+                        className={`px-3 py-2.5 text-left font-semibold whitespace-nowrap ${col.width}`}
                       >
                         <ExcelColumnFilter
                           columnKey={col.key}
@@ -624,7 +640,7 @@ export const Cp204ModuleView: React.FC<Cp204ModuleViewProps> = ({ initialFilter 
                         />
                       </th>
                     ))}
-                    <th className="px-3 py-2.5 text-right font-semibold whitespace-nowrap">
+                    <th className="px-3 py-2.5 text-right font-semibold whitespace-nowrap min-w-[115px]">
                       Action
                     </th>
                   </tr>
@@ -639,17 +655,17 @@ export const Cp204ModuleView: React.FC<Cp204ModuleViewProps> = ({ initialFilter 
                     </tr>
                   ) : (
                     displayedMissing.map((client) => (
-                      <tr key={client.id} className="hover:bg-slate-50/80">
-                        <td className="px-3 py-2">
+                      <tr key={client.id} className="group hover:bg-slate-50">
+                        <td className="sticky left-0 z-10 bg-white group-hover:bg-slate-50 w-[110px] min-w-[110px] px-3 py-2 font-mono text-slate-700 whitespace-nowrap shadow-[inset_-1px_0_0_#e2e8f0]">
+                          {client.clientId}
+                        </td>
+                        <td className="sticky left-[110px] z-10 bg-white group-hover:bg-slate-50 min-w-[230px] px-3 py-2 shadow-[inset_-1px_0_0_#e2e8f0,2px_0_4px_-2px_rgba(15,23,42,0.12)]">
                           <div className="font-medium text-slate-900">{client.clientName}</div>
                           {showSpecialRemarks && client.specialRemarks && (
                             <div className="mt-1 px-2 py-1 rounded bg-amber-50 border border-amber-200 text-[11px] text-amber-900">
                               {client.specialRemarks}
                             </div>
                           )}
-                        </td>
-                        <td className="px-3 py-2 font-mono text-slate-700 whitespace-nowrap">
-                          {client.clientId}
                         </td>
                         <td className="px-3 py-2 font-mono text-slate-700 whitespace-nowrap">
                           {client.fye ? Number(client.fye) : '—'}
@@ -685,32 +701,47 @@ export const Cp204ModuleView: React.FC<Cp204ModuleViewProps> = ({ initialFilter 
             </div>
           </div>
         ) : (
-          <div className="overflow-x-auto max-h-[68vh]">
+          <div className="overflow-x-auto overflow-y-auto max-h-[68vh]">
             <table className="w-full text-xs border-collapse">
-              <thead className="bg-slate-100 sticky top-0 z-10 border-b border-slate-200 text-slate-700">
+              <thead className="bg-slate-100 sticky top-0 z-20 border-b border-slate-200 text-slate-700">
                 <tr>
-                  {CP204_COLUMNS.filter((c) => visibleColumns[c.key]).map((col) => (
-                    <th
-                      key={col.key}
-                      className={`px-3 py-2.5 font-semibold whitespace-nowrap ${
-                        col.align === 'right' ? 'text-right' : 'text-left'
-                      }`}
-                    >
-                      <ExcelColumnFilter
-                        columnKey={col.key}
-                        title={col.label}
-                        values={excel.getColumnValues(col.key)}
-                        selectedValues={excel.columnFilters[col.key]}
-                        onChangeSelected={(next) => excel.setColumnFilter(col.key, next)}
-                        sortDirection={
-                          excel.sortState?.key === col.key ? excel.sortState.direction : null
-                        }
-                        onSort={(dir) => excel.setColumnSort(col.key, dir)}
-                        align={col.align === 'right' ? 'right' : 'left'}
-                      />
-                    </th>
-                  ))}
-                  <th className="px-3 py-2.5 text-right font-semibold whitespace-nowrap no-print">
+                  {CP204_COLUMNS.filter((c) => visibleColumns[c.key]).map((col) => {
+                    const isStickyId = col.key === 'clientId';
+                    const isStickyName = col.key === 'clientName';
+                    const stickyThCls = isStickyId
+                      ? `sticky left-0 z-30 bg-slate-100 ${
+                          !visibleColumns.clientName
+                            ? 'shadow-[inset_-1px_0_0_#e2e8f0,2px_0_4px_-2px_rgba(15,23,42,0.12)]'
+                            : 'shadow-[inset_-1px_0_0_#e2e8f0]'
+                        }`
+                      : isStickyName
+                      ? `sticky ${
+                          visibleColumns.clientId ? 'left-[110px]' : 'left-0'
+                        } z-30 bg-slate-100 shadow-[inset_-1px_0_0_#e2e8f0,2px_0_4px_-2px_rgba(15,23,42,0.12)]`
+                      : '';
+                    return (
+                      <th
+                        key={col.key}
+                        className={`px-3 py-2.5 font-semibold whitespace-nowrap ${
+                          col.align === 'right' ? 'text-right' : 'text-left'
+                        } ${CP204_COL_WIDTHS[col.key] || 'min-w-[120px]'} ${stickyThCls}`}
+                      >
+                        <ExcelColumnFilter
+                          columnKey={col.key}
+                          title={col.label}
+                          values={excel.getColumnValues(col.key)}
+                          selectedValues={excel.columnFilters[col.key]}
+                          onChangeSelected={(next) => excel.setColumnFilter(col.key, next)}
+                          sortDirection={
+                            excel.sortState?.key === col.key ? excel.sortState.direction : null
+                          }
+                          onSort={(dir) => excel.setColumnSort(col.key, dir)}
+                          align={col.align === 'right' ? 'right' : 'left'}
+                        />
+                      </th>
+                    );
+                  })}
+                  <th className="px-3 py-2.5 text-right font-semibold whitespace-nowrap min-w-[240px] no-print">
                     Actions
                   </th>
                 </tr>
@@ -735,9 +766,24 @@ export const Cp204ModuleView: React.FC<Cp204ModuleViewProps> = ({ initialFilter 
                     ).length;
 
                     return (
-                      <tr key={rec.id} className="hover:bg-slate-50/90 align-top">
+                      <tr key={rec.id} className="group hover:bg-slate-50 align-top">
+                        {visibleColumns.clientId && (
+                          <td
+                            className={`sticky left-0 z-10 bg-white group-hover:bg-slate-50 w-[110px] min-w-[110px] px-3 py-2 font-mono text-slate-700 whitespace-nowrap ${
+                              !visibleColumns.clientName
+                                ? 'shadow-[inset_-1px_0_0_#e2e8f0,2px_0_4px_-2px_rgba(15,23,42,0.12)]'
+                                : 'shadow-[inset_-1px_0_0_#e2e8f0]'
+                            }`}
+                          >
+                            {rec.clientId}
+                          </td>
+                        )}
                         {visibleColumns.clientName && (
-                          <td className="px-3 py-2 min-w-[200px]">
+                          <td
+                            className={`sticky ${
+                              visibleColumns.clientId ? 'left-[110px]' : 'left-0'
+                            } z-10 bg-white group-hover:bg-slate-50 min-w-[230px] px-3 py-2 shadow-[inset_-1px_0_0_#e2e8f0,2px_0_4px_-2px_rgba(15,23,42,0.12)]`}
+                          >
                             <div className="font-semibold text-slate-900 leading-snug">
                               {rec.clientName}
                             </div>
@@ -750,11 +796,6 @@ export const Cp204ModuleView: React.FC<Cp204ModuleViewProps> = ({ initialFilter 
                                 {client.specialRemarks}
                               </div>
                             )}
-                          </td>
-                        )}
-                        {visibleColumns.clientId && (
-                          <td className="px-3 py-2 font-mono text-slate-700 whitespace-nowrap">
-                            {rec.clientId}
                           </td>
                         )}
                         {visibleColumns.fye && (

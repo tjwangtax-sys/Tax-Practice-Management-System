@@ -88,7 +88,12 @@ export const ExcelColumnFilter: React.FC<ExcelColumnFilterProps> = ({
 }) => {
   const [open, setOpen] = useState(false);
   const [search, setSearch] = useState('');
-  const [coords, setCoords] = useState<{ top: number; left: number }>({ top: 0, left: 0 });
+  const [coords, setCoords] = useState<{
+    left: number;
+    top?: number;
+    bottom?: number;
+    maxHeight: number;
+  }>({ left: 12, top: 12, maxHeight: 380 });
   const triggerRef = useRef<HTMLButtonElement | null>(null);
   const popoverRef = useRef<HTMLDivElement | null>(null);
 
@@ -124,19 +129,27 @@ export const ExcelColumnFilter: React.FC<ExcelColumnFilterProps> = ({
     const btn = triggerRef.current;
     if (!btn) return;
     const rect = btn.getBoundingClientRect();
-    const popWidth = 272;
-    const popMaxHeight = 380;
-    let left = align === 'right' ? rect.right - popWidth : rect.left;
-    if (left + popWidth > window.innerWidth - 12) {
-      left = window.innerWidth - popWidth - 12;
-    }
-    if (left < 12) left = 12;
+    const popWidth = 280;
+    const margin = 12;
 
-    let top = rect.bottom + 4;
-    if (top + popMaxHeight > window.innerHeight - 12 && rect.top > popMaxHeight) {
-      top = Math.max(12, rect.top - popMaxHeight - 4);
+    let left = align === 'right' ? rect.right - popWidth : rect.left;
+    if (left + popWidth > window.innerWidth - margin) {
+      left = window.innerWidth - popWidth - margin;
     }
-    setCoords({ top, left });
+    if (left < margin) left = margin;
+
+    const spaceBelow = window.innerHeight - rect.bottom - margin;
+    const spaceAbove = rect.top - margin;
+
+    if (spaceBelow < 340 && spaceAbove > spaceBelow) {
+      const bottom = Math.max(margin, window.innerHeight - rect.top + 4);
+      const maxHeight = Math.max(200, Math.min(440, spaceAbove - 4));
+      setCoords({ left, bottom, maxHeight });
+    } else {
+      const top = Math.max(margin, rect.bottom + 4);
+      const maxHeight = Math.max(200, Math.min(440, spaceBelow - 4));
+      setCoords({ left, top, maxHeight });
+    }
   };
 
   useEffect(() => {
@@ -199,7 +212,7 @@ export const ExcelColumnFilter: React.FC<ExcelColumnFilterProps> = ({
     }
   };
 
-  const handleClear = () => {
+  const handleDeselectAll = () => {
     if (search.trim()) {
       const next = new Set(selectedSet);
       for (const v of filteredUniqueValues) next.delete(v);
@@ -207,6 +220,12 @@ export const ExcelColumnFilter: React.FC<ExcelColumnFilterProps> = ({
     } else {
       onChangeSelected([]);
     }
+  };
+
+  const handleClearFilter = () => {
+    setSearch('');
+    onChangeSelected(undefined);
+    setOpen(false);
   };
 
   const selectedCount = selectedValues === undefined ? uniqueValues.length : selectedValues.length;
@@ -225,6 +244,7 @@ export const ExcelColumnFilter: React.FC<ExcelColumnFilterProps> = ({
         onClick={(e) => {
           e.stopPropagation();
           setSearch('');
+          if (!open) updatePopoverPosition();
           setOpen((prev) => !prev);
         }}
         title={
@@ -249,12 +269,17 @@ export const ExcelColumnFilter: React.FC<ExcelColumnFilterProps> = ({
         createPortal(
           <div
             ref={popoverRef}
-            style={{ top: coords.top, left: coords.left }}
+            style={{
+              left: coords.left,
+              ...(coords.top !== undefined ? { top: coords.top } : {}),
+              ...(coords.bottom !== undefined ? { bottom: coords.bottom } : {}),
+              maxHeight: coords.maxHeight,
+            }}
             onClick={(e) => e.stopPropagation()}
-            className="fixed z-[90] w-[272px] bg-white border border-slate-200 rounded-lg shadow-xl text-left font-normal normal-case tracking-normal text-slate-800 select-none"
+            className="fixed z-[90] w-[280px] bg-white border border-slate-200 rounded-lg shadow-xl text-left font-normal normal-case tracking-normal text-slate-800 select-none flex flex-col overflow-hidden"
           >
-            {/* Header */}
-            <div className="px-3 py-2 bg-slate-50 border-b border-slate-200 flex items-center justify-between gap-2 rounded-t-lg">
+            {/* Sticky Header */}
+            <div className="shrink-0 px-3 py-2 bg-slate-50 border-b border-slate-200 flex items-center justify-between gap-2">
               <span className="text-xs font-semibold text-slate-900 truncate">{title}</span>
               <button
                 type="button"
@@ -267,7 +292,7 @@ export const ExcelColumnFilter: React.FC<ExcelColumnFilterProps> = ({
             </div>
 
             {/* Sort Buttons */}
-            <div className="p-2 border-b border-slate-100 space-y-1">
+            <div className="shrink-0 p-2 border-b border-slate-100 space-y-1">
               <button
                 type="button"
                 onClick={() => onSort('asc')}
@@ -294,8 +319,8 @@ export const ExcelColumnFilter: React.FC<ExcelColumnFilterProps> = ({
               </button>
             </div>
 
-            {/* Search + Select All / Clear */}
-            <div className="p-2 border-b border-slate-100 space-y-2">
+            {/* Search + Select All / Uncheck All */}
+            <div className="shrink-0 p-2 border-b border-slate-100 space-y-2">
               <div className="relative">
                 <Search className="w-3.5 h-3.5 text-slate-400 absolute left-2 top-1/2 -translate-y-1/2 pointer-events-none" />
                 <input
@@ -316,16 +341,16 @@ export const ExcelColumnFilter: React.FC<ExcelColumnFilterProps> = ({
                 </button>
                 <button
                   type="button"
-                  onClick={handleClear}
-                  className="font-medium text-rose-700 hover:text-rose-900 hover:underline"
+                  onClick={handleDeselectAll}
+                  className="font-medium text-slate-600 hover:text-rose-700 hover:underline"
                 >
-                  Clear
+                  Uncheck All
                 </button>
               </div>
             </div>
 
             {/* Scrollable Unique Value Checkboxes */}
-            <div className="max-h-48 overflow-y-auto p-1.5 space-y-0.5">
+            <div className="flex-1 min-h-0 max-h-60 overflow-y-auto p-1.5 space-y-0.5">
               {filteredUniqueValues.length === 0 ? (
                 <div className="py-4 text-center text-[11px] text-slate-400">
                   No matching values
@@ -364,18 +389,27 @@ export const ExcelColumnFilter: React.FC<ExcelColumnFilterProps> = ({
               )}
             </div>
 
-            {/* Footer */}
-            <div className="px-3 py-2 bg-slate-50 border-t border-slate-200 flex items-center justify-between gap-2 rounded-b-lg">
+            {/* Sticky Footer */}
+            <div className="shrink-0 px-3 py-2 bg-slate-50 border-t border-slate-200 flex items-center justify-between gap-2">
               <span className="text-[11px] font-mono tabular-nums text-slate-600">
                 {selectedCount} selected
               </span>
-              <button
-                type="button"
-                onClick={() => setOpen(false)}
-                className="px-3 py-1 text-xs font-medium text-white bg-teal-700 rounded hover:bg-teal-800"
-              >
-                Done
-              </button>
+              <div className="flex items-center gap-1.5">
+                <button
+                  type="button"
+                  onClick={handleClearFilter}
+                  className="px-2.5 py-1 text-xs font-medium text-slate-700 bg-white border border-slate-200 rounded hover:bg-slate-100"
+                >
+                  Clear
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setOpen(false)}
+                  className="px-3 py-1 text-xs font-semibold text-white bg-teal-700 rounded hover:bg-teal-800"
+                >
+                  Apply
+                </button>
+              </div>
             </div>
           </div>,
           document.body

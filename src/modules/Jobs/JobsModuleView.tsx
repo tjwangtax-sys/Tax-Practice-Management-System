@@ -49,10 +49,79 @@ interface JobsModuleViewProps {
 
 const PAGE_SIZE = 50;
 
+function getJobColumnMinWidth(key: string): string {
+  switch (key) {
+    case 'clientId':
+      return 'w-[110px] min-w-[110px]';
+    case 'clientName':
+      return 'min-w-[225px]';
+    case 'jobCode':
+      return 'min-w-[130px]';
+    case 'module':
+    case 'jobType':
+    case 'groupId':
+      return 'min-w-[115px]';
+    case 'fye':
+      return 'min-w-[75px]';
+    case 'ya':
+      return 'min-w-[90px]';
+    case 'taxPic':
+    case 'reviewer':
+      return 'min-w-[125px]';
+    case 'status':
+    case 'workDoneStatus':
+    case 'billingStatus':
+    case 'formCStatus':
+    case 'mitrsStatus':
+    case 'formEStatus':
+    case 'cp8dStatus':
+    case 'formEaStatus':
+    case 'submissionStatus':
+    case 'accountsStatus':
+    case 'priority':
+      return 'min-w-[140px]';
+    case 'formC':
+    case 'mitrs':
+      return 'min-w-[120px]';
+    case 'auditor':
+      return 'min-w-[155px]';
+    case 'remarks':
+      return 'min-w-[210px]';
+    case 'finalApplicableDeadline':
+    case 'originalStatutoryDeadline':
+    case 'formCDueDate':
+    case 'internalDeadline':
+    case 'lhdnEot1':
+    case 'ssmEot':
+    case 'mitrsDueDate':
+    case 'dueDate':
+    case 'submissionDate':
+    case 'auditReportReceivedDate':
+    case 'dateDocumentsReceived':
+    case 'paymentDate':
+    case 'letterDate':
+    case 'responseDueDate':
+    case 'responseSentDate':
+      return 'min-w-[135px]';
+    case 'finalTaxPayable':
+    case 'feeAmount':
+    case 'cp204Estimate':
+    case 'cp204Revised6th':
+    case 'cp204Revised9th':
+    case 'cp204Revised11th':
+    case 'amountDue':
+    case 'amountPaid':
+      return 'min-w-[130px]';
+    default:
+      return 'min-w-[115px]';
+  }
+}
+
 function getColumnsForMode(mode: 'ALL' | JobModule): ColumnDef[] {
-  // Exact Corporate table layout matching original TPMS register
+  // Corporate table layout with Client ID & Client Name anchored on the left
   if (mode === 'Corporate') {
     return [
+      { key: 'clientId', label: 'Client ID', defaultVisible: true },
       { key: 'clientName', label: 'Client Name', defaultVisible: true },
       { key: 'jobType', label: 'Job Type', defaultVisible: true },
       { key: 'fye', label: 'FYE', defaultVisible: true },
@@ -70,7 +139,6 @@ function getColumnsForMode(mode: 'ALL' | JobModule): ColumnDef[] {
       { key: 'workDoneStatus', label: 'Work Done Status', defaultVisible: true },
       // Optional toggleable columns
       { key: 'jobCode', label: 'Job Code', defaultVisible: false, optional: true },
-      { key: 'clientId', label: 'Client ID', defaultVisible: false, optional: true },
       { key: 'groupId', label: 'Group ID', defaultVisible: false, optional: true },
       {
         key: 'originalStatutoryDeadline',
@@ -98,11 +166,11 @@ function getColumnsForMode(mode: 'ALL' | JobModule): ColumnDef[] {
   }
 
   const base: ColumnDef[] = [
+    { key: 'clientId', label: 'Client ID', defaultVisible: true },
+    { key: 'clientName', label: 'Client Name', defaultVisible: true },
     { key: 'jobCode', label: 'Job Code', defaultVisible: true },
     ...(mode === 'ALL' ? [{ key: 'module', label: 'Module', defaultVisible: true }] : []),
     { key: 'jobType', label: 'Job Type', defaultVisible: true },
-    { key: 'clientId', label: 'Client ID', defaultVisible: true },
-    { key: 'clientName', label: 'Client Name', defaultVisible: true },
     { key: 'groupId', label: 'Group ID', defaultVisible: false, optional: true },
     { key: 'ya', label: 'YA', defaultVisible: true },
     { key: 'fye', label: 'FYE', defaultVisible: true },
@@ -314,7 +382,7 @@ export const JobsModuleView: React.FC<JobsModuleViewProps> = ({ mode, initialFil
 
   const isCorporateView = mode === 'Corporate';
   const columns = useMemo(() => getColumnsForMode(mode), [mode]);
-  const colKey = `jobs_v3_${mode.toLowerCase().replace(/\s+/g, '_')}`;
+  const colKey = `jobs_v4_${mode.toLowerCase().replace(/\s+/g, '_')}`;
   const { visibleColumns, toggleColumn, resetColumns } = useColumnVisibility(colKey, columns);
 
   const [search, setSearch] = useState('');
@@ -957,32 +1025,47 @@ export const JobsModuleView: React.FC<JobsModuleViewProps> = ({ mode, initialFil
       />
 
       <div className="bg-white border border-slate-200 rounded-lg overflow-hidden">
-        <div className="overflow-auto max-h-[calc(100vh-285px)]">
+        <div className="overflow-x-auto overflow-y-auto max-h-[calc(100vh-285px)]">
           <table className="w-full text-xs border-collapse">
-            <thead className="sticky top-0 z-10 bg-slate-100 border-b border-slate-200 text-slate-700">
+            <thead className="sticky top-0 z-20 bg-slate-100 border-b border-slate-200 text-slate-700">
               <tr>
-                {activeCols.map((col) => (
-                  <th
-                    key={col.key}
-                    className={`px-3 py-2 font-semibold whitespace-nowrap ${
-                      col.align === 'right' ? 'text-right' : 'text-left'
-                    }`}
-                  >
-                    <ExcelColumnFilter
-                      columnKey={col.key}
-                      title={col.label}
-                      values={excel.getColumnValues(col.key)}
-                      selectedValues={excel.columnFilters[col.key]}
-                      onChangeSelected={(next) => excel.setColumnFilter(col.key, next)}
-                      sortDirection={
-                        excel.sortState?.key === col.key ? excel.sortState.direction : null
-                      }
-                      onSort={(dir) => excel.setColumnSort(col.key, dir)}
-                      align={col.align === 'right' ? 'right' : 'left'}
-                    />
-                  </th>
-                ))}
-                <th className="px-3 py-2 text-right font-semibold whitespace-nowrap no-print">
+                {activeCols.map((col) => {
+                  const isStickyId = col.key === 'clientId';
+                  const isStickyName = col.key === 'clientName';
+                  const stickyThCls = isStickyId
+                    ? `sticky left-0 z-30 bg-slate-100 ${
+                        !visibleColumns.clientName
+                          ? 'shadow-[inset_-1px_0_0_#e2e8f0,2px_0_4px_-2px_rgba(15,23,42,0.12)]'
+                          : 'shadow-[inset_-1px_0_0_#e2e8f0]'
+                      }`
+                    : isStickyName
+                    ? `sticky ${
+                        visibleColumns.clientId ? 'left-[110px]' : 'left-0'
+                      } z-30 bg-slate-100 shadow-[inset_-1px_0_0_#e2e8f0,2px_0_4px_-2px_rgba(15,23,42,0.12)]`
+                    : '';
+                  return (
+                    <th
+                      key={col.key}
+                      className={`px-3 py-2 font-semibold whitespace-nowrap ${
+                        col.align === 'right' ? 'text-right' : 'text-left'
+                      } ${getJobColumnMinWidth(col.key)} ${stickyThCls}`}
+                    >
+                      <ExcelColumnFilter
+                        columnKey={col.key}
+                        title={col.label}
+                        values={excel.getColumnValues(col.key)}
+                        selectedValues={excel.columnFilters[col.key]}
+                        onChangeSelected={(next) => excel.setColumnFilter(col.key, next)}
+                        sortDirection={
+                          excel.sortState?.key === col.key ? excel.sortState.direction : null
+                        }
+                        onSort={(dir) => excel.setColumnSort(col.key, dir)}
+                        align={col.align === 'right' ? 'right' : 'left'}
+                      />
+                    </th>
+                  );
+                })}
+                <th className="px-3 py-2 text-right font-semibold whitespace-nowrap min-w-[130px] no-print">
                   Action
                 </th>
               </tr>
@@ -1033,9 +1116,24 @@ export const JobsModuleView: React.FC<JobsModuleViewProps> = ({ mode, initialFil
                     j.mitrsDueDate || deadlineAnalysis.mitrsApplicableDeadline || '';
 
                   return (
-                    <tr key={j.id} className="hover:bg-slate-50/90 transition-colors align-top">
+                    <tr key={j.id} className="group hover:bg-slate-50 transition-colors align-top">
                       {activeCols.map((col) => {
                         const key = col.key;
+
+                        if (key === 'clientId') {
+                          return (
+                            <td
+                              key={key}
+                              className={`sticky left-0 z-10 bg-white group-hover:bg-slate-50 w-[110px] min-w-[110px] px-3 py-2 font-mono font-medium text-slate-800 whitespace-nowrap ${
+                                !visibleColumns.clientName
+                                  ? 'shadow-[inset_-1px_0_0_#e2e8f0,2px_0_4px_-2px_rgba(15,23,42,0.12)]'
+                                  : 'shadow-[inset_-1px_0_0_#e2e8f0]'
+                              }`}
+                            >
+                              {j.clientId || '—'}
+                            </td>
+                          );
+                        }
 
                         if (key === 'jobCode') {
                           return (
@@ -1063,7 +1161,9 @@ export const JobsModuleView: React.FC<JobsModuleViewProps> = ({ mode, initialFil
                           return (
                             <td
                               key={key}
-                              className="px-3 py-2 font-medium text-slate-900 min-w-[180px]"
+                              className={`sticky ${
+                                visibleColumns.clientId ? 'left-[110px]' : 'left-0'
+                              } z-10 bg-white group-hover:bg-slate-50 min-w-[225px] px-3 py-2 font-medium text-slate-900 shadow-[inset_-1px_0_0_#e2e8f0,2px_0_4px_-2px_rgba(15,23,42,0.12)]`}
                             >
                               <button
                                 type="button"

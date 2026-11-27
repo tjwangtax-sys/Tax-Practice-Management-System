@@ -372,9 +372,9 @@ export const Cp204AdvancedModal: React.FC<Cp204AdvancedModalProps> = ({
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-3 sm:p-4 bg-slate-900/50">
-      <div className="bg-white border border-slate-200 rounded-xl shadow-2xl w-full max-w-6xl max-h-[94vh] flex flex-col overflow-hidden">
+      <div className="bg-white border border-slate-200 rounded-xl shadow-2xl w-full max-w-6xl max-h-[90vh] flex flex-col overflow-hidden">
         {/* Header */}
-        <div className="px-5 py-3.5 border-b border-slate-200 flex flex-wrap items-center justify-between gap-3 bg-slate-50/70">
+        <div className="shrink-0 px-5 py-3.5 border-b border-slate-200 flex flex-wrap items-center justify-between gap-3 bg-slate-50/70">
           <div>
             <h3 className="font-display font-bold text-sm text-slate-900">
               Advanced CP204 Data Entry &amp; Detailed Records
@@ -393,7 +393,7 @@ export const Cp204AdvancedModal: React.FC<Cp204AdvancedModalProps> = ({
         </div>
 
         {/* 4 Tabs */}
-        <div className="px-5 pt-2.5 border-b border-slate-200 bg-white flex flex-wrap items-center justify-between gap-2">
+        <div className="shrink-0 px-5 pt-2.5 border-b border-slate-200 bg-white flex flex-wrap items-center justify-between gap-2">
           <div className="flex flex-wrap items-center gap-1">
             {(
               [
@@ -450,7 +450,7 @@ export const Cp204AdvancedModal: React.FC<Cp204AdvancedModalProps> = ({
 
         {/* Alerts */}
         {(error || successMsg) && (
-          <div className="px-5 pt-3">
+          <div className="shrink-0 px-5 pt-3">
             {error && (
               <div className="flex items-start gap-2 p-2.5 rounded-md bg-rose-50 border border-rose-200 text-xs text-rose-700">
                 <AlertCircle className="w-4 h-4 shrink-0 mt-0.5" />
@@ -467,7 +467,7 @@ export const Cp204AdvancedModal: React.FC<Cp204AdvancedModalProps> = ({
         )}
 
         {/* Body */}
-        <div className="flex-1 overflow-y-auto p-5">
+        <div className="flex-1 min-h-0 overflow-y-auto p-5">
           {/* TAB 1: Client / Year Listing & Bulk Creator */}
           {tab === 'bulk' && (
             <div className="space-y-5">
@@ -1342,7 +1342,7 @@ export const Cp204AdvancedModal: React.FC<Cp204AdvancedModalProps> = ({
         </div>
 
         {/* Footer */}
-        <div className="px-5 py-3 border-t border-slate-200 bg-slate-50 flex items-center justify-between gap-2">
+        <div className="shrink-0 px-5 py-3 border-t border-slate-200 bg-slate-50 flex items-center justify-between gap-2">
           <span className="text-[11px] text-slate-500">
             {draft && tab !== 'bulk'
               ? `${draft.clientName} · YA ${draft.ya} · Statutory Due: ${formatDateDDMMYYYY(

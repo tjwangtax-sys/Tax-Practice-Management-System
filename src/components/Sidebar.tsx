@@ -150,6 +150,27 @@ export const Sidebar: React.FC<SidebarProps> = ({
           </div>
         ))}
       </nav>
+
+      {/* Collapse Sidebar Footer Toggle */}
+      <div className="p-2 border-t border-slate-800 shrink-0">
+        <button
+          type="button"
+          onClick={onToggleCollapse}
+          title={collapsed ? 'Expand sidebar' : 'Collapse sidebar'}
+          className={`w-full flex items-center gap-2 px-2.5 py-2 rounded-md text-xs font-medium text-slate-300 hover:bg-slate-800 hover:text-white transition-colors ${
+            collapsed ? 'justify-center px-0' : ''
+          }`}
+        >
+          {collapsed ? (
+            <PanelLeftOpen className="w-4 h-4 shrink-0 text-slate-400" />
+          ) : (
+            <>
+              <PanelLeftClose className="w-4 h-4 shrink-0 text-slate-400" />
+              <span className="truncate">Collapse Sidebar</span>
+            </>
+          )}
+        </button>
+      </div>
     </aside>
   );
 };

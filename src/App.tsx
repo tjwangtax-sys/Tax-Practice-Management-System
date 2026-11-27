@@ -117,8 +117,8 @@ const AppWorkspace: React.FC = () => {
           onToggleMobileSidebar={() => setMobileNavOpen((o) => !o)}
         />
 
-        <main className="flex-1 overflow-y-auto p-4 sm:p-5">
-          <div className="max-w-[1600px] mx-auto">{renderContent()}</div>
+        <main className="flex-1 overflow-y-auto py-4 sm:py-5">
+          <div className="w-full max-w-none px-4">{renderContent()}</div>
         </main>
       </div>
 

@@ -1,5 +1,6 @@
 import * as XLSX from 'xlsx';
 import { triggerBlobDownload } from '../../lib/exportUtils';
+import { normalizeSettingGroup } from '../../lib/settingsDropdown';
 import { showToast } from '../../lib/toast';
 import {
   ClientCategory,
@@ -1545,7 +1546,9 @@ export function parseAndValidateRow(
     }
 
     case 'settings': {
-      const group = pickStr(m, ['Group', 'Setting Group', 'Category'], 64).toUpperCase();
+      const group = normalizeSettingGroup(
+        pickStr(m, ['Group', 'Setting Group', 'Category'], 64)
+      ).slice(0, 64);
       const displayName = pickStr(m, ['Display Name', 'Value', 'Label', 'displayName'], 120);
       const code =
         pickStr(m, ['Code', 'Key'], 64).toUpperCase().replace(/\s+/g, '_') ||

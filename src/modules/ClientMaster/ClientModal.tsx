@@ -317,9 +317,9 @@ export const ClientModal: React.FC<ClientModalProps> = ({
         onClick={onClose}
         aria-hidden="true"
       />
-      <div className="relative z-10 w-full max-w-6xl max-h-[92vh] bg-white border border-slate-200 rounded-xl shadow-2xl flex flex-col overflow-hidden">
+      <div className="relative z-10 w-full max-w-6xl max-h-[90vh] bg-white border border-slate-200 rounded-xl shadow-2xl flex flex-col overflow-hidden">
         {/* Modal Header */}
-        <div className="px-5 py-3.5 border-b border-slate-200 flex flex-wrap items-center justify-between gap-3 bg-slate-50/70">
+        <div className="shrink-0 px-5 py-3.5 border-b border-slate-200 flex flex-wrap items-center justify-between gap-3 bg-slate-50/70">
           <div className="flex items-center gap-3 min-w-0">
             <div>
               <div className="flex items-center gap-2">
@@ -405,8 +405,8 @@ export const ClientModal: React.FC<ClientModalProps> = ({
         </div>
 
         {/* Modal Body */}
-        <form onSubmit={(e) => void handleSubmit(e)} className="flex-1 flex flex-col min-h-0">
-          <div className="flex-1 overflow-y-auto p-5 space-y-6">
+        <form onSubmit={(e) => void handleSubmit(e)} className="flex-1 flex flex-col min-h-0 overflow-hidden">
+          <div className="flex-1 min-h-0 overflow-y-auto p-5 space-y-6">
             {error && (
               <div className="p-3 rounded-lg bg-rose-50 border border-rose-200 text-xs text-rose-800">
                 {error}
@@ -1628,7 +1628,7 @@ export const ClientModal: React.FC<ClientModalProps> = ({
           </div>
 
           {/* Modal Footer */}
-          <div className="px-5 py-3 border-t border-slate-200 bg-slate-50 flex items-center justify-between">
+          <div className="shrink-0 px-5 py-3 border-t border-slate-200 bg-slate-50 flex items-center justify-between">
             <span className="text-[11px] text-slate-500">
               {isEdit && client?.updatedBy ? `Last updated by ${client.updatedBy}` : 'All changes sync immediately to Cloud Firestore'}
             </span>

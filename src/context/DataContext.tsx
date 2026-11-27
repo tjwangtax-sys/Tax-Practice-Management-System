@@ -12,6 +12,7 @@ import {
 } from 'firebase/firestore';
 import { db, emailToStaffKey, handleFirestoreError, OperationType } from '../lib/firebase';
 import { DEFAULT_MALAYSIAN_TAX_SETTINGS } from '../lib/defaultSettings';
+import { normalizeSettingGroup } from '../lib/settingsDropdown';
 import { applyMalaysianJobRules } from '../lib/deadlineUtils';
 import {
   computeCp204CurrentEstimatedTax,
@@ -731,18 +732,28 @@ export const DataProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
   const getSettingsByGroup = useCallback(
     (group: string, includeInactive = false) => {
-      const normalized = group.trim().toUpperCase();
-      const direct = settings
-        .filter((s) => s.group.toUpperCase() === normalized && (includeInactive || s.active))
-        .sort((a, b) => a.sortOrder - b.sortOrder);
-      if (direct.length > 0) return direct;
-      if (normalized === 'E_INVOICE_STATUS' || normalized === 'EINVOICE_STATUS') {
-        const alias = normalized === 'E_INVOICE_STATUS' ? 'EINVOICE_STATUS' : 'E_INVOICE_STATUS';
-        return settings
-          .filter((s) => s.group.toUpperCase() === alias && (includeInactive || s.active))
-          .sort((a, b) => a.sortOrder - b.sortOrder);
+      const normalized = normalizeSettingGroup(group);
+      const matched = settings
+        .filter(
+          (s) =>
+            normalizeSettingGroup(s.group) === normalized && (includeInactive || s.active)
+        )
+        .sort((a, b) => {
+          if (a.active !== b.active) return a.active ? -1 : 1;
+          return a.sortOrder - b.sortOrder;
+        });
+
+      // Deduplicate by case-insensitive displayName so legacy underscore/space duplicates
+      // never render duplicate dropdown entries.
+      const seen = new Set<string>();
+      const deduped: SettingValue[] = [];
+      for (const item of matched) {
+        const key = (item.displayName || item.code || '').trim().toLowerCase();
+        if (!key || seen.has(key)) continue;
+        seen.add(key);
+        deduped.push(item);
       }
-      return direct;
+      return deduped;
     },
     [settings]
   );
@@ -750,10 +761,17 @@ export const DataProvider: React.FC<{ children: React.ReactNode }> = ({ children
   const settingsIndex = useMemo(() => {
     const map = new Map<string, SettingValue>();
     for (const s of settings) {
-      map.set(`${s.group}::${s.displayName.toLowerCase()}`, s);
-      map.set(`${s.group}::${s.code.toLowerCase()}`, s);
-      map.set(`ANY::${s.displayName.toLowerCase()}`, s);
-      map.set(`ANY::${s.code.toLowerCase()}`, s);
+      const normGroup = normalizeSettingGroup(s.group);
+      const displayKey = (s.displayName || '').trim().toLowerCase();
+      const codeKey = (s.code || '').trim().toLowerCase();
+      if (displayKey) {
+        map.set(`${normGroup}::${displayKey}`, s);
+        map.set(`ANY::${displayKey}`, s);
+      }
+      if (codeKey) {
+        map.set(`${normGroup}::${codeKey}`, s);
+        map.set(`ANY::${codeKey}`, s);
+      }
     }
     return map;
   }, [settings]);
@@ -762,9 +780,10 @@ export const DataProvider: React.FC<{ children: React.ReactNode }> = ({ children
     (group: string, value: string | undefined | null) => {
       const raw = (value ?? '').trim();
       if (!raw) return { label: '—', color: '#64748B' };
+      const normGroup = normalizeSettingGroup(group);
       const key = raw.toLowerCase();
       const matched =
-        settingsIndex.get(`${group}::${key}`) ?? settingsIndex.get(`ANY::${key}`);
+        settingsIndex.get(`${normGroup}::${key}`) ?? settingsIndex.get(`ANY::${key}`);
 
       if (matched) {
         return { label: matched.displayName, color: matched.badgeColor };
@@ -773,7 +792,7 @@ export const DataProvider: React.FC<{ children: React.ReactNode }> = ({ children
       if (key === 'pending mitrs') {
         return { label: raw, color: '#0369A1' };
       }
-      if (key === 'completed' && group === 'JOB_STATUS') {
+      if (key === 'completed' && normGroup === 'JOB STATUS') {
         return { label: raw, color: '#CA8A04' };
       }
 
@@ -889,11 +908,12 @@ export const DataProvider: React.FC<{ children: React.ReactNode }> = ({ children
   // ---------------------- SETTINGS CRUD ----------------------
   const saveSetting = useCallback(
     async (setting: Omit<SettingValue, 'createdAt' | 'updatedAt'>, isEdit = false) => {
-      const docId = sanitizeDocId(setting.id || `${setting.group}_${setting.code}`);
+      const normalizedGroup = normalizeSettingGroup(setting.group);
+      const docId = sanitizeDocId(setting.id || `${normalizedGroup}_${setting.code}`);
       const ref = doc(db, 'settings', docId);
       const hex = /^#[0-9a-fA-F]{6}$/.test(setting.badgeColor) ? setting.badgeColor : '#475569';
       const payload = {
-        group: clampStr(setting.group.toUpperCase(), 64),
+        group: clampStr(normalizedGroup, 64),
         code: clampStr(setting.code.toUpperCase(), 64),
         displayName: clampStr(setting.displayName, 120),
         module: clampStr(setting.module, 64), // allows empty ""
@@ -929,16 +949,26 @@ export const DataProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
   const seedDefaultSettings = useCallback(async (): Promise<number> => {
     const existingById = new Map(settings.map((s) => [s.id, s]));
-    const toCreate = DEFAULT_MALAYSIAN_TAX_SETTINGS.filter((item) => !existingById.has(item.id));
-    // Also upgrade legacy EINVOICE_STATUS docs to E_INVOICE_STATUS (LHDN v4.8 thresholds)
+    const existingGroupDisplayKeys = new Set(
+      settings.map(
+        (s) => `${normalizeSettingGroup(s.group)}::${(s.displayName || '').trim().toLowerCase()}`
+      )
+    );
+    const toCreate = DEFAULT_MALAYSIAN_TAX_SETTINGS.filter((item) => {
+      if (existingById.has(item.id)) return false;
+      const key = `${normalizeSettingGroup(item.group)}::${item.displayName.trim().toLowerCase()}`;
+      return !existingGroupDisplayKeys.has(key);
+    });
+    // Also upgrade legacy underscore/EINVOICE_STATUS default docs to normalized group names & v4.8 thresholds
     const toUpgrade = DEFAULT_MALAYSIAN_TAX_SETTINGS.filter((item) => {
-      if (item.group !== 'E_INVOICE_STATUS') return false;
       const existing = existingById.get(item.id);
+      if (!existing) return false;
+      const normTarget = normalizeSettingGroup(item.group);
       return Boolean(
-        existing &&
-          (existing.group === 'EINVOICE_STATUS' ||
-            existing.displayName === 'Phase 4 (RM1M–5M)' ||
-            existing.displayName === 'Exempt (<RM500k)')
+        existing.group !== normTarget ||
+          (normTarget === 'E INVOICE STATUS' &&
+            (existing.displayName === 'Phase 4 (RM1M–5M)' ||
+              existing.displayName === 'Exempt (<RM500k)'))
       );
     });
 
@@ -949,7 +979,7 @@ export const DataProvider: React.FC<{ children: React.ReactNode }> = ({ children
       for (const item of toCreate) {
         const ref = doc(db, 'settings', item.id);
         batch.set(ref, {
-          group: item.group,
+          group: normalizeSettingGroup(item.group),
           code: item.code,
           displayName: item.displayName,
           module: item.module,
@@ -963,7 +993,7 @@ export const DataProvider: React.FC<{ children: React.ReactNode }> = ({ children
       for (const item of toUpgrade) {
         const ref = doc(db, 'settings', item.id);
         batch.update(ref, {
-          group: item.group,
+          group: normalizeSettingGroup(item.group),
           code: item.code,
           displayName: item.displayName,
           module: item.module,

@@ -1,5 +1,6 @@
 import React from 'react';
 import { useData } from '../context/DataContext';
+import { normalizeSettingGroup } from '../lib/settingsDropdown';
 
 interface StatusPillProps {
   group: string;
@@ -48,14 +49,16 @@ export const StatusPill: React.FC<StatusPillProps> = ({ group, value, customColo
     );
   }
 
+  const normalizedGroup = normalizeSettingGroup(group);
+
   if (
     !customColor &&
     normalized === 'completed' &&
-    (group === 'JOB_STATUS' ||
-      group === 'CORP_STATUS' ||
-      group === 'INDIV_STATUS' ||
-      group === 'FORM_E_STATUS' ||
-      group === 'CP204_STATUS')
+    (normalizedGroup === 'JOB STATUS' ||
+      normalizedGroup === 'CORP STATUS' ||
+      normalizedGroup === 'INDIV STATUS' ||
+      normalizedGroup === 'FORM E STATUS' ||
+      normalizedGroup === 'CP204 STATUS')
   ) {
     return (
       <span

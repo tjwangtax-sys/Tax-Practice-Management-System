@@ -1,9 +1,11 @@
 import React, { useMemo, useState } from 'react';
+import { doc, serverTimestamp, writeBatch } from 'firebase/firestore';
 import {
   Plus,
   Pencil,
   Trash2,
   Database,
+  GitMerge,
   X,
   CheckCircle2,
   ShieldAlert,
@@ -12,6 +14,9 @@ import {
 } from 'lucide-react';
 import { ColumnDef, SettingValue, StaffMember, StaffRole } from '../../types/tpms';
 import { SETTING_GROUPS, SETTING_MODULES } from '../../lib/defaultSettings';
+import { normalizeSettingGroup } from '../../lib/settingsDropdown';
+import { db } from '../../lib/firebase';
+import { showToast } from '../../lib/toast';
 import { useAuth } from '../../context/AuthContext';
 import { useData } from '../../context/DataContext';
 import { useColumnVisibility } from '../../hooks/useColumnVisibility';
@@ -84,7 +89,7 @@ export const StaffSettingsView: React.FC = () => {
   const [editingSetting, setEditingSetting] = useState<SettingValue | null>(null);
   const [settingForm, setSettingForm] = useState({
     id: '',
-    group: 'CLIENT_STATUS',
+    group: 'CLIENT STATUS',
     code: '',
     displayName: '',
     module: 'Client Master',
@@ -94,6 +99,7 @@ export const StaffSettingsView: React.FC = () => {
   });
 
   const [busy, setBusy] = useState(false);
+  const [mergingDuplicates, setMergingDuplicates] = useState(false);
   const [seedMessage, setSeedMessage] = useState<string | null>(null);
   const [formError, setFormError] = useState<string | null>(null);
 
@@ -117,18 +123,22 @@ export const StaffSettingsView: React.FC = () => {
   }, [staff, staffSearch, roleFilter, staffActiveFilter]);
 
   const distinctGroups = useMemo(() => {
-    const set = new Set<string>(SETTING_GROUPS);
-    for (const s of settings) set.add(s.group);
+    const set = new Set<string>(SETTING_GROUPS.map((g) => normalizeSettingGroup(g)));
+    for (const s of settings) {
+      const norm = normalizeSettingGroup(s.group);
+      if (norm) set.add(norm);
+    }
     return Array.from(set).sort();
   }, [settings]);
 
   const filteredSettings = useMemo(() => {
     const q = settingSearch.trim().toLowerCase();
+    const normGroupFilter = groupFilter ? normalizeSettingGroup(groupFilter) : '';
     return settings.filter((s) => {
-      if (groupFilter && s.group !== groupFilter) return false;
+      if (normGroupFilter && normalizeSettingGroup(s.group) !== normGroupFilter) return false;
       if (moduleFilter && s.module !== moduleFilter) return false;
       if (q) {
-        const hay = [s.group, s.code, s.displayName, s.module, s.badgeColor]
+        const hay = [s.group, normalizeSettingGroup(s.group), s.code, s.displayName, s.module, s.badgeColor]
           .join(' ')
           .toLowerCase();
         if (!hay.includes(q)) return false;
@@ -240,17 +250,18 @@ export const StaffSettingsView: React.FC = () => {
   };
 
   const openNewSetting = () => {
+    const defaultGroup = normalizeSettingGroup(groupFilter || 'CLIENT STATUS');
     setEditingSetting(null);
     setFormError(null);
     setSettingForm({
       id: '',
-      group: groupFilter || 'CLIENT_STATUS',
+      group: defaultGroup,
       code: '',
       displayName: '',
       module: moduleFilter || 'Client Master',
       badgeColor: '#0F766E',
       active: true,
-      sortOrder: settings.filter((s) => s.group === (groupFilter || 'CLIENT_STATUS')).length + 1,
+      sortOrder: settings.filter((s) => normalizeSettingGroup(s.group) === defaultGroup).length + 1,
     });
     setSettingModalOpen(true);
   };
@@ -260,7 +271,7 @@ export const StaffSettingsView: React.FC = () => {
     setFormError(null);
     setSettingForm({
       id: s.id,
-      group: s.group,
+      group: normalizeSettingGroup(s.group),
       code: s.code,
       displayName: s.displayName,
       module: s.module,
@@ -276,7 +287,13 @@ export const StaffSettingsView: React.FC = () => {
     setBusy(true);
     setFormError(null);
     try {
-      await saveSetting(settingForm, Boolean(editingSetting));
+      await saveSetting(
+        {
+          ...settingForm,
+          group: normalizeSettingGroup(settingForm.group),
+        },
+        Boolean(editingSetting)
+      );
       setSettingModalOpen(false);
     } catch (err) {
       setFormError(err instanceof Error ? err.message : 'Failed to save setting value.');
@@ -297,6 +314,139 @@ export const StaffSettingsView: React.FC = () => {
       );
     } finally {
       setBusy(false);
+    }
+  };
+
+  const handleMergeDuplicateGroups = async () => {
+    if (!isAdmin || mergingDuplicates || busy) return;
+    setMergingDuplicates(true);
+    setSeedMessage(null);
+
+    try {
+      const buckets = new Map<string, SettingValue[]>();
+      for (const s of settings) {
+        const normGroup = normalizeSettingGroup(s.group);
+        const normDisplay = (s.displayName || s.code || '').trim().toLowerCase();
+        const key = `${normGroup}::${normDisplay}`;
+        const list = buckets.get(key) ?? [];
+        list.push(s);
+        buckets.set(key, list);
+      }
+
+      const ops: Array<
+        | { type: 'update'; id: string; payload: Record<string, unknown> }
+        | { type: 'delete'; id: string }
+      > = [];
+
+      let normalizedCount = 0;
+      let mergedGroupsCount = 0;
+      let deletedCount = 0;
+
+      for (const bucket of buckets.values()) {
+        const normGroup = normalizeSettingGroup(bucket[0].group);
+
+        // Prefer keeping a document whose stored group is already normalized (no underscores/hyphens),
+        // then active rows, then lowest sortOrder — so duplicate underscore documents are deleted.
+        const sorted = [...bucket].sort((a, b) => {
+          const aCleanGroup = a.group === normGroup ? 0 : 1;
+          const bCleanGroup = b.group === normGroup ? 0 : 1;
+          if (aCleanGroup !== bCleanGroup) return aCleanGroup - bCleanGroup;
+
+          const aActive = a.active ? 0 : 1;
+          const bActive = b.active ? 0 : 1;
+          if (aActive !== bActive) return aActive - bActive;
+
+          if (a.sortOrder !== b.sortOrder) return a.sortOrder - b.sortOrder;
+          return a.id.localeCompare(b.id);
+        });
+
+        const survivor = sorted[0];
+        const duplicates = sorted.slice(1);
+        const hasDuplicates = duplicates.length > 0;
+        const mergedActive = hasDuplicates ? true : survivor.active;
+        const mergedModule =
+          survivor.module || bucket.find((x) => x.module && x.module !== 'Global')?.module || bucket.find((x) => x.module)?.module || 'Global';
+        const validHex = (c: string) => /^#[0-9a-fA-F]{6}$/.test(c);
+        const mergedColor =
+          (validHex(survivor.badgeColor) ? survivor.badgeColor : '') ||
+          bucket.find((x) => validHex(x.badgeColor))?.badgeColor ||
+          '#0F766E';
+        const mergedSortOrder = Math.min(...bucket.map((x) => (Number.isFinite(x.sortOrder) ? x.sortOrder : 1)));
+        const mergedCode =
+          survivor.code ||
+          bucket.find((x) => x.code)?.code ||
+          survivor.displayName.toUpperCase().replace(/[^A-Z0-9]+/g, '_').slice(0, 64);
+
+        const needsUpdate =
+          survivor.group !== normGroup ||
+          survivor.active !== mergedActive ||
+          survivor.module !== mergedModule ||
+          survivor.badgeColor !== mergedColor ||
+          survivor.sortOrder !== mergedSortOrder ||
+          survivor.code !== mergedCode;
+
+        if (needsUpdate) {
+          ops.push({
+            type: 'update',
+            id: survivor.id,
+            payload: {
+              group: normGroup,
+              code: mergedCode,
+              displayName: survivor.displayName,
+              module: mergedModule,
+              badgeColor: mergedColor,
+              active: mergedActive,
+              sortOrder: Math.max(0, Math.min(9999, Math.round(mergedSortOrder))),
+              updatedAt: serverTimestamp(),
+            },
+          });
+          normalizedCount += 1;
+        }
+
+        if (hasDuplicates) {
+          mergedGroupsCount += 1;
+          for (const dup of duplicates) {
+            ops.push({ type: 'delete', id: dup.id });
+            deletedCount += 1;
+          }
+        }
+      }
+
+      if (ops.length === 0) {
+        const msg = 'All controlled setting groups are already normalized with zero duplicates.';
+        setSeedMessage(msg);
+        showToast(msg, 'info');
+        return;
+      }
+
+      const CHUNK = 400;
+      for (let i = 0; i < ops.length; i += CHUNK) {
+        const slice = ops.slice(i, i + CHUNK);
+        const batch = writeBatch(db);
+        for (const op of slice) {
+          const ref = doc(db, 'settings', op.id);
+          if (op.type === 'update') {
+            batch.set(ref, op.payload, { merge: true });
+          } else {
+            batch.delete(ref);
+          }
+        }
+        await batch.commit();
+      }
+
+      if (groupFilter) {
+        setGroupFilter(normalizeSettingGroup(groupFilter));
+      }
+
+      const summary = `Normalized ${normalizedCount} setting(s), merged ${mergedGroupsCount} duplicate value(s) (kept Active), and deleted ${deletedCount} duplicate document(s).`;
+      setSeedMessage(summary);
+      showToast(summary, 'success', 4800);
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : 'Failed to merge duplicate setting groups.';
+      setSeedMessage(`Merge failed: ${msg}`);
+      showToast(msg, 'error');
+    } finally {
+      setMergingDuplicates(false);
     }
   };
 
@@ -677,16 +827,27 @@ export const StaffSettingsView: React.FC = () => {
               </>
             }
             primaryAction={
-              <div className="flex items-center gap-2">
+              <div className="flex flex-wrap items-center gap-2">
                 <button
                   type="button"
-                  disabled={busy}
+                  disabled={busy || mergingDuplicates}
                   onClick={() => void handleSeedDefaults()}
                   className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold text-teal-800 bg-teal-50 border border-teal-200 hover:bg-teal-100 rounded-md whitespace-nowrap disabled:opacity-50"
                 >
                   <Database className="w-3.5 h-3.5" />
                   {busy ? 'Seeding...' : 'Seed Default Malaysian Tax Settings'}
                 </button>
+                {isAdmin && (
+                  <button
+                    type="button"
+                    disabled={busy || mergingDuplicates || settings.length === 0}
+                    onClick={() => void handleMergeDuplicateGroups()}
+                    className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold text-amber-900 bg-amber-50 border border-amber-200 hover:bg-amber-100 rounded-md whitespace-nowrap disabled:opacity-50"
+                  >
+                    <GitMerge className="w-3.5 h-3.5" />
+                    {mergingDuplicates ? 'Merging...' : 'Merge Duplicate Groups'}
+                  </button>
+                )}
                 <button
                   type="button"
                   onClick={openNewSetting}

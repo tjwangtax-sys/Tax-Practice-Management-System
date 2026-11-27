@@ -53,6 +53,23 @@ const CORRESPONDENCE_COLUMNS: ColumnDef[] = [
   { key: 'remarks', label: 'Remarks', defaultVisible: false },
 ];
 
+const CORRESPONDENCE_COL_WIDTHS: Record<string, string> = {
+  correspondenceId: 'w-[125px] min-w-[125px]',
+  clientName: 'min-w-[220px]',
+  ya: 'min-w-[75px]',
+  dateReceived: 'min-w-[120px]',
+  methodReceived: 'min-w-[105px]',
+  category: 'min-w-[115px]',
+  letterType: 'min-w-[135px]',
+  letterSubject: 'min-w-[260px]',
+  dueDate: 'min-w-[120px]',
+  pic: 'min-w-[125px]',
+  actionStatus: 'min-w-[140px]',
+  actionDate: 'min-w-[120px]',
+  jobId: 'min-w-[130px]',
+  remarks: 'min-w-[200px]',
+};
+
 const DEFAULT_VISIBLE = CORRESPONDENCE_COLUMNS.reduce<Record<string, boolean>>((acc, col) => {
   acc[col.key] = col.defaultVisible;
   return acc;
@@ -239,8 +256,8 @@ const CorrespondenceModal: React.FC<CorrespondenceModalProps> = ({ open, editing
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/50">
-      <div className="bg-white border border-slate-200 rounded-xl shadow-2xl w-full max-w-3xl max-h-[93vh] flex flex-col overflow-hidden">
-        <div className="px-5 py-3.5 border-b border-slate-200 flex items-center justify-between">
+      <div className="bg-white border border-slate-200 rounded-xl shadow-2xl w-full max-w-3xl max-h-[90vh] flex flex-col overflow-hidden">
+        <div className="shrink-0 px-5 py-3.5 border-b border-slate-200 flex items-center justify-between bg-slate-50/70">
           <div>
             <h3 className="font-display font-bold text-sm text-slate-900">
               {editing
@@ -260,7 +277,8 @@ const CorrespondenceModal: React.FC<CorrespondenceModalProps> = ({ open, editing
           </button>
         </div>
 
-        <form onSubmit={handleSubmit} className="flex-1 overflow-y-auto p-5 space-y-4">
+        <form onSubmit={handleSubmit} className="flex-1 flex flex-col min-h-0 overflow-hidden">
+          <div className="flex-1 min-h-0 overflow-y-auto p-5 space-y-4">
           {error && (
             <div className="flex items-start gap-2 p-2.5 rounded-md bg-rose-50 border border-rose-200 text-xs text-rose-700">
               <AlertCircle className="w-4 h-4 shrink-0 mt-0.5" />
@@ -516,7 +534,9 @@ const CorrespondenceModal: React.FC<CorrespondenceModalProps> = ({ open, editing
             />
           </div>
 
-          <div className="pt-3 border-t border-slate-200 flex items-center justify-end gap-2">
+          </div>
+
+          <div className="shrink-0 px-5 py-3 border-t border-slate-200 bg-slate-50 flex items-center justify-end gap-2">
             <button
               type="button"
               onClick={onClose}
@@ -910,29 +930,46 @@ export const CorrespondenceView: React.FC = () => {
 
       {/* Register Table */}
       <div className="bg-white border border-slate-200 rounded-lg overflow-hidden">
-        <div className="overflow-x-auto max-h-[65vh]">
+        <div className="overflow-x-auto overflow-y-auto max-h-[65vh]">
           <table className="w-full text-xs border-collapse">
-            <thead className="bg-slate-100 sticky top-0 z-10 border-b border-slate-200 text-slate-700">
+            <thead className="bg-slate-100 sticky top-0 z-20 border-b border-slate-200 text-slate-700">
               <tr>
-                {CORRESPONDENCE_COLUMNS.filter((c) => visibleColumns[c.key]).map((col) => (
-                  <th
-                    key={col.key}
-                    className="px-3 py-2.5 text-left font-semibold whitespace-nowrap"
-                  >
-                    <ExcelColumnFilter
-                      columnKey={col.key}
-                      title={col.label}
-                      values={excel.getColumnValues(col.key)}
-                      selectedValues={excel.columnFilters[col.key]}
-                      onChangeSelected={(next) => excel.setColumnFilter(col.key, next)}
-                      sortDirection={
-                        excel.sortState?.key === col.key ? excel.sortState.direction : null
-                      }
-                      onSort={(dir) => excel.setColumnSort(col.key, dir)}
-                    />
-                  </th>
-                ))}
-                <th className="px-3 py-2.5 text-right font-semibold whitespace-nowrap no-print">
+                {CORRESPONDENCE_COLUMNS.filter((c) => visibleColumns[c.key]).map((col) => {
+                  const isStickyFirst = col.key === 'correspondenceId';
+                  const isStickySecond = col.key === 'clientName';
+                  const stickyThCls = isStickyFirst
+                    ? `sticky left-0 z-30 bg-slate-100 ${
+                        !visibleColumns.clientName
+                          ? 'shadow-[inset_-1px_0_0_#e2e8f0,2px_0_4px_-2px_rgba(15,23,42,0.12)]'
+                          : 'shadow-[inset_-1px_0_0_#e2e8f0]'
+                      }`
+                    : isStickySecond
+                    ? `sticky ${
+                        visibleColumns.correspondenceId ? 'left-[125px]' : 'left-0'
+                      } z-30 bg-slate-100 shadow-[inset_-1px_0_0_#e2e8f0,2px_0_4px_-2px_rgba(15,23,42,0.12)]`
+                    : '';
+                  return (
+                    <th
+                      key={col.key}
+                      className={`px-3 py-2.5 text-left font-semibold whitespace-nowrap ${
+                        CORRESPONDENCE_COL_WIDTHS[col.key] || 'min-w-[120px]'
+                      } ${stickyThCls}`}
+                    >
+                      <ExcelColumnFilter
+                        columnKey={col.key}
+                        title={col.label}
+                        values={excel.getColumnValues(col.key)}
+                        selectedValues={excel.columnFilters[col.key]}
+                        onChangeSelected={(next) => excel.setColumnFilter(col.key, next)}
+                        sortDirection={
+                          excel.sortState?.key === col.key ? excel.sortState.direction : null
+                        }
+                        onSort={(dir) => excel.setColumnSort(col.key, dir)}
+                      />
+                    </th>
+                  );
+                })}
+                <th className="px-3 py-2.5 text-right font-semibold whitespace-nowrap min-w-[105px] no-print">
                   Action
                 </th>
               </tr>
@@ -954,14 +991,24 @@ export const CorrespondenceView: React.FC = () => {
                     isOpen && Boolean(r.dueDate) && r.dueDate >= todayStr && r.dueDate <= in7DaysStr;
 
                   return (
-                    <tr key={r.id} className="hover:bg-slate-50/90 align-top">
+                    <tr key={r.id} className="group hover:bg-slate-50 align-top">
                       {visibleColumns.correspondenceId && (
-                        <td className="px-3 py-2 font-mono font-semibold text-slate-800 whitespace-nowrap">
+                        <td
+                          className={`sticky left-0 z-10 bg-white group-hover:bg-slate-50 w-[125px] min-w-[125px] px-3 py-2 font-mono font-semibold text-slate-800 whitespace-nowrap ${
+                            !visibleColumns.clientName
+                              ? 'shadow-[inset_-1px_0_0_#e2e8f0,2px_0_4px_-2px_rgba(15,23,42,0.12)]'
+                              : 'shadow-[inset_-1px_0_0_#e2e8f0]'
+                          }`}
+                        >
                           {r.correspondenceId}
                         </td>
                       )}
                       {visibleColumns.clientName && (
-                        <td className="px-3 py-2 min-w-[175px]">
+                        <td
+                          className={`sticky ${
+                            visibleColumns.correspondenceId ? 'left-[125px]' : 'left-0'
+                          } z-10 bg-white group-hover:bg-slate-50 min-w-[220px] px-3 py-2 shadow-[inset_-1px_0_0_#e2e8f0,2px_0_4px_-2px_rgba(15,23,42,0.12)]`}
+                        >
                           <div className="font-semibold text-slate-900 leading-snug">
                             {r.clientName}
                           </div>
