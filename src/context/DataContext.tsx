@@ -89,7 +89,8 @@ interface DataContextValue {
   // Staff CRUD (Admin)
   saveStaffMember: (
     member: Omit<StaffMember, 'id' | 'createdAt' | 'updatedAt'>,
-    isEdit?: boolean
+    isEdit?: boolean,
+    existingDocId?: string
   ) => Promise<void>;
   deleteStaffMember: (id: string) => Promise<void>;
   // Settings CRUD (Admin)
@@ -822,14 +823,23 @@ export const DataProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
   // ---------------------- STAFF CRUD ----------------------
   const saveStaffMember = useCallback(
-    async (member: Omit<StaffMember, 'id' | 'createdAt' | 'updatedAt'>, isEdit = false) => {
-      const normalizedEmail = clampStr(member.email.toLowerCase(), 160);
-      const docId = emailToStaffKey(normalizedEmail);
-      const ref = doc(db, 'staff', docId);
+    async (
+      member: Omit<StaffMember, 'id' | 'createdAt' | 'updatedAt'>,
+      isEdit = false,
+      existingDocId?: string
+    ) => {
+      const normalizedEmail = clampStr((member.email || '').toLowerCase(), 160);
+      const staffIdClean = clampStr(member.staffId, 32);
+      const targetDocId = normalizedEmail
+        ? emailToStaffKey(normalizedEmail)
+        : existingDocId || `STF_${sanitizeDocId(staffIdClean || 'STAFF')}`;
+      const ref = doc(db, 'staff', targetDocId);
+      const isMigratingPlaceholder = Boolean(isEdit && existingDocId && existingDocId !== targetDocId);
+
       try {
-        if (isEdit) {
+        if (isEdit && !isMigratingPlaceholder) {
           await updateDoc(ref, {
-            staffId: clampStr(member.staffId, 32),
+            staffId: staffIdClean,
             staffName: clampStr(member.staffName, 120),
             email: normalizedEmail,
             role: member.role,
@@ -841,7 +851,7 @@ export const DataProvider: React.FC<{ children: React.ReactNode }> = ({ children
           });
         } else {
           await setDoc(ref, {
-            staffId: clampStr(member.staffId, 32),
+            staffId: staffIdClean,
             staffName: clampStr(member.staffName, 120),
             email: normalizedEmail,
             role: member.role,
@@ -853,12 +863,15 @@ export const DataProvider: React.FC<{ children: React.ReactNode }> = ({ children
             createdAt: serverTimestamp(),
             updatedAt: serverTimestamp(),
           });
+          if (isMigratingPlaceholder && existingDocId) {
+            await deleteDoc(doc(db, 'staff', existingDocId));
+          }
         }
       } catch (err) {
         handleFirestoreError(
           err,
-          isEdit ? OperationType.UPDATE : OperationType.CREATE,
-          `staff/${docId}`
+          isEdit && !isMigratingPlaceholder ? OperationType.UPDATE : OperationType.CREATE,
+          `staff/${targetDocId}`
         );
       }
     },
@@ -1287,8 +1300,9 @@ export const DataProvider: React.FC<{ children: React.ReactNode }> = ({ children
         startDate: clampStr(event.startDate, 20),
         endDate: clampStr(event.endDate || event.startDate, 20),
         assignedTo: clampStr(event.assignedTo, 120),
-        clientId: clampStr(event.clientId, 40),
+        clientId: clampStr(event.clientId, 64),
         clientName: clampStr(event.clientName, 200),
+        color: clampStr(event.color, 16),
         notes: clampStr(event.notes, 1000),
         updatedBy: actorEmail,
         updatedAt: serverTimestamp(),

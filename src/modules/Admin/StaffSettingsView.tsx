@@ -8,6 +8,7 @@ import {
   CheckCircle2,
   ShieldAlert,
   Save,
+  Upload,
 } from 'lucide-react';
 import { ColumnDef, SettingValue, StaffMember, StaffRole } from '../../types/tpms';
 import { SETTING_GROUPS, SETTING_MODULES } from '../../lib/defaultSettings';
@@ -19,6 +20,7 @@ import { ExcelColumnFilter } from '../../components/ExcelColumnFilter';
 import { RegisterToolbar } from '../../components/RegisterToolbar';
 import { StatusPill } from '../../components/StatusPill';
 import { exportToExcel, printRegisterHtml } from '../../lib/exportUtils';
+import { DataImportTab } from './DataImportTab';
 
 const STAFF_COLUMNS: ColumnDef[] = [
   { key: 'staffId', label: 'Staff ID', defaultVisible: true },
@@ -53,7 +55,9 @@ export const StaffSettingsView: React.FC = () => {
     seedDefaultSettings,
   } = useData();
 
-  const [tab, setTab] = useState<'staff' | 'settings'>(() => (isAdmin ? 'staff' : 'settings'));
+  const [tab, setTab] = useState<'staff' | 'settings' | 'import'>(() =>
+    isAdmin ? 'staff' : 'settings'
+  );
 
   // Staff filters & modal
   const [staffSearch, setStaffSearch] = useState('');
@@ -165,7 +169,7 @@ export const StaffSettingsView: React.FC = () => {
   const displayedStaff = staffExcel.rows;
   const displayedSettings = settingsExcel.rows;
 
-  const activeTab: 'staff' | 'settings' = isAdmin ? tab : 'settings';
+  const activeTab: 'staff' | 'settings' | 'import' = isAdmin ? tab : 'settings';
 
   if (!isManagerOrAdmin) {
     return (
@@ -224,7 +228,8 @@ export const StaffSettingsView: React.FC = () => {
           ...staffForm,
           uid: editingStaff?.uid ?? '',
         },
-        Boolean(editingStaff)
+        Boolean(editingStaff),
+        editingStaff?.id
       );
       setStaffModalOpen(false);
     } catch (err) {
@@ -334,6 +339,20 @@ export const StaffSettingsView: React.FC = () => {
             Controlled Values{' '}
             <span className="ml-1 font-mono text-slate-400">({settings.length})</span>
           </button>
+          {isAdmin && (
+            <button
+              type="button"
+              onClick={() => setTab('import')}
+              className={`inline-flex items-center gap-1.5 px-3.5 py-1.5 text-xs font-semibold rounded-md transition-colors ${
+                activeTab === 'import'
+                  ? 'bg-white text-teal-800 shadow-xs'
+                  : 'text-slate-600 hover:text-slate-900'
+              }`}
+            >
+              <Upload className="w-3.5 h-3.5" />
+              Data Import
+            </button>
+          )}
         </div>
       </div>
 
@@ -458,7 +477,9 @@ export const StaffSettingsView: React.FC = () => {
                 </thead>
                 <tbody className="divide-y divide-slate-100">
                   {displayedStaff.map((s) => {
-                    const isSelf = s.email.toLowerCase() === (user?.email || '').toLowerCase();
+                    const isSelf =
+                      Boolean(s.email) &&
+                      s.email.toLowerCase() === (user?.email || '').toLowerCase();
                     return (
                       <tr key={s.id} className="hover:bg-slate-50/90">
                         {staffColVis.visibleColumns.staffId && (
@@ -474,7 +495,11 @@ export const StaffSettingsView: React.FC = () => {
                         )}
                         {staffColVis.visibleColumns.email && (
                           <td className="px-3 py-2 font-mono text-slate-600 whitespace-nowrap">
-                            {s.email}
+                            {s.email ? (
+                              s.email
+                            ) : (
+                              <span className="font-sans italic text-slate-400">Pending email</span>
+                            )}
                           </td>
                         )}
                         {staffColVis.visibleColumns.role && (
@@ -794,6 +819,9 @@ export const StaffSettingsView: React.FC = () => {
         </div>
       )}
 
+      {/* TAB 3: BULK DATA IMPORT (Admin Only) */}
+      {isAdmin && activeTab === 'import' && <DataImportTab />}
+
       {/* Add/Edit Staff Modal */}
       {staffModalOpen && (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4 no-print">
@@ -864,13 +892,14 @@ export const StaffSettingsView: React.FC = () => {
               </div>
               <div>
                 <label className="block text-[11px] font-medium text-slate-600 mb-1">
-                  Sign-in Email *
+                  Sign-in Email{' '}
+                  <span className="font-normal text-slate-400">(optional until Google login assigned)</span>
                 </label>
                 <input
                   type="email"
-                  required
-                  disabled={Boolean(editingStaff)}
+                  disabled={Boolean(editingStaff && editingStaff.email)}
                   maxLength={160}
+                  placeholder="name@firm.com"
                   value={staffForm.email}
                   onChange={(e) => setStaffForm({ ...staffForm, email: e.target.value })}
                   className="w-full px-2.5 py-1.5 text-xs font-mono border border-slate-200 rounded-md disabled:bg-slate-50"

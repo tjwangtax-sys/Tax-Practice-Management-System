@@ -48,9 +48,9 @@ const AppWorkspace: React.FC = () => {
       case 'dashboard':
         return <DashboardView onNavigate={handleSelectRoute} />;
       case 'team-calendar':
-        return <TeamCalendarView />;
+        return <TeamCalendarView onNavigate={handleSelectRoute} />;
       case 'client-master':
-        return <ClientMasterView />;
+        return <ClientMasterView initialFilter={navPreset} />;
       case 'all-jobs':
         return <JobsModuleView mode="ALL" initialFilter={navPreset} />;
       case 'cp204':

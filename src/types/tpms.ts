@@ -142,6 +142,7 @@ export interface StaffMember {
   email: string;
   role: StaffRole;
   active: boolean;
+  noLogin?: boolean;
   department?: string;
   designation?: string;
   phone?: string;
@@ -669,6 +670,7 @@ export interface CalendarEvent {
   assignedTo?: string;
   clientId?: string;
   clientName?: string;
+  color?: string;
   notes?: string;
   createdBy: string;
   updatedBy?: string;

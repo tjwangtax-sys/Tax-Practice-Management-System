@@ -26,6 +26,10 @@ service cloud.firestore {
       return id is string && id.size() >= 1 && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
     }
 
+    function optStr(d, field, maxLen) {
+      return !(field in d) || (d[field] is string && d[field].size() <= maxLen);
+    }
+
     function incoming() {
       return request.resource.data;
     }
@@ -84,7 +88,7 @@ service cloud.firestore {
         && k.hasOnly(['staffId', 'staffName', 'email', 'role', 'active', 'department', 'designation', 'phone', 'uid', 'createdAt', 'updatedAt'])
         && d.staffId is string && d.staffId.size() >= 1 && d.staffId.size() <= 32
         && d.staffName is string && d.staffName.size() >= 1 && d.staffName.size() <= 120
-        && d.email is string && d.email.size() >= 3 && d.email.size() <= 160
+        && d.email is string && (d.email == '' || (d.email.size() >= 3 && d.email.size() <= 160))
         && d.role in ['Admin', 'Manager-HOD', 'Staff', 'Report Viewer']
         && d.active is bool
         && (!('department' in d) || (d.department is string && d.department.size() <= 80))
@@ -399,17 +403,18 @@ service cloud.firestore {
     function isValidCalendarEvent(d) {
       let k = d.keys();
       return k.hasAll(['title', 'eventType', 'startDate', 'endDate', 'createdBy', 'createdAt', 'updatedAt'])
-        && k.hasOnly(['title', 'eventType', 'startDate', 'endDate', 'assignedTo', 'clientId', 'clientName', 'notes', 'createdBy', 'updatedBy', 'createdAt', 'updatedAt'])
+        && k.hasOnly(['title', 'eventType', 'startDate', 'endDate', 'assignedTo', 'clientId', 'clientName', 'color', 'notes', 'createdBy', 'updatedBy', 'createdAt', 'updatedAt'])
         && d.title is string && d.title.size() >= 1 && d.title.size() <= 160
         && d.eventType is string && d.eventType.size() >= 1 && d.eventType.size() <= 40
         && d.startDate is string && d.startDate.size() >= 1 && d.startDate.size() <= 20
         && d.endDate is string && d.endDate.size() >= 1 && d.endDate.size() <= 20
         && d.createdBy is string && d.createdBy.size() >= 1 && d.createdBy.size() <= 160
-        && (!('assignedTo' in d) || (d.assignedTo is string && d.assignedTo.size() <= 120))
-        && (!('clientId' in d) || (d.clientId is string && d.clientId.size() <= 40))
-        && (!('clientName' in d) || (d.clientName is string && d.clientName.size() <= 200))
-        && (!('notes' in d) || (d.notes is string && d.notes.size() <= 1000))
-        && (!('updatedBy' in d) || (d.updatedBy is string && d.updatedBy.size() <= 160))
+        && optStr(d, 'assignedTo', 120)
+        && optStr(d, 'clientId', 64)
+        && optStr(d, 'clientName', 200)
+        && optStr(d, 'color', 16)
+        && optStr(d, 'notes', 1000)
+        && optStr(d, 'updatedBy', 160)
         && d.createdAt is timestamp
         && d.updatedAt is timestamp;
     }
@@ -747,7 +752,7 @@ service cloud.firestore {
           (hasRole(['Staff'])
             && incoming().diff(existing()).affectedKeys().hasOnly([
               'title', 'eventType', 'startDate', 'endDate', 'assignedTo',
-              'clientId', 'clientName', 'notes', 'updatedBy', 'updatedAt'
+              'clientId', 'clientName', 'color', 'notes', 'updatedBy', 'updatedAt'
             ]))
         );
       allow delete: if isVerifiedUser() && isValidId(eventId) && hasRole(['Admin', 'Manager-HOD']);

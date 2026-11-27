@@ -1,4 +1,4 @@
-import React, { useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import { Plus, Pencil, Eye, UserX, UserCheck, Trash2, Building2 } from 'lucide-react';
 import {
   CLIENT_STATUS_OPTIONS,
@@ -6,6 +6,7 @@ import {
   ClientRecord,
   ColumnDef,
   FYE_MONTHS,
+  NavigationFilterPreset,
 } from '../../types/tpms';
 import { useAuth } from '../../context/AuthContext';
 import { useData } from '../../context/DataContext';
@@ -48,7 +49,11 @@ const CLIENT_COLUMNS: ColumnDef[] = [
 
 type ClientTab = 'Corporate' | 'Individual' | 'All';
 
-export const ClientMasterView: React.FC = () => {
+interface ClientMasterViewProps {
+  initialFilter?: NavigationFilterPreset | null;
+}
+
+export const ClientMasterView: React.FC<ClientMasterViewProps> = ({ initialFilter }) => {
   const { isAdmin, isManagerOrAdmin, isReadOnly } = useAuth();
   const { clients, loading, getSettingsByGroup, inactivateClient, reactivateClient, deleteClient } =
     useData();
@@ -59,6 +64,17 @@ export const ClientMasterView: React.FC = () => {
   const [categoryFilter, setCategoryFilter] = useState('');
   const [fyeFilter, setFyeFilter] = useState('');
   const [statusFilter, setStatusFilter] = useState('');
+
+  useEffect(() => {
+    if (!initialFilter) return;
+    if (initialFilter.search) {
+      setActiveTab('All');
+      setSearch(initialFilter.search);
+    }
+    if (initialFilter.fye) {
+      setFyeFilter(initialFilter.fye);
+    }
+  }, [initialFilter]);
 
   const [modalOpen, setModalOpen] = useState(false);
   const [editingClient, setEditingClient] = useState<ClientRecord | null>(null);

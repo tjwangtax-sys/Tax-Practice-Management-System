@@ -1,4 +1,4 @@
-import React, { useMemo, useState } from 'react';
+import React, { useCallback, useMemo, useState } from 'react';
 import {
   ChevronLeft,
   ChevronRight,
@@ -13,229 +13,89 @@ import {
   Flag,
   Search,
   FileText,
+  FileSpreadsheet,
+  ExternalLink,
+  Palette,
 } from 'lucide-react';
-import { CalendarEvent, ClientRecord } from '../../types/tpms';
+import {
+  ClientRecord,
+  NavigationFilterPreset,
+  NavRoute,
+  StaffMember,
+} from '../../types/tpms';
 import { useAuth } from '../../context/AuthContext';
 import { useData } from '../../context/DataContext';
-import { exportTableToPdf, printTable, triggerBlobDownload } from '../../lib/exportUtils';
+import {
+  exportTableToPdf,
+  exportToExcel,
+  printTable,
+  triggerBlobDownload,
+} from '../../lib/exportUtils';
 import { formatDateDDMMYYYY } from '../../lib/deadlineUtils';
 import { showToast } from '../../lib/toast';
 import { ClientSelectorField } from '../../components/ClientSelectorField';
+import { StaffMatrixView } from './StaffMatrixView';
+import {
+  addDays,
+  addDaysIso,
+  buildFormattedTitle,
+  CalendarViewMode,
+  CANONICAL_EVENT_TYPES,
+  CanonicalEventType,
+  computeOpenJobsByStaff,
+  EVENT_COLOR_SWATCHES,
+  EVENT_TYPE_DEFAULT_COLORS,
+  eventCoversDate,
+  getContrastingTextColor,
+  getDefaultLeaveColor,
+  getJohorMalaysiaPublicHolidays,
+  getMonthDays,
+  isValidHexColor,
+  PaintTool,
+  parseCalendarEvent,
+  ParsedCalendarEvent,
+  PublicHolidayRef,
+  StaffMatrixRowSummary,
+  startOfWeekMonday,
+  toIsoDate,
+} from './calendarUtils';
+import {
+  buildStaffMatrixExportModel,
+  exportStaffMatrixToExcel,
+  exportStaffMatrixToPdf,
+  printStaffMatrix,
+} from './staffMatrixExport';
 
-type CalendarViewMode = 'month' | 'week' | 'day' | 'agenda';
-type CanonicalEventType = 'Company Holiday' | 'Staff Availability' | 'Internal Event';
-
-const CANONICAL_EVENT_TYPES: CanonicalEventType[] = [
-  'Company Holiday',
-  'Staff Availability',
-  'Internal Event',
-];
-
-interface ParsedCalendarEvent {
-  raw: CalendarEvent;
-  canonicalType: CanonicalEventType;
-  staffName: string;
-  cleanLabel: string;
-  displayTitle: string;
+interface TeamCalendarViewProps {
+  onNavigate?: (route: NavRoute, preset?: Omit<NavigationFilterPreset, 'nonce'>) => void;
 }
 
-/**
- * Parses [HOLIDAY], [LEAVE] [STAFF: Name], and [EVENT] title prefixes cleanly.
- */
-function parseCalendarEvent(ev: CalendarEvent): ParsedCalendarEvent {
-  const title = (ev.title || '').trim();
-  const holidayMatch = /^\[HOLIDAY\]\s*(.*)$/i.exec(title);
-  if (holidayMatch) {
-    const clean = holidayMatch[1].trim() || title;
-    return {
-      raw: ev,
-      canonicalType: 'Company Holiday',
-      staffName: '',
-      cleanLabel: clean,
-      displayTitle: `[HOLIDAY] ${clean}`,
-    };
-  }
+const WEEKDAY_NAMES = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
+const QUICK_LEAVE_CODES = ['AL', '1/2 AL', 'SL', 'MC', 'RL', 'UPL', 'WFH'] as const;
 
-  const leaveStaffMatch = /^\[LEAVE\]\s*\[STAFF:\s*([^\]]+)\]\s*(.*)$/i.exec(title);
-  if (leaveStaffMatch) {
-    const parsedStaff = leaveStaffMatch[1].trim();
-    const clean = leaveStaffMatch[2].trim() || 'Leave';
-    return {
-      raw: ev,
-      canonicalType: 'Staff Availability',
-      staffName: parsedStaff || ev.assignedTo || '',
-      cleanLabel: clean,
-      displayTitle: `[LEAVE] [STAFF: ${parsedStaff || ev.assignedTo || 'Staff'}] ${clean}`,
-    };
-  }
-
-  const leaveSimpleMatch = /^\[LEAVE\]\s*(.*)$/i.exec(title);
-  if (leaveSimpleMatch) {
-    const clean = leaveSimpleMatch[1].trim() || 'Leave';
-    const st = ev.assignedTo || '';
-    return {
-      raw: ev,
-      canonicalType: 'Staff Availability',
-      staffName: st,
-      cleanLabel: clean,
-      displayTitle: st ? `[LEAVE] [STAFF: ${st}] ${clean}` : `[LEAVE] ${clean}`,
-    };
-  }
-
-  const eventMatch = /^\[EVENT\]\s*(.*)$/i.exec(title);
-  if (eventMatch) {
-    const clean = eventMatch[1].trim() || title;
-    return {
-      raw: ev,
-      canonicalType: 'Internal Event',
-      staffName: ev.assignedTo || '',
-      cleanLabel: clean,
-      displayTitle: `[EVENT] ${clean}`,
-    };
-  }
-
-  // Fallback to eventType field
-  const typeLower = (ev.eventType || '').toLowerCase();
-  let canonicalType: CanonicalEventType = 'Internal Event';
-  if (typeLower.includes('holiday')) canonicalType = 'Company Holiday';
-  else if (typeLower.includes('leave') || typeLower.includes('availability')) {
-    canonicalType = 'Staff Availability';
-  }
-
-  return {
-    raw: ev,
-    canonicalType,
-    staffName: ev.assignedTo || '',
-    cleanLabel: title,
-    displayTitle: title,
-  };
-}
-
-function buildFormattedTitle(
-  type: CanonicalEventType,
-  label: string,
-  staffName: string
-): string {
-  const clean = label.trim();
-  if (type === 'Company Holiday') {
-    return `[HOLIDAY] ${clean}`;
-  }
-  if (type === 'Staff Availability') {
-    const staffPart = staffName.trim() || 'Staff';
-    return `[LEAVE] [STAFF: ${staffPart}] ${clean}`;
-  }
-  return `[EVENT] ${clean}`;
-}
-
-function getEventChipClasses(type: CanonicalEventType): string {
-  switch (type) {
-    case 'Company Holiday':
-      return 'bg-rose-50 text-rose-800 border-rose-200';
-    case 'Staff Availability':
-      return 'bg-amber-50 text-amber-800 border-amber-200';
-    default:
-      return 'bg-teal-50 text-teal-800 border-teal-200';
-  }
-}
-
-function toIsoDate(d: Date): string {
-  const y = d.getFullYear();
-  const m = String(d.getMonth() + 1).padStart(2, '0');
-  const day = String(d.getDate()).padStart(2, '0');
-  return `${y}-${m}-${day}`;
-}
-
-function addDays(d: Date, delta: number): Date {
-  const next = new Date(d.getFullYear(), d.getMonth(), d.getDate() + delta);
-  return next;
-}
-
-function startOfWeekMonday(d: Date): Date {
-  const day = d.getDay(); // 0=Sun..6=Sat
-  const diff = day === 0 ? -6 : 1 - day;
-  return addDays(d, diff);
-}
-
-function eventCoversDate(ev: CalendarEvent, isoDate: string): boolean {
-  const start = (ev.startDate || '').slice(0, 10);
-  const end = (ev.endDate || start).slice(0, 10);
-  if (!start) return false;
-  return isoDate >= start && isoDate <= (end >= start ? end : start);
-}
-
-interface PublicHolidayRef {
-  date: string;
-  name: string;
-  scope: 'Federal' | 'KL / Selangor';
-}
-
-function getMalaysiaPublicHolidays(year: number): PublicHolidayRef[] {
-  // Known lunar / Islamic holiday approximations + fixed Malaysian federal holidays
-  const variableByYear: Record<number, PublicHolidayRef[]> = {
-    2025: [
-      { date: '2025-01-29', name: 'Chinese New Year (Day 1)', scope: 'Federal' },
-      { date: '2025-01-30', name: 'Chinese New Year (Day 2)', scope: 'Federal' },
-      { date: '2025-02-11', name: 'Thaipusam', scope: 'KL / Selangor' },
-      { date: '2025-03-31', name: 'Hari Raya Aidilfitri (Day 1)', scope: 'Federal' },
-      { date: '2025-04-01', name: 'Hari Raya Aidilfitri (Day 2)', scope: 'Federal' },
-      { date: '2025-05-12', name: 'Wesak Day', scope: 'Federal' },
-      { date: '2025-06-02', name: 'Agong Birthday', scope: 'Federal' },
-      { date: '2025-06-07', name: 'Hari Raya Haji', scope: 'Federal' },
-      { date: '2025-06-27', name: 'Awal Muharram', scope: 'Federal' },
-      { date: '2025-09-05', name: 'Prophet Muhammad Birthday (Maulidur Rasul)', scope: 'Federal' },
-      { date: '2025-10-20', name: 'Deepavali', scope: 'Federal' },
-    ],
-    2026: [
-      { date: '2026-02-01', name: 'Thaipusam & Federal Territory Day', scope: 'KL / Selangor' },
-      { date: '2026-02-17', name: 'Chinese New Year (Day 1)', scope: 'Federal' },
-      { date: '2026-02-18', name: 'Chinese New Year (Day 2)', scope: 'Federal' },
-      { date: '2026-03-20', name: 'Hari Raya Aidilfitri (Day 1)', scope: 'Federal' },
-      { date: '2026-03-21', name: 'Hari Raya Aidilfitri (Day 2)', scope: 'Federal' },
-      { date: '2026-05-27', name: 'Hari Raya Haji', scope: 'Federal' },
-      { date: '2026-05-31', name: 'Wesak Day', scope: 'Federal' },
-      { date: '2026-06-01', name: 'Agong Birthday', scope: 'Federal' },
-      { date: '2026-06-17', name: 'Awal Muharram', scope: 'Federal' },
-      { date: '2026-08-25', name: 'Prophet Muhammad Birthday (Maulidur Rasul)', scope: 'Federal' },
-      { date: '2026-11-08', name: 'Deepavali', scope: 'Federal' },
-    ],
-    2027: [
-      { date: '2027-02-06', name: 'Chinese New Year (Day 1)', scope: 'Federal' },
-      { date: '2027-02-07', name: 'Chinese New Year (Day 2)', scope: 'Federal' },
-      { date: '2027-03-10', name: 'Hari Raya Aidilfitri (Day 1)', scope: 'Federal' },
-      { date: '2027-03-11', name: 'Hari Raya Aidilfitri (Day 2)', scope: 'Federal' },
-      { date: '2027-05-17', name: 'Hari Raya Haji', scope: 'Federal' },
-      { date: '2027-05-20', name: 'Wesak Day', scope: 'Federal' },
-      { date: '2027-06-07', name: 'Agong Birthday / Awal Muharram', scope: 'Federal' },
-      { date: '2027-08-15', name: 'Prophet Muhammad Birthday (Maulidur Rasul)', scope: 'Federal' },
-      { date: '2027-10-28', name: 'Deepavali', scope: 'Federal' },
-    ],
-  };
-
-  const fixed: PublicHolidayRef[] = [
-    { date: `${year}-01-01`, name: "New Year's Day", scope: 'KL / Selangor' },
-    { date: `${year}-02-01`, name: 'Federal Territory Day', scope: 'KL / Selangor' },
-    { date: `${year}-05-01`, name: 'Labour Day', scope: 'Federal' },
-    { date: `${year}-08-31`, name: 'National Day (Hari Merdeka)', scope: 'Federal' },
-    { date: `${year}-09-16`, name: 'Malaysia Day', scope: 'Federal' },
-    { date: `${year}-12-25`, name: 'Christmas Day', scope: 'Federal' },
-  ];
-
-  const merged = [...fixed, ...(variableByYear[year] ?? [])];
-  // Deduplicate exact date+name
-  const seen = new Set<string>();
-  return merged
-    .filter((h) => {
-      const k = `${h.date}|${h.name}`;
-      if (seen.has(k)) return false;
-      seen.add(k);
-      return true;
-    })
-    .sort((a, b) => a.date.localeCompare(b.date));
+function isPoolOrSystemStaffAccount(s: StaffMember): boolean {
+  const hasEmail = Boolean(s.email?.trim());
+  const staffIdUpper = (s.staffId || '').trim().toUpperCase();
+  return (
+    !hasEmail ||
+    s.noLogin === true ||
+    s.role === 'Report Viewer' ||
+    staffIdUpper === 'ADM'
+  );
 }
 
 function exportCalendarCsv(events: ParsedCalendarEvent[]): void {
   try {
-    const headers = ['Event Type', 'Title', 'Staff', 'Client', 'Start Date', 'End Date', 'Notes'];
+    const headers = [
+      'Event Type',
+      'Title',
+      'Staff',
+      'Client',
+      'Start Date',
+      'End Date',
+      'Color',
+      'Notes',
+    ];
     const escapeCsv = (v: string) => `"${(v || '').replace(/"/g, '""')}"`;
     const lines = [
       headers.map(escapeCsv).join(','),
@@ -249,6 +109,7 @@ function exportCalendarCsv(events: ParsedCalendarEvent[]): void {
             : '',
           e.raw.startDate,
           e.raw.endDate || e.raw.startDate,
+          e.color,
           e.raw.notes || '',
         ]
           .map(escapeCsv)
@@ -265,14 +126,22 @@ function exportCalendarCsv(events: ParsedCalendarEvent[]): void {
   }
 }
 
-const WEEKDAY_NAMES = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
-
-export const TeamCalendarView: React.FC = () => {
+export const TeamCalendarView: React.FC<TeamCalendarViewProps> = ({ onNavigate }) => {
   const { isReadOnly, isManagerOrAdmin } = useAuth();
-  const { calendarEvents, clients, staff, saveCalendarEvent, deleteCalendarEvent } = useData();
+  const {
+    calendarEvents,
+    clients,
+    staff,
+    jobs,
+    cp204Records,
+    saveCalendarEvent,
+    deleteCalendarEvent,
+  } = useData();
 
-  const [viewMode, setViewMode] = useState<CalendarViewMode>('month');
+  const [viewMode, setViewMode] = useState<CalendarViewMode>('matrix');
   const [cursorDate, setCursorDate] = useState(() => new Date());
+  const [includeWeekends, setIncludeWeekends] = useState(false);
+  const [showPoolAccounts, setShowPoolAccounts] = useState(false);
   const [typeFilter, setTypeFilter] = useState<'' | CanonicalEventType>('');
   const [staffFilter, setStaffFilter] = useState('');
   const [search, setSearch] = useState('');
@@ -280,72 +149,148 @@ export const TeamCalendarView: React.FC = () => {
   // Modal state
   const [modalOpen, setModalOpen] = useState(false);
   const [editingId, setEditingId] = useState<string | null>(null);
-  const [formType, setFormType] = useState<CanonicalEventType>('Internal Event');
+  const [formType, setFormType] = useState<CanonicalEventType>('Staff Availability');
   const [formStaff, setFormStaff] = useState('');
   const [formClientId, setFormClientId] = useState('');
   const [formClientName, setFormClientName] = useState('');
   const [formLabel, setFormLabel] = useState('');
   const [formStartDate, setFormStartDate] = useState(() => toIsoDate(new Date()));
   const [formEndDate, setFormEndDate] = useState(() => toIsoDate(new Date()));
+  const [formColor, setFormColor] = useState<string>(
+    EVENT_TYPE_DEFAULT_COLORS['Staff Availability']
+  );
+  const [colorManuallyPicked, setColorManuallyPicked] = useState(false);
   const [formNotes, setFormNotes] = useState('');
   const [saving, setSaving] = useState(false);
   const [formError, setFormError] = useState('');
 
-  // Inline delete confirm
+  // Inline delete confirm (agenda & modal)
   const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null);
+  const [confirmModalDelete, setConfirmModalDelete] = useState(false);
 
   const todayIso = useMemo(() => toIsoDate(new Date()), []);
-  const activeStaffNames = useMemo(
+
+  const activeStaff = useMemo(
     () =>
       staff
         .filter((s) => s.active)
-        .map((s) => s.staffName)
-        .sort((a, b) => a.localeCompare(b)),
+        .sort((a, b) => a.staffName.localeCompare(b.staffName)),
     [staff]
+  );
+
+  const poolAccountCount = useMemo(
+    () => activeStaff.filter(isPoolOrSystemStaffAccount).length,
+    [activeStaff]
+  );
+
+  const matrixEligibleStaff = useMemo(() => {
+    if (showPoolAccounts) return activeStaff;
+    return activeStaff.filter((s) => !isPoolOrSystemStaffAccount(s));
+  }, [activeStaff, showPoolAccounts]);
+
+  const filteredMatrixStaff = useMemo(() => {
+    if (!staffFilter) return matrixEligibleStaff;
+    return matrixEligibleStaff.filter(
+      (s) => s.staffName.toLowerCase() === staffFilter.toLowerCase()
+    );
+  }, [matrixEligibleStaff, staffFilter]);
+
+  const handleTogglePoolAccounts = useCallback(() => {
+    setShowPoolAccounts((prev) => {
+      const next = !prev;
+      if (!next && staffFilter) {
+        const selected = activeStaff.find(
+          (s) => s.staffName.toLowerCase() === staffFilter.toLowerCase()
+        );
+        if (selected && isPoolOrSystemStaffAccount(selected)) {
+          setStaffFilter('');
+        }
+      }
+      return next;
+    });
+  }, [activeStaff, staffFilter]);
+
+  const activeStaffNames = useMemo(
+    () => activeStaff.map((s) => s.staffName),
+    [activeStaff]
+  );
+
+  const filterStaffNames = useMemo(
+    () => (viewMode === 'matrix' ? matrixEligibleStaff.map((s) => s.staffName) : activeStaffNames),
+    [viewMode, matrixEligibleStaff, activeStaffNames]
+  );
+
+  const allParsedEvents = useMemo(
+    () =>
+      calendarEvents
+        .map(parseCalendarEvent)
+        .sort((a, b) => a.raw.startDate.localeCompare(b.raw.startDate)),
+    [calendarEvents]
   );
 
   const parsedEvents = useMemo(() => {
     const q = search.trim().toLowerCase();
-    return calendarEvents
-      .map(parseCalendarEvent)
-      .filter((ev) => {
-        if (typeFilter && ev.canonicalType !== typeFilter) return false;
-        if (staffFilter && ev.staffName.toLowerCase() !== staffFilter.toLowerCase()) return false;
-        if (q) {
-          const hay = `${ev.displayTitle} ${ev.canonicalType} ${ev.staffName} ${ev.raw.clientId || ''} ${ev.raw.clientName || ''} ${ev.raw.notes || ''}`.toLowerCase();
-          if (!hay.includes(q)) return false;
-        }
-        return true;
-      })
-      .sort((a, b) => a.raw.startDate.localeCompare(b.raw.startDate));
-  }, [calendarEvents, typeFilter, staffFilter, search]);
+    return allParsedEvents.filter((ev) => {
+      if (typeFilter && ev.canonicalType !== typeFilter) return false;
+      if (
+        staffFilter &&
+        !ev.isFirmWide &&
+        ev.canonicalType !== 'Company Holiday' &&
+        ev.staffName.toLowerCase() !== staffFilter.toLowerCase()
+      ) {
+        return false;
+      }
+      if (q) {
+        const hay = `${ev.displayTitle} ${ev.canonicalType} ${ev.staffName} ${
+          ev.raw.clientId || ''
+        } ${ev.raw.clientName || ''} ${ev.raw.notes || ''}`.toLowerCase();
+        if (!hay.includes(q)) return false;
+      }
+      return true;
+    });
+  }, [allParsedEvents, typeFilter, staffFilter, search]);
 
   const holidaysForYear = useMemo(
-    () => getMalaysiaPublicHolidays(cursorDate.getFullYear()),
+    () => getJohorMalaysiaPublicHolidays(cursorDate.getFullYear()),
     [cursorDate]
   );
+
+  const holidaysByDate = useMemo(() => {
+    const map = new Map<string, PublicHolidayRef>();
+    for (const h of holidaysForYear) {
+      if (!map.has(h.date)) {
+        map.set(h.date, h);
+      } else {
+        const prev = map.get(h.date)!;
+        map.set(h.date, { ...prev, name: `${prev.name} / ${h.name}` });
+      }
+    }
+    return map;
+  }, [holidaysForYear]);
 
   // Navigation handlers
   const handlePrev = () => {
     setCursorDate((prev) => {
-      if (viewMode === 'month') return new Date(prev.getFullYear(), prev.getMonth() - 1, 1);
+      if (viewMode === 'matrix' || viewMode === 'month' || viewMode === 'agenda') {
+        return new Date(prev.getFullYear(), prev.getMonth() - 1, 1);
+      }
       if (viewMode === 'week') return addDays(prev, -7);
-      if (viewMode === 'day') return addDays(prev, -1);
-      return new Date(prev.getFullYear(), prev.getMonth() - 1, 1);
+      return addDays(prev, -1);
     });
   };
 
   const handleNext = () => {
     setCursorDate((prev) => {
-      if (viewMode === 'month') return new Date(prev.getFullYear(), prev.getMonth() + 1, 1);
+      if (viewMode === 'matrix' || viewMode === 'month' || viewMode === 'agenda') {
+        return new Date(prev.getFullYear(), prev.getMonth() + 1, 1);
+      }
       if (viewMode === 'week') return addDays(prev, 7);
-      if (viewMode === 'day') return addDays(prev, 1);
-      return new Date(prev.getFullYear(), prev.getMonth() + 1, 1);
+      return addDays(prev, 1);
     });
   };
 
   const periodTitle = useMemo(() => {
-    if (viewMode === 'month' || viewMode === 'agenda') {
+    if (viewMode === 'matrix' || viewMode === 'month' || viewMode === 'agenda') {
       return cursorDate.toLocaleDateString('en-MY', { month: 'long', year: 'numeric' });
     }
     if (viewMode === 'week') {
@@ -361,7 +306,7 @@ export const TeamCalendarView: React.FC = () => {
     });
   }, [cursorDate, viewMode]);
 
-  // Month grid cells (Monday-first 6-week or 5-week grid)
+  // Month grid cells (Monday-first 6-week grid)
   const monthDays = useMemo(() => {
     const firstOfMonth = new Date(cursorDate.getFullYear(), cursorDate.getMonth(), 1);
     const gridStart = startOfWeekMonday(firstOfMonth);
@@ -379,34 +324,223 @@ export const TeamCalendarView: React.FC = () => {
   }, [cursorDate]);
 
   // Modal open helpers
-  const openCreateModal = (defaultDate?: string) => {
-    if (isReadOnly) return;
-    setEditingId(null);
-    setFormType('Internal Event');
-    setFormStaff('');
-    setFormClientId('');
-    setFormClientName('');
-    setFormLabel('');
-    const dt = defaultDate || toIsoDate(cursorDate);
-    setFormStartDate(dt);
-    setFormEndDate(dt);
-    setFormNotes('');
-    setFormError('');
-    setModalOpen(true);
-  };
+  const openCreateModal = useCallback(
+    (defaultDate?: string, defaultStaff?: string, defaultType?: CanonicalEventType) => {
+      if (isReadOnly) return;
+      const type: CanonicalEventType =
+        defaultType ?? (defaultStaff ? 'Staff Availability' : 'Internal Event');
+      setEditingId(null);
+      setFormType(type);
+      setFormStaff(defaultStaff ?? '');
+      setFormClientId('');
+      setFormClientName('');
+      setFormLabel('');
+      const dt = defaultDate || toIsoDate(cursorDate);
+      setFormStartDate(dt);
+      setFormEndDate(dt);
+      setFormColor(EVENT_TYPE_DEFAULT_COLORS[type]);
+      setColorManuallyPicked(false);
+      setFormNotes('');
+      setFormError('');
+      setConfirmModalDelete(false);
+      setModalOpen(true);
+    },
+    [cursorDate, isReadOnly]
+  );
 
-  const openEditModal = (ev: ParsedCalendarEvent) => {
+  const openEditModal = useCallback((ev: ParsedCalendarEvent) => {
     setEditingId(ev.raw.id);
     setFormType(ev.canonicalType);
     setFormStaff(ev.staffName);
     setFormClientId(ev.raw.clientId || '');
     setFormClientName(ev.raw.clientName || '');
     setFormLabel(ev.cleanLabel);
-    setFormStartDate(ev.raw.startDate || todayIso);
-    setFormEndDate(ev.raw.endDate || ev.raw.startDate || todayIso);
+    setFormStartDate(ev.raw.startDate || toIsoDate(new Date()));
+    setFormEndDate(ev.raw.endDate || ev.raw.startDate || toIsoDate(new Date()));
+    setFormColor(ev.color);
+    setColorManuallyPicked(Boolean(isValidHexColor(ev.raw.color)));
     setFormNotes(ev.raw.notes || '');
     setFormError('');
+    setConfirmModalDelete(false);
     setModalOpen(true);
+  }, []);
+
+  const handleCellSelectModal = useCallback(
+    (staffName: string, isoDate: string, existingEvent?: ParsedCalendarEvent) => {
+      if (existingEvent) {
+        openEditModal(existingEvent);
+      } else {
+        openCreateModal(
+          isoDate,
+          staffName,
+          staffName ? 'Staff Availability' : 'Company Holiday'
+        );
+      }
+    },
+    [openCreateModal, openEditModal]
+  );
+
+  // Quick-Paint Drag Handler for Staff Matrix
+  const handlePaintRange = useCallback(
+    async (
+      staffName: string,
+      startIso: string,
+      endIso: string,
+      tool: Exclude<PaintTool, 'select'>
+    ) => {
+      if (isReadOnly) return;
+      const staffLower = staffName.trim().toLowerCase();
+
+      // Find overlapping Staff Availability events for this staff member
+      const overlapping = allParsedEvents.filter((ev) => {
+        if (ev.canonicalType !== 'Staff Availability') return false;
+        if (ev.staffName.trim().toLowerCase() !== staffLower) return false;
+        const evStart = (ev.raw.startDate || '').slice(0, 10);
+        const evEnd = (ev.raw.endDate || evStart).slice(0, 10);
+        return evStart <= endIso && evEnd >= startIso;
+      });
+
+      try {
+        // Check if we can reuse an exact-range existing event when painting (also works for Staff without delete permission)
+        let reusedEventId: string | undefined;
+        let blockedDeletes = 0;
+
+        for (const ev of overlapping) {
+          const evStart = (ev.raw.startDate || '').slice(0, 10);
+          const evEnd = (ev.raw.endDate || evStart).slice(0, 10);
+
+          if (evStart >= startIso && evEnd <= endIso) {
+            if (tool !== 'clear' && !reusedEventId && evStart === startIso && evEnd === endIso) {
+              reusedEventId = ev.raw.id;
+              continue;
+            }
+            if (isManagerOrAdmin) {
+              await deleteCalendarEvent(ev.raw.id);
+            } else {
+              blockedDeletes += 1;
+            }
+          } else if (evStart < startIso && evEnd > endIso) {
+            // Split into before + after segments
+            await saveCalendarEvent(
+              {
+                title: ev.raw.title,
+                eventType: ev.raw.eventType,
+                startDate: evStart,
+                endDate: addDaysIso(startIso, -1),
+                assignedTo: ev.staffName,
+                clientId: ev.raw.clientId || '',
+                clientName: ev.raw.clientName || '',
+                color: ev.color,
+                notes: ev.raw.notes || '',
+              },
+              ev.raw.id
+            );
+            await saveCalendarEvent({
+              title: ev.raw.title,
+              eventType: ev.raw.eventType,
+              startDate: addDaysIso(endIso, 1),
+              endDate: evEnd,
+              assignedTo: ev.staffName,
+              clientId: ev.raw.clientId || '',
+              clientName: ev.raw.clientName || '',
+              color: ev.color,
+              notes: ev.raw.notes || '',
+            });
+          } else if (evStart < startIso && evEnd >= startIso && evEnd <= endIso) {
+            // Trim right side
+            await saveCalendarEvent(
+              {
+                title: ev.raw.title,
+                eventType: ev.raw.eventType,
+                startDate: evStart,
+                endDate: addDaysIso(startIso, -1),
+                assignedTo: ev.staffName,
+                clientId: ev.raw.clientId || '',
+                clientName: ev.raw.clientName || '',
+                color: ev.color,
+                notes: ev.raw.notes || '',
+              },
+              ev.raw.id
+            );
+          } else if (evStart >= startIso && evStart <= endIso && evEnd > endIso) {
+            // Trim left side
+            await saveCalendarEvent(
+              {
+                title: ev.raw.title,
+                eventType: ev.raw.eventType,
+                startDate: addDaysIso(endIso, 1),
+                endDate: evEnd,
+                assignedTo: ev.staffName,
+                clientId: ev.raw.clientId || '',
+                clientName: ev.raw.clientName || '',
+                color: ev.color,
+                notes: ev.raw.notes || '',
+              },
+              ev.raw.id
+            );
+          }
+        }
+
+        if (tool === 'clear') {
+          if (blockedDeletes > 0) {
+            showToast(
+              'Only Manager-HOD or Admin can delete calendar entries. Open the event to edit dates instead.',
+              'warning',
+              4500
+            );
+          } else if (overlapping.length > 0) {
+            showToast(
+              `Cleared ${staffName} (${formatDateDDMMYYYY(startIso)}${
+                endIso !== startIso ? ` – ${formatDateDDMMYYYY(endIso)}` : ''
+              })`,
+              'success',
+              2600
+            );
+          }
+          return;
+        }
+
+        const paintColor = getDefaultLeaveColor(tool);
+        await saveCalendarEvent(
+          {
+            title: buildFormattedTitle('Staff Availability', tool, staffName),
+            eventType: 'Staff Availability',
+            startDate: startIso,
+            endDate: endIso,
+            assignedTo: staffName,
+            clientId: '',
+            clientName: '',
+            color: paintColor,
+            notes: '',
+          },
+          reusedEventId
+        );
+
+        showToast(
+          `Painted ${tool} for ${staffName} (${formatDateDDMMYYYY(startIso)}${
+            endIso !== startIso ? ` – ${formatDateDDMMYYYY(endIso)}` : ''
+          })`,
+          'success',
+          2600
+        );
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : 'Failed to update schedule.';
+        showToast(msg, 'error');
+      }
+    },
+    [allParsedEvents, deleteCalendarEvent, isManagerOrAdmin, isReadOnly, saveCalendarEvent]
+  );
+
+  const handleEventTypeChange = (nextType: CanonicalEventType) => {
+    setFormType(nextType);
+    if (!colorManuallyPicked) {
+      setFormColor(EVENT_TYPE_DEFAULT_COLORS[nextType]);
+    }
+    if (nextType === 'Company Holiday') {
+      setFormStaff('');
+      setFormClientId('');
+      setFormClientName('');
+    }
   };
 
   const handleSelectClient = (client: ClientRecord | null) => {
@@ -420,13 +554,16 @@ export const TeamCalendarView: React.FC = () => {
     if (client.taxPic && !formStaff && formType !== 'Company Holiday') {
       setFormStaff(client.taxPic);
     }
+    if (!formLabel.trim() && formType === 'Client Appointment') {
+      setFormLabel(`${client.clientName} Meeting`);
+    }
   };
 
   const handleSaveEvent = async (e: React.FormEvent) => {
     e.preventDefault();
     if (isReadOnly) return;
     setFormError('');
-    if (!formLabel.trim()) {
+    if (!formLabel.trim() && !(formType === 'Client Appointment' && formClientName.trim())) {
       setFormError('Please enter an event title / description.');
       return;
     }
@@ -434,23 +571,33 @@ export const TeamCalendarView: React.FC = () => {
       setFormError('Please select a staff member for Staff Availability.');
       return;
     }
+    if (formType === 'Client Appointment' && !formClientName.trim()) {
+      setFormError('Please select a client for a Client Appointment.');
+      return;
+    }
     if (!formStartDate) {
       setFormError('Start Date is required.');
       return;
     }
-    const effectiveEnd = formEndDate && formEndDate >= formStartDate ? formEndDate : formStartDate;
+    const effectiveEnd =
+      formEndDate && formEndDate >= formStartDate ? formEndDate : formStartDate;
+
+    const effectiveColor = isValidHexColor(formColor)
+      ? formColor.trim()
+      : EVENT_TYPE_DEFAULT_COLORS[formType];
 
     setSaving(true);
     try {
       await saveCalendarEvent(
         {
-          title: buildFormattedTitle(formType, formLabel, formStaff),
+          title: buildFormattedTitle(formType, formLabel, formStaff, formClientName),
           eventType: formType,
           startDate: formStartDate,
           endDate: effectiveEnd,
-          assignedTo: formStaff.trim(),
-          clientId: formClientId.trim(),
-          clientName: formClientName.trim(),
+          assignedTo: formType === 'Company Holiday' ? '' : formStaff.trim(),
+          clientId: formType === 'Company Holiday' ? '' : formClientId.trim(),
+          clientName: formType === 'Company Holiday' ? '' : formClientName.trim(),
+          color: effectiveColor,
           notes: formNotes.trim(),
         },
         editingId ?? undefined
@@ -463,8 +610,83 @@ export const TeamCalendarView: React.FC = () => {
     }
   };
 
-  const buildCalendarExport = () => {
-    const cols = [
+  const handleDeleteFromModal = async () => {
+    if (!editingId || !isManagerOrAdmin) return;
+    setSaving(true);
+    try {
+      await deleteCalendarEvent(editingId);
+      setModalOpen(false);
+      setConfirmModalDelete(false);
+      showToast('Calendar event deleted.', 'success', 2500);
+    } catch (err) {
+      setFormError(err instanceof Error ? err.message : 'Failed to delete event.');
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  // Build rich Staff Matrix export model (2-row weekday/date header, colors, week dividers, holiday names, notes)
+  const buildMatrixExportModel = () => {
+    const year = cursorDate.getFullYear();
+    const monthIndex = cursorDate.getMonth();
+    const days = getMonthDays(year, monthIndex, includeWeekends);
+    const monthWeekdays = getMonthDays(year, monthIndex, false);
+    const openJobsByStaff = computeOpenJobsByStaff(jobs);
+
+    let weekdayHolidayCount = 0;
+    const weekdayHolidaySet = new Set<string>();
+    for (const wd of monthWeekdays) {
+      const iso = toIsoDate(wd);
+      if (
+        holidaysByDate.has(iso) ||
+        parsedEvents.some(
+          (e) => e.canonicalType === 'Company Holiday' && eventCoversDate(e.raw, iso)
+        )
+      ) {
+        weekdayHolidayCount += 1;
+        weekdayHolidaySet.add(iso);
+      }
+    }
+    const baseWorkingDays = Math.max(0, monthWeekdays.length - weekdayHolidayCount);
+
+    const rowSummaries: StaffMatrixRowSummary[] = filteredMatrixStaff.map((s) => {
+      const staffKey = s.staffName.trim().toLowerCase();
+      let leaveDays = 0;
+      for (const wd of monthWeekdays) {
+        const iso = toIsoDate(wd);
+        if (weekdayHolidaySet.has(iso)) continue;
+        let dayWeight = 0;
+        for (const ev of parsedEvents) {
+          if (ev.canonicalType !== 'Staff Availability') continue;
+          if (ev.staffName.trim().toLowerCase() !== staffKey) continue;
+          if (!eventCoversDate(ev.raw, iso)) continue;
+          if (ev.leaveWeight > dayWeight) dayWeight = ev.leaveWeight;
+        }
+        leaveDays += dayWeight;
+      }
+      return {
+        staff: s,
+        workDays: Math.max(0, Math.round((baseWorkingDays - leaveDays) * 10) / 10),
+        leaveDays: Math.round(leaveDays * 10) / 10,
+        openJobs: openJobsByStaff.get(staffKey) ?? 0,
+      };
+    });
+
+    return buildStaffMatrixExportModel({
+      year,
+      monthIndex,
+      includeWeekends,
+      days,
+      activeStaff: filteredMatrixStaff,
+      rowSummaries,
+      holidaysByDate,
+      parsedEvents,
+    });
+  };
+
+  // Schedule list export builder for Month / Week / Day / Agenda views
+  const buildScheduleExport = () => {
+    const columns = [
       { key: 'type', label: 'Event Type' },
       { key: 'title', label: 'Event Title' },
       { key: 'staff', label: 'Staff' },
@@ -484,27 +706,64 @@ export const TeamCalendarView: React.FC = () => {
       end: formatDateDDMMYYYY(e.raw.endDate || e.raw.startDate),
       notes: e.raw.notes || '',
     }));
-    const filterSummary = [
+    const subtitle = [
       periodTitle,
       typeFilter ? `Type: ${typeFilter}` : '',
       staffFilter ? `Staff: ${staffFilter}` : '',
     ]
       .filter(Boolean)
       .join(' • ');
-    return { cols, rows, filterSummary };
+
+    return {
+      title: 'Team Calendar Schedule',
+      subtitle,
+      columns,
+      rows,
+      sheetName: 'Team_Calendar',
+      filenameBase: `TPMS_Team_Calendar_${new Date().toISOString().slice(0, 10)}`,
+    };
+  };
+
+  const handleExportExcel = () => {
+    if (viewMode === 'matrix') {
+      void exportStaffMatrixToExcel(buildMatrixExportModel());
+      return;
+    }
+    const exp = buildScheduleExport();
+    exportToExcel(`${exp.filenameBase}.xlsx`, exp.sheetName, exp.columns, exp.rows);
+    showToast(`Downloaded ${exp.filenameBase}.xlsx`, 'success', 3000);
   };
 
   const handlePrintCalendar = () => {
-    const { cols, rows, filterSummary } = buildCalendarExport();
-    printTable('Team Calendar Schedule', filterSummary, cols, rows);
+    if (viewMode === 'matrix') {
+      printStaffMatrix(buildMatrixExportModel());
+      return;
+    }
+    const exp = buildScheduleExport();
+    printTable(exp.title, exp.subtitle, exp.columns, exp.rows, 'landscape');
   };
 
   const handleExportCalendarPdf = () => {
-    const { cols, rows, filterSummary } = buildCalendarExport();
-    exportTableToPdf('Team Calendar Schedule', filterSummary, cols, rows);
+    if (viewMode === 'matrix') {
+      exportStaffMatrixToPdf(buildMatrixExportModel());
+      return;
+    }
+    const exp = buildScheduleExport();
+    exportTableToPdf(exp.title, exp.subtitle, exp.columns, exp.rows, {
+      orientation: 'landscape',
+      filename: `${exp.filenameBase}.pdf`,
+    });
   };
 
   const cursorIso = toIsoDate(cursorDate);
+
+  const VIEW_OPTIONS: Array<{ id: CalendarViewMode; label: string }> = [
+    { id: 'matrix', label: 'Staff Matrix' },
+    { id: 'month', label: 'Month' },
+    { id: 'week', label: 'Week' },
+    { id: 'day', label: 'Day' },
+    { id: 'agenda', label: 'Agenda' },
+  ];
 
   return (
     <div className="space-y-4">
@@ -513,18 +772,18 @@ export const TeamCalendarView: React.FC = () => {
         <div>
           <h1 className="text-lg font-semibold text-slate-900">Team Calendar</h1>
           <p className="text-xs text-slate-500">
-            Company holidays, staff leave/availability, and internal tax practice milestones.
+            Smart staff availability matrix, Johor &amp; Malaysia public holidays, client appointments, and tax deadline collision alerts.
           </p>
         </div>
 
         <div className="flex flex-wrap items-center gap-2">
           <button
             type="button"
-            onClick={handlePrintCalendar}
+            onClick={handleExportExcel}
             className="inline-flex items-center gap-1.5 px-2.5 py-1.5 text-xs font-medium text-slate-700 bg-white border border-slate-200 rounded-md hover:bg-slate-50 whitespace-nowrap"
           >
-            <Printer className="w-3.5 h-3.5 text-slate-500" />
-            Print
+            <FileSpreadsheet className="w-3.5 h-3.5 text-emerald-700" />
+            Export Excel
           </button>
           <button
             type="button"
@@ -536,11 +795,19 @@ export const TeamCalendarView: React.FC = () => {
           </button>
           <button
             type="button"
+            onClick={handlePrintCalendar}
+            className="inline-flex items-center gap-1.5 px-2.5 py-1.5 text-xs font-medium text-slate-700 bg-white border border-slate-200 rounded-md hover:bg-slate-50 whitespace-nowrap"
+          >
+            <Printer className="w-3.5 h-3.5 text-slate-500" />
+            Print
+          </button>
+          <button
+            type="button"
             onClick={() => exportCalendarCsv(parsedEvents)}
             className="inline-flex items-center gap-1.5 px-2.5 py-1.5 text-xs font-medium text-slate-700 bg-white border border-slate-200 rounded-md hover:bg-slate-50 whitespace-nowrap"
           >
-            <Download className="w-3.5 h-3.5 text-emerald-700" />
-            CSV Export
+            <Download className="w-3.5 h-3.5 text-slate-600" />
+            CSV
           </button>
           {!isReadOnly && (
             <button
@@ -591,18 +858,18 @@ export const TeamCalendarView: React.FC = () => {
 
         {/* View Mode Switcher */}
         <div className="inline-flex items-center rounded-md border border-slate-200 bg-slate-50 p-0.5">
-          {(['month', 'week', 'day', 'agenda'] as CalendarViewMode[]).map((m) => (
+          {VIEW_OPTIONS.map((opt) => (
             <button
-              key={m}
+              key={opt.id}
               type="button"
-              onClick={() => setViewMode(m)}
-              className={`px-2.5 py-1 text-xs font-medium rounded capitalize transition-colors ${
-                viewMode === m
+              onClick={() => setViewMode(opt.id)}
+              className={`px-2.5 py-1 text-xs font-medium rounded transition-colors whitespace-nowrap ${
+                viewMode === opt.id
                   ? 'bg-white text-teal-800 shadow-xs'
                   : 'text-slate-600 hover:text-slate-900'
               }`}
             >
-              {m}
+              {opt.label}
             </button>
           ))}
         </div>
@@ -615,7 +882,7 @@ export const TeamCalendarView: React.FC = () => {
               type="text"
               value={search}
               onChange={(e) => setSearch(e.target.value)}
-              placeholder="Search events..."
+              placeholder="Search events / client..."
               className="w-full pl-7 pr-2 py-1 text-xs bg-slate-50 border border-slate-200 rounded-md focus:bg-white"
             />
           </div>
@@ -637,7 +904,7 @@ export const TeamCalendarView: React.FC = () => {
             className="px-2 py-1 text-xs bg-white border border-slate-200 rounded-md text-slate-700"
           >
             <option value="">All Staff</option>
-            {activeStaffNames.map((n) => (
+            {filterStaffNames.map((n) => (
               <option key={n} value={n}>
                 {n}
               </option>
@@ -645,6 +912,30 @@ export const TeamCalendarView: React.FC = () => {
           </select>
         </div>
       </div>
+
+      {/* STAFF MATRIX VIEW */}
+      {viewMode === 'matrix' && (
+        <StaffMatrixView
+          year={cursorDate.getFullYear()}
+          monthIndex={cursorDate.getMonth()}
+          includeWeekends={includeWeekends}
+          onToggleWeekends={() => setIncludeWeekends((v) => !v)}
+          showPoolAccounts={showPoolAccounts}
+          onTogglePoolAccounts={handleTogglePoolAccounts}
+          canTogglePoolAccounts={isManagerOrAdmin}
+          poolAccountCount={poolAccountCount}
+          activeStaff={filteredMatrixStaff}
+          parsedEvents={parsedEvents}
+          holidaysByDate={holidaysByDate}
+          jobs={jobs}
+          cp204Records={cp204Records}
+          clients={clients}
+          isReadOnly={isReadOnly}
+          onCellSelectModal={handleCellSelectModal}
+          onPaintRange={handlePaintRange}
+          onNavigate={onNavigate}
+        />
+      )}
 
       {/* MONTH VIEW */}
       {viewMode === 'month' && (
@@ -665,17 +956,17 @@ export const TeamCalendarView: React.FC = () => {
               const inCurrentMonth = dayObj.getMonth() === cursorDate.getMonth();
               const isToday = iso === todayIso;
               const dayEvents = parsedEvents.filter((e) => eventCoversDate(e.raw, iso));
-              const refHoliday = holidaysForYear.find((h) => h.date === iso);
+              const refHoliday = holidaysByDate.get(iso);
 
               return (
                 <div
                   key={iso}
                   onDoubleClick={() => openCreateModal(iso)}
-                  className={`min-h-[96px] p-1.5 flex flex-col gap-1 ${
+                  className={`min-h-[104px] p-1.5 flex flex-col gap-1 ${
                     inCurrentMonth ? 'bg-white' : 'bg-slate-50/70'
                   }`}
                 >
-                  <div className="flex items-center justify-between">
+                  <div className="flex items-center justify-between gap-1">
                     <span
                       className={`text-[11px] font-mono tabular-nums px-1.5 py-0.5 rounded ${
                         isToday
@@ -689,28 +980,50 @@ export const TeamCalendarView: React.FC = () => {
                     </span>
                     {refHoliday && (
                       <span
-                        title={`Reference Holiday: ${refHoliday.name}`}
-                        className="text-[9px] font-medium text-rose-700 bg-rose-50 px-1 rounded truncate max-w-[90px]"
+                        title={`${refHoliday.name} (${refHoliday.scope})`}
+                        className="text-[9px] font-semibold text-amber-950 bg-[#facc15] px-1.5 py-0.5 rounded truncate max-w-[105px]"
                       >
                         {refHoliday.name}
                       </span>
                     )}
                   </div>
 
-                  <div className="space-y-1 overflow-y-auto max-h-[72px]">
-                    {dayEvents.map((ev) => (
-                      <button
-                        key={ev.raw.id}
-                        type="button"
-                        onClick={() => openEditModal(ev)}
-                        className={`w-full text-left px-1.5 py-0.5 rounded border text-[10px] font-medium truncate ${getEventChipClasses(
-                          ev.canonicalType
-                        )}`}
-                        title={ev.displayTitle}
-                      >
-                        {ev.displayTitle}
-                      </button>
-                    ))}
+                  <div className="space-y-1 overflow-y-auto max-h-[82px]">
+                    {dayEvents.map((ev) => {
+                      const textColor = getContrastingTextColor(ev.color);
+                      return (
+                        <button
+                          key={ev.raw.id}
+                          type="button"
+                          onClick={(e) => {
+                            if (
+                              ev.canonicalType === 'Client Appointment' &&
+                              onNavigate &&
+                              !e.shiftKey &&
+                              (ev.raw.clientId || ev.raw.clientName)
+                            ) {
+                              onNavigate('client-master', {
+                                search: ev.raw.clientId || ev.raw.clientName || '',
+                              });
+                              return;
+                            }
+                            openEditModal(ev);
+                          }}
+                          className="w-full text-left px-1.5 py-0.5 rounded border border-slate-900/15 text-[10px] font-medium truncate flex items-center justify-between gap-1 hover:brightness-95"
+                          style={{ backgroundColor: ev.color, color: textColor }}
+                          title={
+                            ev.canonicalType === 'Client Appointment'
+                              ? `${ev.displayTitle} — Client: ${ev.raw.clientName || ''} (Click to open Client Master; Shift+Click to edit)`
+                              : ev.displayTitle
+                          }
+                        >
+                          <span className="truncate">{ev.displayTitle}</span>
+                          {ev.canonicalType === 'Client Appointment' && (
+                            <ExternalLink className="w-2.5 h-2.5 shrink-0 opacity-70" />
+                          )}
+                        </button>
+                      );
+                    })}
                   </div>
                 </div>
               );
@@ -727,7 +1040,7 @@ export const TeamCalendarView: React.FC = () => {
               const iso = toIsoDate(dayObj);
               const isToday = iso === todayIso;
               const dayEvents = parsedEvents.filter((e) => eventCoversDate(e.raw, iso));
-              const refHoliday = holidaysForYear.find((h) => h.date === iso);
+              const refHoliday = holidaysByDate.get(iso);
               return (
                 <div key={iso} className="min-h-[260px] flex flex-col">
                   <div
@@ -748,8 +1061,8 @@ export const TeamCalendarView: React.FC = () => {
                   </div>
                   <div className="p-2 space-y-1.5 flex-1">
                     {refHoliday && (
-                      <div className="px-2 py-1 rounded bg-rose-50/70 border border-rose-100 text-[10px] text-rose-700">
-                        MY Ref: {refHoliday.name}
+                      <div className="px-2 py-1 rounded bg-[#facc15] border border-amber-400 text-[10px] font-semibold text-amber-950">
+                        {refHoliday.scope}: {refHoliday.name}
                       </div>
                     )}
                     {dayEvents.length === 0 ? (
@@ -760,11 +1073,18 @@ export const TeamCalendarView: React.FC = () => {
                           key={ev.raw.id}
                           type="button"
                           onClick={() => openEditModal(ev)}
-                          className={`w-full text-left p-2 rounded border text-[11px] space-y-0.5 ${getEventChipClasses(
-                            ev.canonicalType
-                          )}`}
+                          className="w-full text-left p-2 rounded border border-slate-900/15 text-[11px] space-y-0.5 hover:brightness-95"
+                          style={{
+                            backgroundColor: ev.color,
+                            color: getContrastingTextColor(ev.color),
+                          }}
                         >
                           <div className="font-semibold leading-snug">{ev.displayTitle}</div>
+                          {ev.raw.clientName && (
+                            <div className="text-[10px] opacity-90 truncate">
+                              Client: {ev.raw.clientName}
+                            </div>
+                          )}
                           {ev.raw.notes && (
                             <div className="text-[10px] opacity-80 truncate">{ev.raw.notes}</div>
                           )}
@@ -813,9 +1133,11 @@ export const TeamCalendarView: React.FC = () => {
                     <div className="space-y-1 min-w-0">
                       <div className="flex items-center gap-2 flex-wrap">
                         <span
-                          className={`inline-flex items-center px-2 py-0.5 rounded border text-[11px] font-medium ${getEventChipClasses(
-                            ev.canonicalType
-                          )}`}
+                          className="inline-flex items-center px-2 py-0.5 rounded border border-slate-900/15 text-[11px] font-semibold"
+                          style={{
+                            backgroundColor: ev.color,
+                            color: getContrastingTextColor(ev.color),
+                          }}
                         >
                           {ev.canonicalType}
                         </span>
@@ -823,15 +1145,29 @@ export const TeamCalendarView: React.FC = () => {
                           {ev.displayTitle}
                         </span>
                       </div>
-                      <div className="text-[11px] text-slate-500">
-                        {formatDateDDMMYYYY(ev.raw.startDate)}
-                        {ev.raw.endDate && ev.raw.endDate !== ev.raw.startDate
-                          ? ` – ${formatDateDDMMYYYY(ev.raw.endDate)}`
-                          : ''}
-                        {ev.staffName ? ` • Staff: ${ev.staffName}` : ''}
-                        {ev.raw.clientName
-                          ? ` • Client: ${ev.raw.clientName}${ev.raw.clientId ? ` (${ev.raw.clientId})` : ''}`
-                          : ''}
+                      <div className="text-[11px] text-slate-500 flex items-center gap-2 flex-wrap">
+                        <span>
+                          {formatDateDDMMYYYY(ev.raw.startDate)}
+                          {ev.raw.endDate && ev.raw.endDate !== ev.raw.startDate
+                            ? ` – ${formatDateDDMMYYYY(ev.raw.endDate)}`
+                            : ''}
+                        </span>
+                        {ev.staffName && <span>• Staff: {ev.staffName}</span>}
+                        {ev.raw.clientName && (
+                          <button
+                            type="button"
+                            onClick={() =>
+                              onNavigate?.('client-master', {
+                                search: ev.raw.clientId || ev.raw.clientName || '',
+                              })
+                            }
+                            className="inline-flex items-center gap-1 text-teal-700 hover:underline font-medium"
+                          >
+                            • Client: {ev.raw.clientName}
+                            {ev.raw.clientId ? ` (${ev.raw.clientId})` : ''}
+                            <ExternalLink className="w-3 h-3" />
+                          </button>
+                        )}
                       </div>
                       {ev.raw.notes && <p className="text-xs text-slate-600">{ev.raw.notes}</p>}
                     </div>
@@ -884,9 +1220,11 @@ export const TeamCalendarView: React.FC = () => {
                       </td>
                       <td className="py-2 px-4 whitespace-nowrap">
                         <span
-                          className={`inline-flex items-center px-2 py-0.5 rounded border text-[11px] font-medium ${getEventChipClasses(
-                            ev.canonicalType
-                          )}`}
+                          className="inline-flex items-center px-2 py-0.5 rounded border border-slate-900/15 text-[11px] font-semibold"
+                          style={{
+                            backgroundColor: ev.color,
+                            color: getContrastingTextColor(ev.color),
+                          }}
                         >
                           {ev.canonicalType}
                         </span>
@@ -897,14 +1235,25 @@ export const TeamCalendarView: React.FC = () => {
                       </td>
                       <td className="py-2 px-4 text-slate-700 whitespace-nowrap">
                         {ev.raw.clientName ? (
-                          <div>
-                            <div className="font-medium text-slate-800">{ev.raw.clientName}</div>
+                          <button
+                            type="button"
+                            onClick={() =>
+                              onNavigate?.('client-master', {
+                                search: ev.raw.clientId || ev.raw.clientName || '',
+                              })
+                            }
+                            className="text-left group"
+                          >
+                            <div className="font-medium text-teal-800 group-hover:underline inline-flex items-center gap-1">
+                              {ev.raw.clientName}
+                              <ExternalLink className="w-3 h-3 opacity-70" />
+                            </div>
                             {ev.raw.clientId && (
                               <div className="text-[10px] font-mono text-slate-400">
                                 {ev.raw.clientId}
                               </div>
                             )}
-                          </div>
+                          </button>
                         ) : (
                           '—'
                         )}
@@ -966,17 +1315,17 @@ export const TeamCalendarView: React.FC = () => {
         </div>
       )}
 
-      {/* Compact Malaysia Public Holidays — Reference Only Panel */}
+      {/* Johor & Malaysia Public Holidays — Reference Panel */}
       <section className="bg-white border border-slate-200 rounded-lg overflow-hidden">
-        <div className="px-4 py-2.5 bg-slate-50 border-b border-slate-200 flex items-center justify-between gap-2">
+        <div className="px-4 py-2.5 bg-slate-50 border-b border-slate-200 flex flex-wrap items-center justify-between gap-2">
           <div className="flex items-center gap-2">
-            <Flag className="w-3.5 h-3.5 text-rose-600" />
+            <Flag className="w-3.5 h-3.5 text-amber-600" />
             <h2 className="text-xs font-semibold uppercase tracking-wider text-slate-700">
-              Malaysia Public Holidays — Reference Only ({cursorDate.getFullYear()})
+              Johor &amp; Malaysia Federal Public Holidays ({cursorDate.getFullYear()})
             </h2>
           </div>
           <span className="text-[11px] text-slate-500">
-            Reference guide for statutory filing & office scheduling
+            Includes automatic Monday replacement holidays for Sunday observances
           </span>
         </div>
         <div className="p-3 grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-2">
@@ -999,7 +1348,15 @@ export const TeamCalendarView: React.FC = () => {
                     {formatDateDDMMYYYY(h.date)} ({weekday})
                   </div>
                 </div>
-                <span className="text-[10px] px-1.5 py-0.5 rounded bg-white border border-slate-200 text-slate-600 shrink-0">
+                <span
+                  className={`text-[10px] px-1.5 py-0.5 rounded border shrink-0 font-medium ${
+                    h.scope === 'Johor'
+                      ? 'bg-sky-50 border-sky-200 text-sky-800'
+                      : h.scope === 'Replacement'
+                      ? 'bg-amber-50 border-amber-200 text-amber-800'
+                      : 'bg-white border-slate-200 text-slate-600'
+                  }`}
+                >
                   {h.scope}
                 </span>
               </div>
@@ -1011,11 +1368,17 @@ export const TeamCalendarView: React.FC = () => {
       {/* Add / Edit Event Modal */}
       {modalOpen && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/50 p-4">
-          <div className="bg-white rounded-xl border border-slate-200 shadow-2xl w-full max-w-lg overflow-hidden">
-            <div className="px-4 py-3 bg-slate-50 border-b border-slate-200 flex items-center justify-between">
-              <h3 className="text-sm font-semibold text-slate-900">
-                {editingId ? 'Edit Calendar Event' : 'Add Team Calendar Event'}
-              </h3>
+          <div className="bg-white rounded-xl border border-slate-200 shadow-2xl w-full max-w-lg overflow-hidden max-h-[92vh] flex flex-col">
+            <div className="px-4 py-3 bg-slate-50 border-b border-slate-200 flex items-center justify-between shrink-0">
+              <div className="flex items-center gap-2">
+                <span
+                  className="w-3 h-3 rounded-xs border border-slate-900/20"
+                  style={{ backgroundColor: formColor }}
+                />
+                <h3 className="text-sm font-semibold text-slate-900">
+                  {editingId ? 'Edit Calendar Event' : 'Add Team Calendar Event'}
+                </h3>
+              </div>
               <button
                 type="button"
                 onClick={() => setModalOpen(false)}
@@ -1025,7 +1388,7 @@ export const TeamCalendarView: React.FC = () => {
               </button>
             </div>
 
-            <form onSubmit={handleSaveEvent} className="p-4 space-y-3">
+            <form onSubmit={handleSaveEvent} className="p-4 space-y-3.5 overflow-y-auto">
               {formError && (
                 <div className="p-2.5 rounded bg-rose-50 border border-rose-200 text-xs text-rose-800">
                   {formError}
@@ -1039,7 +1402,7 @@ export const TeamCalendarView: React.FC = () => {
                   </label>
                   <select
                     value={formType}
-                    onChange={(e) => setFormType(e.target.value as CanonicalEventType)}
+                    onChange={(e) => handleEventTypeChange(e.target.value as CanonicalEventType)}
                     disabled={isReadOnly}
                     className="w-full px-2.5 py-1.5 text-xs bg-white border border-slate-200 rounded-md"
                   >
@@ -1061,7 +1424,11 @@ export const TeamCalendarView: React.FC = () => {
                     disabled={isReadOnly || formType === 'Company Holiday'}
                     className="w-full px-2.5 py-1.5 text-xs bg-white border border-slate-200 rounded-md disabled:bg-slate-100"
                   >
-                    <option value="">— Select Staff —</option>
+                    <option value="">
+                      {formType === 'Internal Event'
+                        ? '— Firm-Wide (All Staff) —'
+                        : '— Select Staff —'}
+                    </option>
                     {activeStaffNames.map((n) => (
                       <option key={n} value={n}>
                         {n}
@@ -1071,36 +1438,90 @@ export const TeamCalendarView: React.FC = () => {
                 </div>
               </div>
 
-              <ClientSelectorField
-                clients={clients}
-                value={formClientId}
-                onSelectClient={handleSelectClient}
-                label="Related Client (Optional)"
-                selectPlaceholder="-- Select Client ID (Optional) --"
-                disabled={isReadOnly}
-              />
+              {/* Client Selector — prominent for Client Appointment, optional for Internal Event / Staff Availability */}
+              {formType !== 'Company Holiday' && (
+                <div
+                  className={
+                    formType === 'Client Appointment'
+                      ? 'p-2.5 rounded-lg bg-sky-50/70 border border-sky-200'
+                      : ''
+                  }
+                >
+                  <ClientSelectorField
+                    clients={clients}
+                    value={formClientId}
+                    onSelectClient={handleSelectClient}
+                    label={
+                      formType === 'Client Appointment'
+                        ? 'Linked Client'
+                        : 'Linked Client (Optional — for Client Meetings)'
+                    }
+                    required={formType === 'Client Appointment'}
+                    disabled={isReadOnly}
+                    placeholder="Search client by ID, Name, Company No, or TIN..."
+                  />
+                </div>
+              )}
 
               <div>
-                <label className="block text-[11px] font-medium text-slate-700 mb-1">
-                  Title / Description *
-                </label>
+                <div className="flex flex-wrap items-center justify-between gap-1.5 mb-1">
+                  <label className="text-[11px] font-medium text-slate-700">
+                    Event Title / Description *
+                  </label>
+                  {formType === 'Staff Availability' && !isReadOnly && (
+                    <div className="flex flex-wrap items-center gap-1">
+                      {QUICK_LEAVE_CODES.map((code) => {
+                        const swatchColor = getDefaultLeaveColor(code);
+                        const isSelected = formLabel.trim().toUpperCase() === code;
+                        return (
+                          <button
+                            key={code}
+                            type="button"
+                            onClick={() => {
+                              setFormLabel(code);
+                              if (!colorManuallyPicked) {
+                                setFormColor(swatchColor);
+                              }
+                            }}
+                            className={`inline-flex items-center gap-1 px-1.5 py-0.5 text-[10px] font-semibold rounded border ${
+                              isSelected
+                                ? 'bg-teal-700 text-white border-teal-700'
+                                : 'bg-slate-50 text-slate-700 border-slate-200 hover:bg-slate-100'
+                            }`}
+                          >
+                            <span
+                              className="w-2 h-2 rounded-xs border border-slate-900/20 shrink-0"
+                              style={{ backgroundColor: swatchColor }}
+                            />
+                            {code}
+                          </button>
+                        );
+                      })}
+                    </div>
+                  )}
+                </div>
                 <input
                   type="text"
                   value={formLabel}
-                  onChange={(e) => setFormLabel(e.target.value)}
+                  onChange={(e) => {
+                    const nextVal = e.target.value;
+                    setFormLabel(nextVal);
+                    if (formType === 'Staff Availability' && !colorManuallyPicked) {
+                      setFormColor(getDefaultLeaveColor(nextVal));
+                    }
+                  }}
                   disabled={isReadOnly}
                   placeholder={
-                    formType === 'Company Holiday'
-                      ? 'e.g. Company Replacement Holiday'
-                      : formType === 'Staff Availability'
-                      ? 'e.g. Annual Leave / Study Leave'
-                      : 'e.g. Tax Department Briefing'
+                    formType === 'Staff Availability'
+                      ? 'e.g. AL, 1/2 AL, SL, MC, RL, UPL, WFH, or custom leave'
+                      : formType === 'Client Appointment'
+                      ? 'e.g. 1:20pm Tax Computation Sign-off'
+                      : formType === 'Company Holiday'
+                      ? 'e.g. Company Annual Dinner Off-Day'
+                      : 'e.g. LHDN e-Invoice Seminar (Firm-Wide)'
                   }
                   className="w-full px-2.5 py-1.5 text-xs bg-white border border-slate-200 rounded-md"
                 />
-                <div className="mt-1 text-[10px] font-mono text-slate-400">
-                  Saved format: {buildFormattedTitle(formType, formLabel || '...', formStaff)}
-                </div>
               </div>
 
               <div className="grid grid-cols-2 gap-3">
@@ -1112,10 +1533,9 @@ export const TeamCalendarView: React.FC = () => {
                     type="date"
                     value={formStartDate}
                     onChange={(e) => {
-                      setFormStartDate(e.target.value);
-                      if (!formEndDate || formEndDate < e.target.value) {
-                        setFormEndDate(e.target.value);
-                      }
+                      const next = e.target.value;
+                      setFormStartDate(next);
+                      if (!formEndDate || formEndDate < next) setFormEndDate(next);
                     }}
                     disabled={isReadOnly}
                     className="w-full px-2.5 py-1.5 text-xs font-mono bg-white border border-slate-200 rounded-md"
@@ -1123,7 +1543,7 @@ export const TeamCalendarView: React.FC = () => {
                 </div>
                 <div>
                   <label className="block text-[11px] font-medium text-slate-700 mb-1">
-                    End Date
+                    End Date *
                   </label>
                   <input
                     type="date"
@@ -1136,62 +1556,116 @@ export const TeamCalendarView: React.FC = () => {
                 </div>
               </div>
 
+              {/* Quick Color Swatch Picker */}
               <div>
-                <label className="block text-[11px] font-medium text-slate-700 mb-1">Notes</label>
+                <div className="flex items-center justify-between mb-1.5">
+                  <label className="inline-flex items-center gap-1 text-[11px] font-medium text-slate-700">
+                    <Palette className="w-3.5 h-3.5 text-slate-500" />
+                    Cell / Event Color
+                  </label>
+                  <span
+                    className="px-2 py-0.5 rounded text-[10px] font-semibold border border-slate-900/15"
+                    style={{
+                      backgroundColor: formColor,
+                      color: getContrastingTextColor(formColor),
+                    }}
+                  >
+                    {formLabel.trim() || formType}
+                  </span>
+                </div>
+                <div className="flex flex-wrap items-center gap-2">
+                  {EVENT_COLOR_SWATCHES.map((sw) => {
+                    const selected = formColor.toLowerCase() === sw.hex.toLowerCase();
+                    return (
+                      <button
+                        key={sw.hex}
+                        type="button"
+                        disabled={isReadOnly}
+                        onClick={() => {
+                          setFormColor(sw.hex);
+                          setColorManuallyPicked(true);
+                        }}
+                        title={sw.label}
+                        className={`w-6 h-6 rounded-md border transition-transform ${
+                          selected
+                            ? 'ring-2 ring-offset-1 ring-teal-700 border-slate-900 scale-105'
+                            : 'border-slate-300 hover:scale-105'
+                        }`}
+                        style={{ backgroundColor: sw.hex }}
+                      />
+                    );
+                  })}
+                  <input
+                    type="color"
+                    disabled={isReadOnly}
+                    value={isValidHexColor(formColor) ? formColor : '#22d3ee'}
+                    onChange={(e) => {
+                      setFormColor(e.target.value);
+                      setColorManuallyPicked(true);
+                    }}
+                    title="Pick custom color"
+                    className="w-7 h-6 p-0 border border-slate-200 rounded cursor-pointer bg-white"
+                  />
+                  <span className="text-[11px] font-mono text-slate-500">{formColor}</span>
+                </div>
+              </div>
+
+              <div>
+                <label className="block text-[11px] font-medium text-slate-700 mb-1">
+                  Notes / Remarks
+                </label>
                 <textarea
                   rows={2}
                   value={formNotes}
                   onChange={(e) => setFormNotes(e.target.value)}
                   disabled={isReadOnly}
-                  placeholder="Optional details or coverage instructions..."
+                  placeholder="Optional meeting venue, seminar notes, or coverage instructions..."
                   className="w-full px-2.5 py-1.5 text-xs bg-white border border-slate-200 rounded-md"
                 />
               </div>
 
               <div className="pt-2 border-t border-slate-100 flex items-center justify-between gap-2">
-                {editingId && isManagerOrAdmin ? (
-                  confirmDeleteId === editingId ? (
-                    <div className="inline-flex items-center gap-1.5">
-                      <span className="text-[11px] text-rose-700 font-medium">Confirm delete?</span>
+                <div>
+                  {editingId && isManagerOrAdmin && (
+                    confirmModalDelete ? (
+                      <div className="inline-flex items-center gap-1.5">
+                        <span className="text-[11px] text-rose-700 font-medium">Delete event?</span>
+                        <button
+                          type="button"
+                          disabled={saving}
+                          onClick={() => void handleDeleteFromModal()}
+                          className="px-2 py-1 text-[11px] font-semibold text-white bg-rose-600 rounded hover:bg-rose-700"
+                        >
+                          Confirm
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => setConfirmModalDelete(false)}
+                          className="px-2 py-1 text-[11px] text-slate-600 hover:bg-slate-100 rounded"
+                        >
+                          Cancel
+                        </button>
+                      </div>
+                    ) : (
                       <button
                         type="button"
-                        onClick={async () => {
-                          await deleteCalendarEvent(editingId);
-                          setConfirmDeleteId(null);
-                          setModalOpen(false);
-                        }}
-                        className="px-2 py-1 text-[11px] font-medium text-white bg-rose-600 rounded hover:bg-rose-700"
+                        onClick={() => setConfirmModalDelete(true)}
+                        className="inline-flex items-center gap-1 px-2.5 py-1.5 text-xs font-medium text-rose-700 hover:bg-rose-50 rounded-md"
                       >
-                        Yes, Delete
+                        <Trash2 className="w-3.5 h-3.5" />
+                        Delete
                       </button>
-                      <button
-                        type="button"
-                        onClick={() => setConfirmDeleteId(null)}
-                        className="px-2 py-1 text-[11px] text-slate-600 bg-slate-100 rounded"
-                      >
-                        Cancel
-                      </button>
-                    </div>
-                  ) : (
-                    <button
-                      type="button"
-                      onClick={() => setConfirmDeleteId(editingId)}
-                      className="inline-flex items-center gap-1 text-xs font-medium text-rose-700 hover:underline"
-                    >
-                      <Trash2 className="w-3.5 h-3.5" /> Delete
-                    </button>
-                  )
-                ) : (
-                  <span />
-                )}
+                    )
+                  )}
+                </div>
 
                 <div className="flex items-center gap-2">
                   <button
                     type="button"
                     onClick={() => setModalOpen(false)}
-                    className="px-3 py-1.5 text-xs font-medium text-slate-700 bg-white border border-slate-200 rounded-md hover:bg-slate-50"
+                    className="px-3 py-1.5 text-xs font-medium text-slate-600 bg-white border border-slate-200 rounded-md hover:bg-slate-50"
                   >
-                    {isReadOnly ? 'Close' : 'Cancel'}
+                    Cancel
                   </button>
                   {!isReadOnly && (
                     <button
@@ -1199,7 +1673,7 @@ export const TeamCalendarView: React.FC = () => {
                       disabled={saving}
                       className="px-3.5 py-1.5 text-xs font-medium text-white bg-teal-700 rounded-md hover:bg-teal-800 disabled:opacity-50"
                     >
-                      {saving ? 'Saving...' : editingId ? 'Save Event' : 'Create Event'}
+                      {saving ? 'Saving...' : editingId ? 'Save Changes' : 'Create Event'}
                     </button>
                   )}
                 </div>
