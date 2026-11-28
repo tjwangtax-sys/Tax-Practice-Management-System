@@ -1069,11 +1069,26 @@ export function buildFormattedTitle(
 }
 
 /**
+ * Canonical stable key for persisting excluded auto-filled public holidays
+ * (e.g. "2026-03-23|sultan of johor birthday").
+ */
+export function getHolidayExclusionKey(date: string, name: string): string {
+  return `${(date || '').trim().slice(0, 10)}|${(name || '')
+    .trim()
+    .toLowerCase()
+    .replace(/\s+/g, ' ')}`;
+}
+
+/**
  * Johor & Malaysia Federal Public Holidays (2025–2027 + fixed annual holidays)
  * with automatic Monday replacement when a holiday falls on a Sunday
  * (Johor shifted back to Sat–Sun weekends effective 1 Jan 2025).
+ * Pass `excludedHolidays` to filter out admin/manager-removed holiday entries.
  */
-export function getJohorMalaysiaPublicHolidays(year: number): PublicHolidayRef[] {
+export function getJohorMalaysiaPublicHolidays(
+  year: number,
+  excludedHolidays?: Iterable<string>
+): PublicHolidayRef[] {
   const variableByYear: Record<number, PublicHolidayRef[]> = {
     2025: [
       { date: '2025-01-29', name: 'Chinese New Year (Day 1)', scope: 'Federal' },
@@ -1165,7 +1180,19 @@ export function getJohorMalaysiaPublicHolidays(year: number): PublicHolidayRef[]
     }
   }
 
-  return [...baseList, ...replacements].sort((a, b) => a.date.localeCompare(b.date));
+  const allHolidays = [...baseList, ...replacements].sort((a, b) => a.date.localeCompare(b.date));
+  if (!excludedHolidays) return allHolidays;
+
+  const excludedSet = new Set<string>();
+  for (const rawKey of excludedHolidays) {
+    const cleaned = (rawKey || '').trim().toLowerCase();
+    if (cleaned) excludedSet.add(cleaned);
+  }
+  if (excludedSet.size === 0) return allHolidays;
+
+  return allHolidays.filter(
+    (h) => !excludedSet.has(getHolidayExclusionKey(h.date, h.name))
+  );
 }
 
 export function getMonthDays(year: number, monthIndex: number, includeWeekends: boolean): Date[] {

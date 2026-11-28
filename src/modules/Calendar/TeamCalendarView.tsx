@@ -20,7 +20,9 @@ import {
   ExternalLink,
   Palette,
   Repeat2,
+  RotateCcw,
   Users,
+  Building2,
 } from 'lucide-react';
 import {
   CalendarEvent,
@@ -36,8 +38,10 @@ import {
   triggerBlobDownload,
 } from '../../lib/exportUtils';
 import { formatDateDDMMYYYY } from '../../lib/deadlineUtils';
+import { findClientRecordForRow } from '../../lib/jobUtils';
 import { showToast } from '../../lib/toast';
 import { ClientSelectorField } from '../../components/ClientSelectorField';
+import { ClientModal } from '../ClientMaster/ClientModal';
 import { StaffMatrixView } from './StaffMatrixView';
 import {
   addDays,
@@ -68,6 +72,7 @@ import {
   getDefaultLeaveColor,
   getDistinctStaffInBatch,
   getGoogleRecurrencePresetOptions,
+  getHolidayExclusionKey,
   getJohorMalaysiaPublicHolidays,
   getMonthDays,
   getNthWeekdayInfo,
@@ -179,6 +184,10 @@ export const TeamCalendarView: React.FC<TeamCalendarViewProps> = ({ onNavigate }
     staff,
     jobs,
     cp204Records,
+    excludedHolidays,
+    excludePublicHoliday,
+    restorePublicHoliday,
+    restoreAllPublicHolidays,
     saveCalendarEvent,
     batchSaveCalendarEvents,
     batchUpdateCalendarEvents,
@@ -223,6 +232,10 @@ export const TeamCalendarView: React.FC<TeamCalendarViewProps> = ({ onNavigate }
   const [holidaysExpanded, setHolidaysExpanded] = useState(false);
   const [showModalSystemAccounts, setShowModalSystemAccounts] = useState(false);
   const [showOptionalClient, setShowOptionalClient] = useState(false);
+
+  // Quick-Preview Modal for Client Appt / [OUT OFFICE] chips + direct Client Profile modal
+  const [previewEvent, setPreviewEvent] = useState<ParsedCalendarEvent | null>(null);
+  const [profileClient, setProfileClient] = useState<ClientRecord | null>(null);
 
   // Inline delete confirm (agenda & modal) + unified multi-staff & recurring scope dialog
   const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null);
@@ -388,9 +401,27 @@ export const TeamCalendarView: React.FC<TeamCalendarViewProps> = ({ onNavigate }
     });
   }, [allParsedEvents, typeFilter, staffFilter, search]);
 
-  const holidaysForYear = useMemo(
+  const excludedHolidaySet = useMemo(
+    () => new Set(excludedHolidays.map((k) => k.trim().toLowerCase())),
+    [excludedHolidays]
+  );
+
+  const allHolidaysForYear = useMemo(
     () => getJohorMalaysiaPublicHolidays(cursorDate.getFullYear()),
     [cursorDate]
+  );
+
+  const holidaysForYear = useMemo(
+    () => getJohorMalaysiaPublicHolidays(cursorDate.getFullYear(), excludedHolidays),
+    [cursorDate, excludedHolidays]
+  );
+
+  const excludedCountForYear = useMemo(
+    () =>
+      allHolidaysForYear.filter((h) =>
+        excludedHolidaySet.has(getHolidayExclusionKey(h.date, h.name))
+      ).length,
+    [allHolidaysForYear, excludedHolidaySet]
   );
 
   const holidaysByDate = useMemo(() => {
@@ -405,6 +436,57 @@ export const TeamCalendarView: React.FC<TeamCalendarViewProps> = ({ onNavigate }
     }
     return map;
   }, [holidaysForYear]);
+
+  const handleExcludeHoliday = useCallback(
+    async (ph: PublicHolidayRef) => {
+      if (!isManagerOrAdmin) return;
+      const key = getHolidayExclusionKey(ph.date, ph.name);
+      await excludePublicHoliday(key);
+      showToast(
+        `Removed "${ph.name}" (${formatDateDDMMYYYY(ph.date)}). Date restored as a working day.`,
+        'success',
+        3200
+      );
+    },
+    [isManagerOrAdmin, excludePublicHoliday]
+  );
+
+  const handleRestoreHoliday = useCallback(
+    async (ph: PublicHolidayRef) => {
+      if (!isManagerOrAdmin) return;
+      const key = getHolidayExclusionKey(ph.date, ph.name);
+      await restorePublicHoliday(key);
+      showToast(`Restored "${ph.name}" (${formatDateDDMMYYYY(ph.date)}).`, 'success', 2600);
+    },
+    [isManagerOrAdmin, restorePublicHoliday]
+  );
+
+  const handleRestoreAllHolidays = useCallback(async () => {
+    if (!isManagerOrAdmin) return;
+    await restoreAllPublicHolidays();
+    showToast('Restored all excluded public holidays.', 'success', 2600);
+  }, [isManagerOrAdmin, restoreAllPublicHolidays]);
+
+  const handleOpenClientProfileFromEvent = useCallback(
+    (ev: ParsedCalendarEvent) => {
+      const matched = findClientRecordForRow(clients, {
+        clientId: ev.raw.clientId,
+        clientName: ev.raw.clientName,
+      });
+      if (matched) {
+        setPreviewEvent(null);
+        setProfileClient(matched);
+      } else if (onNavigate && (ev.raw.clientId || ev.raw.clientName)) {
+        setPreviewEvent(null);
+        onNavigate('client-master', {
+          search: ev.raw.clientId || ev.raw.clientName || '',
+        });
+      } else {
+        showToast('No linked Client Master record found for this event.', 'warning', 2600);
+      }
+    },
+    [clients, onNavigate]
+  );
 
   // Navigation handlers
   const handlePrev = () => {
@@ -1927,7 +2009,16 @@ export const TeamCalendarView: React.FC<TeamCalendarViewProps> = ({ onNavigate }
           cp204Records={cp204Records}
           clients={clients}
           isReadOnly={isReadOnly}
+          canManageHolidays={isManagerOrAdmin}
           onCellSelectModal={handleCellSelectModal}
+          onOpenEventPreview={(ev) => setPreviewEvent(ev)}
+          onExcludeHoliday={(ph) => void handleExcludeHoliday(ph)}
+          onDeleteCompanyHoliday={(ev) => {
+            if (!isManagerOrAdmin) return;
+            void deleteCalendarEvent(ev.raw.id).then(() => {
+              showToast(`Deleted company holiday "${ev.cleanLabel}".`, 'success', 2600);
+            });
+          }}
           onPaintRange={handlePaintRange}
           onNavigate={onNavigate}
         />
@@ -1993,15 +2084,12 @@ export const TeamCalendarView: React.FC<TeamCalendarViewProps> = ({ onNavigate }
                           key={ev.raw.id}
                           type="button"
                           onClick={(e) => {
+                            e.stopPropagation();
                             if (
-                              ev.canonicalType === 'Client Appointment' &&
-                              onNavigate &&
-                              !e.shiftKey &&
-                              (ev.raw.clientId || ev.raw.clientName)
+                              ev.canonicalType === 'Client Appointment' ||
+                              ev.raw.title.toUpperCase().includes('[OUT OFFICE]')
                             ) {
-                              onNavigate('client-master', {
-                                search: ev.raw.clientId || ev.raw.clientName || '',
-                              });
+                              setPreviewEvent(ev);
                               return;
                             }
                             openEditModal(ev);
@@ -2457,11 +2545,18 @@ export const TeamCalendarView: React.FC<TeamCalendarViewProps> = ({ onNavigate }
 
       {/* Johor & Malaysia Public Holidays — Collapsible Reference Panel (Collapsed by Default) */}
       <section className="bg-white border border-slate-200 rounded-lg overflow-hidden">
-        <button
-          type="button"
+        <div
+          role="button"
+          tabIndex={0}
           onClick={() => setHolidaysExpanded((prev) => !prev)}
+          onKeyDown={(e) => {
+            if (e.key === 'Enter' || e.key === ' ') {
+              e.preventDefault();
+              setHolidaysExpanded((prev) => !prev);
+            }
+          }}
           aria-expanded={holidaysExpanded}
-          className="w-full px-3.5 py-2 bg-slate-50 hover:bg-slate-100/80 transition-colors flex items-center justify-between gap-2 text-left"
+          className="w-full px-3.5 py-2 bg-slate-50 hover:bg-slate-100/80 transition-colors flex flex-wrap items-center justify-between gap-2 text-left cursor-pointer"
         >
           <div className="flex items-center gap-2 min-w-0">
             <Flag className="w-3.5 h-3.5 text-amber-600 shrink-0" />
@@ -2469,10 +2564,25 @@ export const TeamCalendarView: React.FC<TeamCalendarViewProps> = ({ onNavigate }
               Johor &amp; Malaysia Federal Public Holidays ({cursorDate.getFullYear()})
             </h2>
             <span className="text-[11px] font-mono text-slate-400 shrink-0">
-              · {holidaysForYear.length} dates
+              · {holidaysForYear.length} active
+              {excludedCountForYear > 0 ? ` (${excludedCountForYear} excluded)` : ''}
             </span>
           </div>
           <div className="flex items-center gap-2 shrink-0">
+            {isManagerOrAdmin && excludedHolidays.length > 0 && (
+              <button
+                type="button"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  void handleRestoreAllHolidays();
+                }}
+                className="inline-flex items-center gap-1 px-2 py-0.5 rounded border border-amber-300 bg-amber-50 hover:bg-amber-100 text-[11px] font-semibold text-amber-900 transition-colors cursor-pointer"
+                title="Restore all excluded auto-filled public holidays"
+              >
+                <RotateCcw className="w-3 h-3" />
+                Restore Excluded ({excludedHolidays.length})
+              </button>
+            )}
             <span className="text-[11px] text-slate-400 hidden md:inline">
               Highlighted automatically on matrix grid
             </span>
@@ -2488,42 +2598,94 @@ export const TeamCalendarView: React.FC<TeamCalendarViewProps> = ({ onNavigate }
               )}
             </span>
           </div>
-        </button>
+        </div>
         {holidaysExpanded && (
-          <div className="p-3 border-t border-slate-200 grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-2">
-            {holidaysForYear.map((h) => {
-              const dt = new Date(`${h.date}T00:00:00Z`);
-              const weekday = dt.toLocaleDateString('en-MY', {
-                weekday: 'short',
-                timeZone: 'UTC',
-              });
-              return (
-                <div
-                  key={`${h.date}-${h.name}`}
-                  className="flex items-center justify-between gap-2 px-2.5 py-1.5 rounded border border-slate-100 bg-slate-50/70 text-xs"
+          <div className="p-3 border-t border-slate-200 space-y-2.5">
+            {isManagerOrAdmin && excludedHolidays.length > 0 && (
+              <div className="flex flex-wrap items-center justify-between gap-2 px-2.5 py-1.5 rounded-md bg-amber-50 border border-amber-200 text-[11px] text-amber-900">
+                <span>
+                  {excludedHolidays.length} public holiday{excludedHolidays.length === 1 ? '' : 's'}{' '}
+                  currently excluded across the calendar (restored to working days).
+                </span>
+                <button
+                  type="button"
+                  onClick={() => void handleRestoreAllHolidays()}
+                  className="inline-flex items-center gap-1 px-2 py-0.5 rounded bg-white border border-amber-300 text-amber-900 font-semibold hover:bg-amber-100 cursor-pointer"
                 >
-                  <div className="min-w-0">
-                    <div className="font-medium text-slate-800 truncate" title={h.name}>
-                      {h.name}
-                    </div>
-                    <div className="text-[10px] font-mono tabular-nums text-slate-500">
-                      {formatDateDDMMYYYY(h.date)} ({weekday})
-                    </div>
-                  </div>
-                  <span
-                    className={`text-[10px] px-1.5 py-0.5 rounded border shrink-0 font-medium ${
-                      h.scope === 'Johor'
-                        ? 'bg-sky-50 border-sky-200 text-sky-800'
-                        : h.scope === 'Replacement'
-                        ? 'bg-amber-50 border-amber-200 text-amber-800'
-                        : 'bg-white border-slate-200 text-slate-600'
+                  <RotateCcw className="w-3 h-3" />
+                  Restore Excluded ({excludedHolidays.length})
+                </button>
+              </div>
+            )}
+            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-2">
+              {allHolidaysForYear.map((h) => {
+                const dt = new Date(`${h.date}T00:00:00Z`);
+                const weekday = dt.toLocaleDateString('en-MY', {
+                  weekday: 'short',
+                  timeZone: 'UTC',
+                });
+                const isExcluded = excludedHolidaySet.has(getHolidayExclusionKey(h.date, h.name));
+                return (
+                  <div
+                    key={`${h.date}-${h.name}`}
+                    className={`flex items-center justify-between gap-2 px-2.5 py-1.5 rounded border text-xs ${
+                      isExcluded
+                        ? 'border-dashed border-amber-300 bg-amber-50/40 opacity-75'
+                        : 'border-slate-200/80 bg-slate-50/70'
                     }`}
                   >
-                    {h.scope}
-                  </span>
-                </div>
-              );
-            })}
+                    <div className="min-w-0 flex-1">
+                      <div
+                        className={`font-medium truncate ${
+                          isExcluded ? 'line-through text-slate-500' : 'text-slate-800'
+                        }`}
+                        title={h.name}
+                      >
+                        {h.name}
+                      </div>
+                      <div className="text-[10px] font-mono tabular-nums text-slate-500 flex items-center gap-1.5">
+                        <span>
+                          {formatDateDDMMYYYY(h.date)} ({weekday})
+                        </span>
+                        <span
+                          className={`px-1 py-0.2 rounded border text-[9px] font-sans font-medium ${
+                            h.scope === 'Johor'
+                              ? 'bg-sky-50 border-sky-200 text-sky-800'
+                              : h.scope === 'Replacement'
+                              ? 'bg-amber-50 border-amber-200 text-amber-800'
+                              : 'bg-white border-slate-200 text-slate-600'
+                          }`}
+                        >
+                          {h.scope}
+                        </span>
+                      </div>
+                    </div>
+                    {isManagerOrAdmin &&
+                      (isExcluded ? (
+                        <button
+                          type="button"
+                          onClick={() => void handleRestoreHoliday(h)}
+                          className="inline-flex items-center gap-1 px-2 py-1 rounded border border-teal-300 bg-teal-50 text-[10px] font-semibold text-teal-800 hover:bg-teal-100 shrink-0 cursor-pointer"
+                          title="Restore this public holiday"
+                        >
+                          <RotateCcw className="w-3 h-3" />
+                          Restore
+                        </button>
+                      ) : (
+                        <button
+                          type="button"
+                          onClick={() => void handleExcludeHoliday(h)}
+                          className="inline-flex items-center gap-1 px-2 py-1 rounded border border-rose-200 bg-white text-[10px] font-semibold text-rose-700 hover:bg-rose-50 hover:border-rose-300 shrink-0 cursor-pointer"
+                          title="Remove this auto-filled public holiday and restore date as a working day"
+                        >
+                          <Trash2 className="w-3 h-3" />
+                          Remove
+                        </button>
+                      ))}
+                  </div>
+                );
+              })}
+            </div>
           </div>
         )}
       </section>
@@ -3676,6 +3838,187 @@ export const TeamCalendarView: React.FC<TeamCalendarViewProps> = ({ onNavigate }
           </div>
         </div>
       )}
+
+      {/* Event & Client Quick-Preview Modal (Client Appt / [OUT OFFICE] single click) */}
+      {previewEvent && (() => {
+        const matchedClient = findClientRecordForRow(clients, {
+          clientId: previewEvent.raw.clientId,
+          clientName: previewEvent.raw.clientName,
+        });
+        const previewBatchStaff = previewEvent.raw.batchGroupId
+          ? getDistinctStaffInBatch(calendarEvents, previewEvent.raw.batchGroupId)
+          : [];
+        const staffDisplay =
+          previewBatchStaff.length > 1
+            ? previewBatchStaff.join(', ')
+            : previewEvent.staffName || previewEvent.raw.assignedTo || 'Unassigned';
+        const hasClientTarget = Boolean(
+          matchedClient || previewEvent.raw.clientId || previewEvent.raw.clientName
+        );
+        return (
+          <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/50 p-4">
+            <div
+              className="fixed inset-0"
+              onClick={() => setPreviewEvent(null)}
+            />
+            <div className="relative z-10 bg-white rounded-xl border border-slate-200 shadow-2xl w-full max-w-lg overflow-hidden">
+              <div className="px-4 py-3 bg-slate-50 border-b border-slate-200 flex items-start justify-between gap-3">
+                <div className="min-w-0 flex-1">
+                  <div className="flex items-center gap-2 flex-wrap">
+                    <span
+                      className="inline-flex items-center px-2 py-0.5 rounded text-[10px] font-bold border border-slate-900/15"
+                      style={{
+                        backgroundColor: previewEvent.color,
+                        color: getContrastingTextColor(previewEvent.color),
+                      }}
+                    >
+                      {previewEvent.canonicalType}
+                    </span>
+                    <span className="text-[11px] font-mono text-slate-500">
+                      {formatDateDDMMYYYY(previewEvent.raw.startDate)}
+                      {previewEvent.raw.endDate &&
+                      previewEvent.raw.endDate !== previewEvent.raw.startDate
+                        ? ` – ${formatDateDDMMYYYY(previewEvent.raw.endDate)}`
+                        : ''}
+                    </span>
+                  </div>
+                  <h3 className="mt-1.5 text-sm font-bold text-slate-900 break-words">
+                    {previewEvent.displayTitle}
+                  </h3>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setPreviewEvent(null)}
+                  className="p-1 rounded text-slate-400 hover:text-slate-700 hover:bg-slate-200/60"
+                  aria-label="Close preview"
+                >
+                  <X className="w-4 h-4" />
+                </button>
+              </div>
+
+              <div className="p-4 space-y-3 text-xs">
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                  <div className="p-2.5 rounded-lg bg-slate-50 border border-slate-200/80">
+                    <div className="text-[10px] font-semibold uppercase tracking-wider text-slate-500 mb-0.5">
+                      Assigned Staff
+                    </div>
+                    <div className="font-medium text-slate-900 flex items-center gap-1.5">
+                      <Users className="w-3.5 h-3.5 text-teal-700 shrink-0" />
+                      <span>{staffDisplay}</span>
+                    </div>
+                  </div>
+
+                  <div className="p-2.5 rounded-lg bg-slate-50 border border-slate-200/80">
+                    <div className="text-[10px] font-semibold uppercase tracking-wider text-slate-500 mb-0.5">
+                      Date / Schedule
+                    </div>
+                    <div className="font-mono font-medium text-slate-900 flex items-center gap-1.5">
+                      <CalendarIcon className="w-3.5 h-3.5 text-teal-700 shrink-0" />
+                      <span>
+                        {formatDateDDMMYYYY(previewEvent.raw.startDate)}
+                        {previewEvent.raw.endDate &&
+                        previewEvent.raw.endDate !== previewEvent.raw.startDate
+                          ? ` – ${formatDateDDMMYYYY(previewEvent.raw.endDate)}`
+                          : ''}
+                      </span>
+                    </div>
+                  </div>
+                </div>
+
+                {hasClientTarget && (
+                  <div className="p-3 rounded-lg bg-teal-50/50 border border-teal-200/80 space-y-1">
+                    <div className="text-[10px] font-semibold uppercase tracking-wider text-teal-800 flex items-center gap-1">
+                      <Building2 className="w-3 h-3" />
+                      Linked Client
+                    </div>
+                    <div className="font-semibold text-slate-900 text-xs">
+                      {matchedClient?.clientName || previewEvent.raw.clientName || '—'}
+                      {(matchedClient?.clientId || previewEvent.raw.clientId) && (
+                        <span className="ml-1.5 font-mono text-[11px] font-normal text-slate-500">
+                          ({matchedClient?.clientId || previewEvent.raw.clientId})
+                        </span>
+                      )}
+                    </div>
+                    {matchedClient && (
+                      <div className="flex flex-wrap items-center gap-x-3 gap-y-0.5 text-[11px] text-slate-600">
+                        {matchedClient.tin && (
+                          <span>
+                            TIN: <span className="font-mono text-slate-800">{matchedClient.tin}</span>
+                          </span>
+                        )}
+                        {matchedClient.fye && (
+                          <span>
+                            FYE: <span className="font-mono text-slate-800">{matchedClient.fye}</span>
+                          </span>
+                        )}
+                        {matchedClient.taxPic && (
+                          <span>
+                            PIC: <span className="font-medium text-slate-800">{matchedClient.taxPic}</span>
+                          </span>
+                        )}
+                      </div>
+                    )}
+                  </div>
+                )}
+
+                <div>
+                  <div className="text-[10px] font-semibold uppercase tracking-wider text-slate-500 mb-1">
+                    Description / Remarks
+                  </div>
+                  <div className="p-2.5 rounded-lg bg-slate-50 border border-slate-200 text-xs text-slate-700 whitespace-pre-wrap min-h-[56px]">
+                    {[previewEvent.raw.timeOffNote, previewEvent.raw.notes]
+                      .filter(Boolean)
+                      .join('\n') || (
+                      <span className="italic text-slate-400">No additional remarks recorded.</span>
+                    )}
+                  </div>
+                </div>
+              </div>
+
+              <div className="px-4 py-3 bg-slate-50 border-t border-slate-200 flex flex-wrap items-center justify-between gap-2">
+                <button
+                  type="button"
+                  onClick={() => setPreviewEvent(null)}
+                  className="px-3 py-1.5 text-xs font-medium text-slate-600 bg-white border border-slate-200 rounded-md hover:bg-slate-100"
+                >
+                  Close
+                </button>
+                <div className="flex items-center gap-2">
+                  {hasClientTarget && (
+                    <button
+                      type="button"
+                      onClick={() => handleOpenClientProfileFromEvent(previewEvent)}
+                      className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold text-teal-800 bg-teal-50 border border-teal-300 hover:bg-teal-100 rounded-md cursor-pointer"
+                    >
+                      <Building2 className="w-3.5 h-3.5" />
+                      Open Client Profile
+                    </button>
+                  )}
+                  <button
+                    type="button"
+                    onClick={() => {
+                      const ev = previewEvent;
+                      setPreviewEvent(null);
+                      openEditModal(ev);
+                    }}
+                    className="inline-flex items-center gap-1.5 px-3.5 py-1.5 text-xs font-semibold text-white bg-teal-700 hover:bg-teal-800 rounded-md cursor-pointer"
+                  >
+                    <Edit3 className="w-3.5 h-3.5" />
+                    Edit Event
+                  </button>
+                </div>
+              </div>
+            </div>
+          </div>
+        );
+      })()}
+
+      {/* Direct Client Profile Modal opened from Quick-Preview */}
+      <ClientModal
+        open={Boolean(profileClient)}
+        client={profileClient}
+        onClose={() => setProfileClient(null)}
+      />
     </div>
   );
 };

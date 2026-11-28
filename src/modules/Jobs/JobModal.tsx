@@ -47,6 +47,7 @@ import { JobSavePayload, useData } from '../../context/DataContext';
 import { StatusPill } from '../../components/StatusPill';
 import { ClientSelectorField } from '../../components/ClientSelectorField';
 import { buildDynamicSelectOptions } from '../../lib/settingsDropdown';
+import { useStaffOptions } from '../../hooks/useStaffOptions';
 
 export type JobModalTab = 'basic' | 'deadlines' | 'progress' | 'submission' | 'remarks';
 
@@ -140,6 +141,7 @@ function createEmptyJob(module: JobModule): JobSavePayload {
     fye: '12',
     ya: yr,
     taxPic: '',
+    previousPic: '',
     reviewer: '',
     status:
       safeModule === 'Tax Payment Monitor'
@@ -247,6 +249,7 @@ export const JobModal: React.FC<JobModalProps> = ({
           fye: normalizeFyeMonthString(displayFye) || displayFye,
           ya: job.ya ?? '',
           taxPic: job.taxPic ?? '',
+          previousPic: job.previousPic ?? '',
           reviewer: job.reviewer ?? '',
           status: job.status ?? 'Not Started',
           statusDate: job.statusDate ?? '',
@@ -445,71 +448,8 @@ export const JobModal: React.FC<JobModalProps> = ({
     };
   }, [liveForm.clientId, liveForm.ya, cp204Records]);
 
-  // Merged PIC & Reviewer dropdown list: active staffDirectory (CODE — Name), distinct job PIC/Reviewer codes (e.g. WCH (2), SARAH (2)), TO ASSIGN, and -
-  const staffAssignOptions = useMemo(() => {
-    const seenValues = new Set<string>();
-    const activeStaffOpts: Array<{ value: string; label: string }> = [];
-    const extraJobOpts: Array<{ value: string; label: string }> = [];
-
-    const addActive = (codeRaw?: string, nameRaw?: string) => {
-      const code = (codeRaw ?? '').trim();
-      const name = (nameRaw ?? '').trim();
-      const value = code || name;
-      if (!value) return;
-      const key = value.toLowerCase();
-      if (key === '-' || key === 'to assign' || seenValues.has(key)) return;
-      seenValues.add(key);
-      const label =
-        code && name && code.toLowerCase() !== name.toLowerCase()
-          ? `${code} — ${name}`
-          : value;
-      activeStaffOpts.push({ value, label });
-    };
-
-    for (const s of staff) {
-      if (!s.active) continue;
-      addActive(s.staffId, s.staffName);
-    }
-    activeStaffOpts.sort((a, b) => a.label.localeCompare(b.label));
-
-    const activeNameToStaff = new Map<string, { code: string; name: string }>();
-    for (const s of staff) {
-      if (!s.active) continue;
-      const nm = (s.staffName || '').trim();
-      const cd = (s.staffId || '').trim();
-      if (nm) activeNameToStaff.set(nm.toLowerCase(), { code: cd, name: nm });
-    }
-
-    const pushExtraCode = (raw?: string) => {
-      const val = (raw ?? '').trim();
-      if (!val) return;
-      const key = val.toLowerCase();
-      if (key === '-' || key === 'to assign' || seenValues.has(key)) return;
-      seenValues.add(key);
-      const matchedActive = activeNameToStaff.get(key);
-      const label =
-        matchedActive && matchedActive.code && matchedActive.code.toLowerCase() !== key
-          ? `${matchedActive.code} — ${matchedActive.name}`
-          : val;
-      extraJobOpts.push({ value: val, label });
-    };
-
-    for (const j of jobs) {
-      pushExtraCode(j.taxPic);
-      pushExtraCode(j.reviewer);
-    }
-    pushExtraCode(liveForm.taxPic);
-    pushExtraCode(liveForm.reviewer);
-
-    extraJobOpts.sort((a, b) => a.label.localeCompare(b.label));
-
-    return [
-      { value: '', label: '-' },
-      { value: 'TO ASSIGN', label: 'TO ASSIGN' },
-      ...activeStaffOpts,
-      ...extraJobOpts,
-    ];
-  }, [staff, jobs, liveForm.taxPic, liveForm.reviewer]);
+  // Shared PIC & Reviewer dropdown list across all TPMS modules
+  const staffAssignOptions = useStaffOptions([liveForm.taxPic, liveForm.reviewer]);
 
   if (!open) return null;
 
@@ -890,6 +830,20 @@ export const JobModal: React.FC<JobModalProps> = ({
                         </option>
                       ))}
                     </select>
+                    {liveForm.previousPic && (
+                      <p className="mt-1 text-[10px] text-slate-500">
+                        Prev: <span className="font-medium text-slate-700">{liveForm.previousPic}</span>
+                        {liveForm.taxPic &&
+                          liveForm.taxPic.trim().toLowerCase() !==
+                            liveForm.previousPic.trim().toLowerCase() && (
+                            <>
+                              {' '}
+                              · Continued by{' '}
+                              <span className="font-medium text-teal-700">{liveForm.taxPic}</span>
+                            </>
+                          )}
+                      </p>
+                    )}
                   </div>
                   <div>
                     <label className={labelCls}>Reviewer</label>
@@ -1782,7 +1736,20 @@ export const JobModal: React.FC<JobModalProps> = ({
                                     : 'Just now'}
                                 </td>
                                 <td className="px-2.5 py-1.5 text-slate-700 whitespace-nowrap">
-                                  {h.oldStatus ? `${h.oldStatus} → ${h.newStatus}` : h.newStatus}
+                                  {h.action === 'PIC_HANDOVER' ? (
+                                    <span className="inline-flex items-center gap-1">
+                                      <span className="px-1.5 py-0.5 rounded bg-teal-50 text-teal-800 border border-teal-200 text-[10px] font-semibold">
+                                        PIC Handover
+                                      </span>
+                                      <span>
+                                        {h.oldStatus || 'Unassigned'} → {h.newStatus || 'Unassigned'}
+                                      </span>
+                                    </span>
+                                  ) : h.oldStatus ? (
+                                    `${h.oldStatus} → ${h.newStatus}`
+                                  ) : (
+                                    h.newStatus
+                                  )}
                                 </td>
                                 <td className="px-2.5 py-1.5 text-slate-600 whitespace-nowrap">
                                   {h.user}

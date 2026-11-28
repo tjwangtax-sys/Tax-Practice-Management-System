@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useState } from 'react';
-import { Plus, Building2 } from 'lucide-react';
+import { Plus, Building2, ArrowLeftRight } from 'lucide-react';
 import {
   CLIENT_STATUS_OPTIONS,
   ClientCategory,
@@ -18,7 +18,12 @@ import { StatusPill } from '../../components/StatusPill';
 import { RemarksPreviewCell } from '../../components/RemarksPreviewCell';
 import { exportToExcel, printRegisterHtml } from '../../lib/exportUtils';
 import { extractFyeMonth } from '../../lib/deadlineUtils';
+import {
+  ACTIVE_COMPLIANCE_STATUS_FILTER,
+  matchesClientStatusFilterValue,
+} from '../../lib/jobUtils';
 import { ClientModal } from './ClientModal';
+import { BatchReassignPicModal } from './BatchReassignPicModal';
 
 const CLIENT_COLUMNS: ColumnDef[] = [
   { key: 'clientId', label: 'Client ID', defaultVisible: true },
@@ -142,10 +147,18 @@ export const ClientMasterView: React.FC<ClientMasterViewProps> = ({ initialFilte
     if (initialFilter.clientStatus !== undefined) {
       setStatusFilter(initialFilter.clientStatus);
     }
+    if (initialFilter.reassignFromPic) {
+      setReassignInitialFromPic(initialFilter.reassignFromPic);
+      setReassignModalOpen(true);
+    }
   }, [initialFilter]);
 
   const [modalOpen, setModalOpen] = useState(false);
   const [editingClient, setEditingClient] = useState<ClientRecord | null>(null);
+  const [reassignModalOpen, setReassignModalOpen] = useState(false);
+  const [reassignInitialFromPic, setReassignInitialFromPic] = useState<string | undefined>(
+    undefined
+  );
 
   // Inactivate confirmation dialog state
   const [inactivatingClient, setInactivatingClient] = useState<ClientRecord | null>(null);
@@ -203,14 +216,8 @@ export const ClientMasterView: React.FC<ClientMasterViewProps> = ({ initialFilte
       if (groupFilter && c.groupId !== groupFilter) return false;
       if (categoryFilter && c.category !== categoryFilter) return false;
       if (fyeFilter && extractFyeMonth(c.fye) !== extractFyeMonth(fyeFilter)) return false;
-      if (statusFilter) {
-        const targetStatus = statusFilter.trim().toLowerCase();
-        const clientStatusLower = (c.clientStatus || '').trim().toLowerCase();
-        if (targetStatus === 'active') {
-          if (clientStatusLower !== '' && clientStatusLower !== 'active') return false;
-        } else if (clientStatusLower !== targetStatus) {
-          return false;
-        }
+      if (statusFilter && !matchesClientStatusFilterValue(c.clientStatus, statusFilter)) {
+        return false;
       }
 
       if (q) {
@@ -464,6 +471,9 @@ export const ClientMasterView: React.FC<ClientMasterViewProps> = ({ initialFilte
               className="px-2.5 py-1.5 text-xs bg-slate-50 border border-slate-200 rounded-md text-slate-700"
             >
               <option value="">All Client Statuses</option>
+              <option value={ACTIVE_COMPLIANCE_STATUS_FILTER}>
+                Active &amp; WIP (Non-Resigned)
+              </option>
               {statusOptions.map((s) => (
                 <option key={s} value={s}>
                   {s}
@@ -474,17 +484,33 @@ export const ClientMasterView: React.FC<ClientMasterViewProps> = ({ initialFilte
         }
         primaryAction={
           !isReadOnly ? (
-            <button
-              type="button"
-              onClick={() => {
-                setEditingClient(null);
-                setModalOpen(true);
-              }}
-              className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold text-white bg-teal-700 hover:bg-teal-800 rounded-md transition-colors whitespace-nowrap shrink-0"
-            >
-              <Plus className="w-3.5 h-3.5" />
-              Add Client
-            </button>
+            <div className="flex items-center gap-2 shrink-0">
+              {isManagerOrAdmin && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    setReassignInitialFromPic(undefined);
+                    setReassignModalOpen(true);
+                  }}
+                  className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold text-teal-800 bg-teal-50 border border-teal-200 hover:bg-teal-100 rounded-md transition-colors whitespace-nowrap shrink-0"
+                  title="Batch reassign client portfolio from one Tax PIC to another"
+                >
+                  <ArrowLeftRight className="w-3.5 h-3.5" />
+                  Reassign PIC
+                </button>
+              )}
+              <button
+                type="button"
+                onClick={() => {
+                  setEditingClient(null);
+                  setModalOpen(true);
+                }}
+                className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold text-white bg-teal-700 hover:bg-teal-800 rounded-md transition-colors whitespace-nowrap shrink-0"
+              >
+                <Plus className="w-3.5 h-3.5" />
+                Add Client
+              </button>
+            </div>
           ) : undefined
         }
       />
@@ -585,7 +611,16 @@ export const ClientMasterView: React.FC<ClientMasterViewProps> = ({ initialFilte
                           case 'clientId':
                             return wrapTd(
                               'px-3 py-2 font-mono font-medium text-slate-900 whitespace-nowrap',
-                              c.clientId
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  setEditingClient(c);
+                                  setModalOpen(true);
+                                }}
+                                className="text-left font-mono font-medium hover:text-teal-700 hover:underline cursor-pointer"
+                              >
+                                {c.clientId}
+                              </button>
                             );
                           case 'clientName':
                             return wrapTd(
@@ -596,7 +631,7 @@ export const ClientMasterView: React.FC<ClientMasterViewProps> = ({ initialFilte
                                   setEditingClient(c);
                                   setModalOpen(true);
                                 }}
-                                className="text-left hover:text-teal-700 hover:underline"
+                                className="text-left font-medium hover:text-teal-700 hover:underline cursor-pointer"
                               >
                                 {c.clientName}
                               </button>
@@ -792,6 +827,16 @@ export const ClientMasterView: React.FC<ClientMasterViewProps> = ({ initialFilte
           setInactivatingClient(c);
         }}
         onRequestReactivate={(c) => void handleReactivate(c)}
+      />
+
+      {/* Batch Portfolio Handover (Reassign PIC) Modal */}
+      <BatchReassignPicModal
+        open={reassignModalOpen}
+        initialFromPic={reassignInitialFromPic}
+        onClose={() => {
+          setReassignModalOpen(false);
+          setReassignInitialFromPic(undefined);
+        }}
       />
 
       {/* Inactivate Confirmation Modal */}

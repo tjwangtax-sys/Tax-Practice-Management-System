@@ -74,7 +74,7 @@ const AppWorkspace: React.FC = () => {
       case 'kpi-performance':
         return <KpiPerformanceView />;
       case 'staff-settings':
-        return <StaffSettingsView />;
+        return <StaffSettingsView onNavigate={handleSelectRoute} />;
       default:
         return <DashboardView onNavigate={handleSelectRoute} />;
     }

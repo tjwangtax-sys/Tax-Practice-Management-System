@@ -7,6 +7,7 @@ import {
   Mail,
   Clock,
   FileCheck2,
+  ArrowLeftRight,
 } from 'lucide-react';
 import {
   ClientCategory,
@@ -30,7 +31,8 @@ type ReportTab =
   | 'submission-status'
   | 'client-master'
   | 'pic-workload'
-  | 'correspondence';
+  | 'correspondence'
+  | 'pic-handover';
 
 const CLOSED_JOB_STATUSES = new Set([
   'completed',
@@ -130,6 +132,7 @@ const REPORT_TABS: Array<{ id: ReportTab; label: string; icon: React.ComponentTy
   { id: 'client-master', label: 'Client Master', icon: Users },
   { id: 'pic-workload', label: 'PIC Workload', icon: CheckCircle2 },
   { id: 'correspondence', label: 'Correspondence', icon: Mail },
+  { id: 'pic-handover', label: 'PIC Handover Log', icon: ArrowLeftRight },
 ];
 
 const COLUMNS_BY_REPORT: Record<ReportTab, ColumnDef[]> = {
@@ -207,10 +210,21 @@ const COLUMNS_BY_REPORT: Record<ReportTab, ColumnDef[]> = {
     { key: 'actionStatus', label: 'Action Status', defaultVisible: true },
     { key: 'overdueFlag', label: 'Overdue', defaultVisible: true },
   ],
+  'pic-handover': [
+    { key: 'date', label: 'Date', defaultVisible: true },
+    { key: 'scope', label: 'Scope', defaultVisible: true },
+    { key: 'recordId', label: 'Client / Job ID', defaultVisible: true },
+    { key: 'clientName', label: 'Client Name', defaultVisible: true },
+    { key: 'jobInfo', label: 'Job / YA', defaultVisible: true },
+    { key: 'fromPic', label: 'Departing PIC', defaultVisible: true },
+    { key: 'toPic', label: 'Incoming PIC / Continued By', defaultVisible: true },
+    { key: 'transferredBy', label: 'Transferred By', defaultVisible: true },
+    { key: 'note', label: 'Notes', defaultVisible: true },
+  ],
 };
 
 export const BasicReportsView: React.FC = () => {
-  const { jobs, clients, correspondenceRecords, getSettingsByGroup } = useData();
+  const { jobs, clients, correspondenceRecords, history, getSettingsByGroup } = useData();
   const [activeTab, setActiveTab] = useState<ReportTab>('job-status');
 
   // Shared Operational Filters
@@ -222,6 +236,13 @@ export const BasicReportsView: React.FC = () => {
   const [submissionFilter, setSubmissionFilter] = useState<
     '' | 'Submitted' | 'Pending' | 'Missing Date'
   >('');
+
+  // PIC Handover Log Filters
+  const [handoverDateFrom, setHandoverDateFrom] = useState('');
+  const [handoverDateTo, setHandoverDateTo] = useState('');
+  const [departingPicFilter, setDepartingPicFilter] = useState('');
+  const [incomingPicFilter, setIncomingPicFilter] = useState('');
+  const [handoverScopeFilter, setHandoverScopeFilter] = useState<'' | 'Client' | 'Job'>('');
 
   const columns = COLUMNS_BY_REPORT[activeTab];
   const { visibleColumns, toggleColumn, resetColumns } = useColumnVisibility(
@@ -246,6 +267,117 @@ export const BasicReportsView: React.FC = () => {
     for (const c of correspondenceRecords) if (c.ya) set.add(c.ya.trim());
     return Array.from(set).sort((a, b) => b.localeCompare(a));
   }, [jobs, correspondenceRecords]);
+
+  // Consolidated PIC Handover Events (Client picHistory + Job PIC_HANDOVER audit entries + previousPic fallback)
+  const allHandoverEvents = useMemo(() => {
+    const events: Array<{
+      _id: string;
+      _isoDate: string;
+      date: string;
+      scope: 'Client' | 'Job';
+      recordId: string;
+      clientName: string;
+      jobInfo: string;
+      fromPic: string;
+      toPic: string;
+      transferredBy: string;
+      note: string;
+    }> = [];
+
+    const jobById = new Map<string, TaxJob>();
+    for (const j of jobs) jobById.set(j.id, j);
+
+    // 1. Client-level PIC handover history
+    for (const c of clients) {
+      const entries = Array.isArray(c.picHistory) ? c.picHistory : [];
+      entries.forEach((entry, idx) => {
+        const rawIso = isIsoDateString(entry.date)
+          ? entry.date.trim()
+          : (entry.date || '').slice(0, 10);
+        events.push({
+          _id: `client_${c.id}_${idx}_${rawIso}`,
+          _isoDate: rawIso,
+          date: rawIso ? formatDateDDMMYYYY(rawIso) : '—',
+          scope: 'Client',
+          recordId: c.clientId || '—',
+          clientName: c.clientName || '—',
+          jobInfo: `Client Portfolio (${c.category || 'Corporate'})`,
+          fromPic: (entry.fromPic || '').trim() || 'Unassigned',
+          toPic: (entry.toPic || '').trim() || 'Unassigned',
+          transferredBy: (entry.transferredBy || '').trim() || 'System',
+          note: (entry.note || '').trim() || '—',
+        });
+      });
+    }
+
+    // 2. Job-level immutable PIC_HANDOVER audit trail entries
+    const jobsWithLoggedHandover = new Set<string>();
+    for (const h of history) {
+      if (h.action !== 'PIC_HANDOVER') continue;
+      if (h.jobId) jobsWithLoggedHandover.add(h.jobId);
+      const linkedJob = h.jobId ? jobById.get(h.jobId) : undefined;
+      let rawIso = '';
+      if (h.timestamp?.toDate) {
+        try {
+          rawIso = h.timestamp.toDate().toISOString().slice(0, 10);
+        } catch {
+          rawIso = '';
+        }
+      }
+      const jobTypeText = linkedJob ? linkedJob.jobType || linkedJob.module : '';
+      const yaText = linkedJob?.ya ? `YA ${linkedJob.ya}` : '';
+      const jobInfo = [jobTypeText, yaText].filter(Boolean).join(' · ') || 'Tax Job';
+
+      events.push({
+        _id: `hist_${h.id}`,
+        _isoDate: rawIso,
+        date: rawIso ? formatDateDDMMYYYY(rawIso) : 'Just now',
+        scope: 'Job',
+        recordId: linkedJob?.jobCode || linkedJob?.clientId || h.jobId || '—',
+        clientName: linkedJob?.clientName || '—',
+        jobInfo,
+        fromPic: (h.oldStatus || '').trim() || 'Unassigned',
+        toPic: (h.newStatus || '').trim() || 'Unassigned',
+        transferredBy: (h.user || '').trim() || 'System',
+        note: (h.remarks || '').trim() || '—',
+      });
+    }
+
+    // 3. Fallback for jobs with previousPic set but without a logged PIC_HANDOVER history entry
+    for (const j of jobs) {
+      if (!j.previousPic || !j.previousPic.trim()) continue;
+      if (jobsWithLoggedHandover.has(j.id)) continue;
+      const rawIso = isIsoDateString(j.statusDate) ? j.statusDate!.trim() : '';
+      const jobInfo = [j.jobType || j.module, j.ya ? `YA ${j.ya}` : ''].filter(Boolean).join(' · ');
+      events.push({
+        _id: `job_fallback_${j.id}`,
+        _isoDate: rawIso,
+        date: rawIso ? formatDateDDMMYYYY(rawIso) : '—',
+        scope: 'Job',
+        recordId: j.jobCode || j.clientId || '—',
+        clientName: j.clientName || '—',
+        jobInfo: jobInfo || 'Tax Job',
+        fromPic: j.previousPic.trim(),
+        toPic: (j.taxPic || '').trim() || 'Unassigned',
+        transferredBy: 'Recorded on Job',
+        note: `Continued by ${(j.taxPic || '').trim() || 'Unassigned'}`,
+      });
+    }
+
+    return events.sort((a, b) => b._isoDate.localeCompare(a._isoDate));
+  }, [clients, jobs, history]);
+
+  const distinctDepartingPics = useMemo(() => {
+    const set = new Set<string>();
+    for (const e of allHandoverEvents) if (e.fromPic) set.add(e.fromPic);
+    return Array.from(set).sort((a, b) => a.localeCompare(b));
+  }, [allHandoverEvents]);
+
+  const distinctIncomingPics = useMemo(() => {
+    const set = new Set<string>();
+    for (const e of allHandoverEvents) if (e.toPic) set.add(e.toPic);
+    return Array.from(set).sort((a, b) => a.localeCompare(b));
+  }, [allHandoverEvents]);
 
   // Filtered Jobs (used by Job Status, Deadline, Submission Status, PIC Workload)
   const filteredJobs = useMemo(() => {
@@ -480,6 +612,35 @@ export const BasicReportsView: React.FC = () => {
         .sort((a, b) => Number(b.openJobs) - Number(a.openJobs));
     }
 
+    if (activeTab === 'pic-handover') {
+      return allHandoverEvents.filter((ev) => {
+        if (handoverScopeFilter && ev.scope !== handoverScopeFilter) return false;
+        if (departingPicFilter && ev.fromPic !== departingPicFilter) return false;
+        if (incomingPicFilter && ev.toPic !== incomingPicFilter) return false;
+        if (handoverDateFrom && ev._isoDate && ev._isoDate < handoverDateFrom) return false;
+        if (handoverDateFrom && !ev._isoDate) return false;
+        if (handoverDateTo && ev._isoDate && ev._isoDate > handoverDateTo) return false;
+        if (handoverDateTo && !ev._isoDate) return false;
+        if (q) {
+          const hay = [
+            ev.date,
+            ev.scope,
+            ev.recordId,
+            ev.clientName,
+            ev.jobInfo,
+            ev.fromPic,
+            ev.toPic,
+            ev.transferredBy,
+            ev.note,
+          ]
+            .join(' ')
+            .toLowerCase();
+          if (!hay.includes(q)) return false;
+        }
+        return true;
+      });
+    }
+
     // Correspondence report
     return correspondenceRecords
       .filter((c) => {
@@ -521,7 +682,24 @@ export const BasicReportsView: React.FC = () => {
           overdueFlag: isOverdue ? `${daysBetweenIso(c.dueDate, todayStr)}d Overdue` : 'On Track',
         };
       });
-  }, [activeTab, filteredJobs, clients, correspondenceRecords, clientMap, categoryFilter, fyeFilter, yaFilter, search, todayStr]);
+  }, [
+    activeTab,
+    filteredJobs,
+    clients,
+    correspondenceRecords,
+    allHandoverEvents,
+    clientMap,
+    categoryFilter,
+    fyeFilter,
+    yaFilter,
+    handoverDateFrom,
+    handoverDateTo,
+    departingPicFilter,
+    incomingPicFilter,
+    handoverScopeFilter,
+    search,
+    todayStr,
+  ]);
 
   const reportColumnGetters = useMemo(() => {
     const getters: Record<string, (row: Record<string, string | number>) => unknown> = {};
@@ -549,6 +727,27 @@ export const BasicReportsView: React.FC = () => {
       .length;
   }, [activeTab, excel.rows]);
 
+  const handoverKpis = useMemo(() => {
+    if (activeTab !== 'pic-handover') {
+      return { total: 0, clientTransfers: 0, jobContinuations: 0, activeIncoming: 0 };
+    }
+    let clientTransfers = 0;
+    let jobContinuations = 0;
+    const incomingSet = new Set<string>();
+    for (const r of excel.rows) {
+      if (r.scope === 'Client') clientTransfers += 1;
+      if (r.scope === 'Job') jobContinuations += 1;
+      const to = String(r.toPic || '').trim();
+      if (to && to !== 'Unassigned') incomingSet.add(to);
+    }
+    return {
+      total: excel.rows.length,
+      clientTransfers,
+      jobContinuations,
+      activeIncoming: incomingSet.size,
+    };
+  }, [activeTab, excel.rows]);
+
   const hasActiveFilters = Boolean(
     search ||
       categoryFilter ||
@@ -556,6 +755,11 @@ export const BasicReportsView: React.FC = () => {
       jobTypeFilter ||
       yaFilter ||
       submissionFilter ||
+      handoverDateFrom ||
+      handoverDateTo ||
+      departingPicFilter ||
+      incomingPicFilter ||
+      handoverScopeFilter ||
       excel.hasActiveColumnFilters
   );
 
@@ -566,6 +770,11 @@ export const BasicReportsView: React.FC = () => {
     setJobTypeFilter('');
     setYaFilter('');
     setSubmissionFilter('');
+    setHandoverDateFrom('');
+    setHandoverDateTo('');
+    setDepartingPicFilter('');
+    setIncomingPicFilter('');
+    setHandoverScopeFilter('');
     excel.resetColumnFilters();
   };
 
@@ -620,6 +829,36 @@ export const BasicReportsView: React.FC = () => {
         </div>
       )}
 
+      {/* PIC Handover Summary Strip */}
+      {activeTab === 'pic-handover' && (
+        <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+          <div className="bg-white border border-slate-200 rounded-lg px-3.5 py-2.5">
+            <div className="text-[11px] font-medium text-slate-500">Total Handover Events</div>
+            <div className="text-lg font-bold font-mono tabular-nums text-slate-900 mt-0.5">
+              {handoverKpis.total}
+            </div>
+          </div>
+          <div className="bg-white border border-slate-200 rounded-lg px-3.5 py-2.5">
+            <div className="text-[11px] font-medium text-slate-500">Client Portfolio Transfers</div>
+            <div className="text-lg font-bold font-mono tabular-nums text-teal-700 mt-0.5">
+              {handoverKpis.clientTransfers}
+            </div>
+          </div>
+          <div className="bg-white border border-slate-200 rounded-lg px-3.5 py-2.5">
+            <div className="text-[11px] font-medium text-slate-500">Job Continuations</div>
+            <div className="text-lg font-bold font-mono tabular-nums text-indigo-700 mt-0.5">
+              {handoverKpis.jobContinuations}
+            </div>
+          </div>
+          <div className="bg-white border border-slate-200 rounded-lg px-3.5 py-2.5">
+            <div className="text-[11px] font-medium text-slate-500">Incoming PICs Involved</div>
+            <div className="text-lg font-bold font-mono tabular-nums text-slate-900 mt-0.5">
+              {handoverKpis.activeIncoming}
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* Register Toolbar with Required Filters */}
       <RegisterToolbar
         searchValue={search}
@@ -660,72 +899,131 @@ export const BasicReportsView: React.FC = () => {
         recordCount={excel.rows.length}
         totalCount={reportRows.length}
         filters={
-          <>
-            <select
-              value={categoryFilter}
-              onChange={(e) => setCategoryFilter(e.target.value as '' | ClientCategory)}
-              className="px-2 py-1 text-xs bg-white border border-slate-200 rounded-md text-slate-700"
-            >
-              <option value="">All Categories</option>
-              <option value="Corporate">Corporate</option>
-              <option value="Individual">Individual</option>
-              <option value="Other">Other</option>
-            </select>
+          activeTab === 'pic-handover' ? (
+            <>
+              <div className="inline-flex items-center gap-1 text-xs text-slate-600">
+                <span className="text-[11px] font-medium text-slate-500">From</span>
+                <input
+                  type="date"
+                  value={handoverDateFrom}
+                  onChange={(e) => setHandoverDateFrom(e.target.value)}
+                  className="px-2 py-1 text-xs bg-white border border-slate-200 rounded-md text-slate-700 font-mono"
+                />
+              </div>
+              <div className="inline-flex items-center gap-1 text-xs text-slate-600">
+                <span className="text-[11px] font-medium text-slate-500">To</span>
+                <input
+                  type="date"
+                  value={handoverDateTo}
+                  onChange={(e) => setHandoverDateTo(e.target.value)}
+                  className="px-2 py-1 text-xs bg-white border border-slate-200 rounded-md text-slate-700 font-mono"
+                />
+              </div>
 
-            <select
-              value={fyeFilter}
-              onChange={(e) => setFyeFilter(e.target.value)}
-              className="px-2 py-1 text-xs bg-white border border-slate-200 rounded-md text-slate-700"
-            >
-              <option value="">All FYE</option>
-              {FYE_MONTHS.map((m) => (
-                <option key={m} value={m}>
-                  FYE Month {Number(m)}
-                </option>
-              ))}
-            </select>
+              <select
+                value={departingPicFilter}
+                onChange={(e) => setDepartingPicFilter(e.target.value)}
+                className="px-2 py-1 text-xs bg-white border border-slate-200 rounded-md text-slate-700"
+              >
+                <option value="">All Departing PICs</option>
+                {distinctDepartingPics.map((p) => (
+                  <option key={p} value={p}>
+                    From: {p}
+                  </option>
+                ))}
+              </select>
 
-            <select
-              value={jobTypeFilter}
-              onChange={(e) => setJobTypeFilter(e.target.value)}
-              className="px-2 py-1 text-xs bg-white border border-slate-200 rounded-md text-slate-700"
-            >
-              <option value="">All Job Types</option>
-              {jobTypeFilterOptions.map((opt) => (
-                <option key={opt.value} value={opt.value}>
-                  {opt.label}
-                </option>
-              ))}
-            </select>
+              <select
+                value={incomingPicFilter}
+                onChange={(e) => setIncomingPicFilter(e.target.value)}
+                className="px-2 py-1 text-xs bg-white border border-slate-200 rounded-md text-slate-700"
+              >
+                <option value="">All Incoming PICs</option>
+                {distinctIncomingPics.map((p) => (
+                  <option key={p} value={p}>
+                    To: {p}
+                  </option>
+                ))}
+              </select>
 
-            <select
-              value={yaFilter}
-              onChange={(e) => setYaFilter(e.target.value)}
-              className="px-2 py-1 text-xs bg-white border border-slate-200 rounded-md text-slate-700"
-            >
-              <option value="">All YA</option>
-              {distinctYas.map((y) => (
-                <option key={y} value={y}>
-                  YA {y}
-                </option>
-              ))}
-            </select>
+              <select
+                value={handoverScopeFilter}
+                onChange={(e) => setHandoverScopeFilter(e.target.value as '' | 'Client' | 'Job')}
+                className="px-2 py-1 text-xs bg-white border border-slate-200 rounded-md text-slate-700"
+              >
+                <option value="">All Scopes (Client &amp; Job)</option>
+                <option value="Client">Client Portfolio</option>
+                <option value="Job">Job Continuation</option>
+              </select>
+            </>
+          ) : (
+            <>
+              <select
+                value={categoryFilter}
+                onChange={(e) => setCategoryFilter(e.target.value as '' | ClientCategory)}
+                className="px-2 py-1 text-xs bg-white border border-slate-200 rounded-md text-slate-700"
+              >
+                <option value="">All Categories</option>
+                <option value="Corporate">Corporate</option>
+                <option value="Individual">Individual</option>
+                <option value="Other">Other</option>
+              </select>
 
-            <select
-              value={submissionFilter}
-              onChange={(e) =>
-                setSubmissionFilter(
-                  e.target.value as '' | 'Submitted' | 'Pending' | 'Missing Date'
-                )
-              }
-              className="px-2 py-1 text-xs bg-white border border-slate-200 rounded-md text-slate-700"
-            >
-              <option value="">All Submission Status</option>
-              <option value="Submitted">Submitted (Date Recorded)</option>
-              <option value="Pending">Pending Submission</option>
-              <option value="Missing Date">Missing Date Flag</option>
-            </select>
-          </>
+              <select
+                value={fyeFilter}
+                onChange={(e) => setFyeFilter(e.target.value)}
+                className="px-2 py-1 text-xs bg-white border border-slate-200 rounded-md text-slate-700"
+              >
+                <option value="">All FYE</option>
+                {FYE_MONTHS.map((m) => (
+                  <option key={m} value={m}>
+                    FYE Month {Number(m)}
+                  </option>
+                ))}
+              </select>
+
+              <select
+                value={jobTypeFilter}
+                onChange={(e) => setJobTypeFilter(e.target.value)}
+                className="px-2 py-1 text-xs bg-white border border-slate-200 rounded-md text-slate-700"
+              >
+                <option value="">All Job Types</option>
+                {jobTypeFilterOptions.map((opt) => (
+                  <option key={opt.value} value={opt.value}>
+                    {opt.label}
+                  </option>
+                ))}
+              </select>
+
+              <select
+                value={yaFilter}
+                onChange={(e) => setYaFilter(e.target.value)}
+                className="px-2 py-1 text-xs bg-white border border-slate-200 rounded-md text-slate-700"
+              >
+                <option value="">All YA</option>
+                {distinctYas.map((y) => (
+                  <option key={y} value={y}>
+                    YA {y}
+                  </option>
+                ))}
+              </select>
+
+              <select
+                value={submissionFilter}
+                onChange={(e) =>
+                  setSubmissionFilter(
+                    e.target.value as '' | 'Submitted' | 'Pending' | 'Missing Date'
+                  )
+                }
+                className="px-2 py-1 text-xs bg-white border border-slate-200 rounded-md text-slate-700"
+              >
+                <option value="">All Submission Status</option>
+                <option value="Submitted">Submitted (Date Recorded)</option>
+                <option value="Pending">Pending Submission</option>
+                <option value="Missing Date">Missing Date Flag</option>
+              </select>
+            </>
+          )
         }
       />
 
@@ -878,6 +1176,43 @@ export const BasicReportsView: React.FC = () => {
                       );
                     }
 
+                    if (col.key === 'scope') {
+                      const isClient = strVal === 'Client';
+                      return (
+                        <td key={col.key} className="py-2 px-3 whitespace-nowrap">
+                          <span
+                            className={`inline-flex items-center px-2 py-0.5 rounded border text-[11px] font-medium ${
+                              isClient
+                                ? 'bg-teal-50 text-teal-800 border-teal-200'
+                                : 'bg-indigo-50 text-indigo-800 border-indigo-200'
+                            }`}
+                          >
+                            {isClient ? 'Client Portfolio' : 'Job'}
+                          </span>
+                        </td>
+                      );
+                    }
+
+                    if (col.key === 'fromPic') {
+                      return (
+                        <td key={col.key} className="py-2 px-3 whitespace-nowrap">
+                          <span className="inline-flex items-center px-2 py-0.5 rounded bg-slate-100 text-slate-700 border border-slate-200 text-[11px] font-medium">
+                            {strVal}
+                          </span>
+                        </td>
+                      );
+                    }
+
+                    if (col.key === 'toPic') {
+                      return (
+                        <td key={col.key} className="py-2 px-3 whitespace-nowrap">
+                          <span className="inline-flex items-center px-2 py-0.5 rounded bg-teal-50 text-teal-800 border border-teal-200 text-[11px] font-semibold">
+                            {strVal}
+                          </span>
+                        </td>
+                      );
+                    }
+
                     return (
                       <td
                         key={col.key}
@@ -886,7 +1221,7 @@ export const BasicReportsView: React.FC = () => {
                             ? 'text-right font-mono tabular-nums text-slate-800'
                             : col.key === 'clientName' || col.key === 'pic'
                             ? 'font-medium text-slate-900'
-                            : isFirstId
+                            : isFirstId || col.key === 'recordId' || col.key === 'date'
                             ? 'font-mono text-slate-700'
                             : 'text-slate-700'
                         } ${stickyTdCls}`}

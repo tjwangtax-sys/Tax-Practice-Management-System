@@ -5,7 +5,6 @@ import {
   SlidersHorizontal,
   RefreshCw,
   MessageSquareText,
-  Edit3,
   CalendarRange,
   Trash2,
   Check,
@@ -14,6 +13,7 @@ import {
 } from 'lucide-react';
 import {
   CLIENT_STATUS_OPTIONS,
+  ClientRecord,
   ColumnDef,
   Cp204Record,
   Cp204Revision,
@@ -31,7 +31,15 @@ import { useColumnVisibility, usePinnedColumnOffsets } from '../../hooks/useColu
 import { useExcelTableFilters } from '../../hooks/useExcelTableFilters';
 import { exportToExcel, printRegisterHtml } from '../../lib/exportUtils';
 import { extractFyeMonth, formatDateDDMMYYYY } from '../../lib/deadlineUtils';
-import { normalizeClientIdKey } from '../../lib/jobUtils';
+import {
+  ACTIVE_COMPLIANCE_STATUS_FILTER,
+  findClientRecordForRow,
+  isExcludedComplianceClientStatus,
+  matchesClientStatusFilterValue,
+  normalizeClientIdKey,
+} from '../../lib/jobUtils';
+import { showToast } from '../../lib/toast';
+import { ClientModal } from '../ClientMaster/ClientModal';
 import {
   classifyCp204SubmissionStatus,
   CP204_SUBMISSION_FILTERS,
@@ -41,69 +49,57 @@ import {
 import { Cp204InitialQuickModal, Cp204RevisionQuickModal } from './Cp204QuickModals';
 import { Cp204AdvancedModal, Cp204AdvancedTab } from './Cp204AdvancedModal';
 
+// Compact 10-column default layout (9 data columns + Action) designed to fit 1280px–1440px without horizontal scroll
 const CP204_COLUMNS: ColumnDef[] = [
-  { key: 'clientId', label: 'Client ID', defaultVisible: true },
-  { key: 'clientName', label: 'Company Name', defaultVisible: true },
-  { key: 'fye', label: 'FYE', defaultVisible: true },
-  { key: 'ya', label: 'YA', defaultVisible: true },
+  { key: 'client', label: 'Client ID / Company', defaultVisible: true },
+  { key: 'fye', label: 'FYE', defaultVisible: true, align: 'center' },
+  { key: 'ya', label: 'YA', defaultVisible: true, align: 'center' },
+  { key: 'initialEstimate', label: 'CP204 Initial', defaultVisible: true, align: 'right' },
+  { key: 'rev6', label: 'CP204A 6th', defaultVisible: true, align: 'right' },
+  { key: 'rev9', label: 'CP204A 9th', defaultVisible: true, align: 'right' },
+  { key: 'rev11', label: 'CP204A 11th', defaultVisible: true, align: 'right' },
+  { key: 'followUpStatus', label: 'Follow-Up', defaultVisible: true },
   { key: 'pic', label: 'PIC', defaultVisible: true },
-  { key: 'initialEstimate', label: 'Initial Estimate', defaultVisible: true, align: 'right' },
-  { key: 'followUpStatus', label: 'Follow-Up Status', defaultVisible: true },
-  { key: 'rev6', label: '6th Month Revision', defaultVisible: true, align: 'right' },
-  { key: 'rev9', label: '9th Month Revision', defaultVisible: true, align: 'right' },
-  { key: 'rev11', label: '11th Month Revision', defaultVisible: true, align: 'right' },
-  { key: 'currentEstimatedTax', label: 'Current Estimated Tax', defaultVisible: true, align: 'right' },
-  { key: 'instalmentsSummary', label: 'Instalments', defaultVisible: false },
-  { key: 'reviewer', label: 'Reviewer', defaultVisible: false },
-  { key: 'statutoryDueDate', label: 'Statutory Due Date', defaultVisible: false },
-  { key: 'remarks', label: 'Remarks', defaultVisible: true },
+  { key: 'currentEstimatedTax', label: 'Current Est. Tax', defaultVisible: false, align: 'right', optional: true },
+  { key: 'instalmentsSummary', label: 'Instalments', defaultVisible: false, optional: true },
+  { key: 'reviewer', label: 'Reviewer', defaultVisible: false, optional: true },
+  { key: 'statutoryDueDate', label: 'Statutory Due Date', defaultVisible: false, optional: true },
+  { key: 'remarks', label: 'Remarks', defaultVisible: false, optional: true },
 ];
 
 const CP204_COL_WIDTHS: Record<string, string> = {
-  clientId: 'w-[110px] min-w-[110px]',
-  clientName: 'min-w-[230px]',
-  fye: 'min-w-[75px]',
-  ya: 'min-w-[80px]',
-  pic: 'min-w-[125px]',
-  initialEstimate: 'min-w-[155px]',
-  followUpStatus: 'min-w-[165px]',
-  rev6: 'min-w-[155px]',
-  rev9: 'min-w-[155px]',
-  rev11: 'min-w-[155px]',
-  currentEstimatedTax: 'min-w-[160px]',
-  instalmentsSummary: 'min-w-[125px]',
-  reviewer: 'min-w-[125px]',
-  statutoryDueDate: 'min-w-[135px]',
-  remarks: 'min-w-[220px]',
+  client: 'w-[210px] min-w-[185px] max-w-[235px]',
+  fye: 'w-[50px] min-w-[46px]',
+  ya: 'w-[56px] min-w-[52px]',
+  initialEstimate: 'w-[122px] min-w-[112px]',
+  rev6: 'w-[108px] min-w-[98px]',
+  rev9: 'w-[108px] min-w-[98px]',
+  rev11: 'w-[108px] min-w-[98px]',
+  followUpStatus: 'w-[126px] min-w-[112px]',
+  pic: 'w-[86px] min-w-[74px]',
+  currentEstimatedTax: 'w-[128px] min-w-[118px]',
+  instalmentsSummary: 'w-[108px] min-w-[100px]',
+  reviewer: 'w-[96px] min-w-[88px]',
+  statutoryDueDate: 'w-[112px] min-w-[104px]',
+  remarks: 'w-[180px] min-w-[160px]',
 };
 
 const CP204_COL_FALLBACK_WIDTHS: Record<string, number> = {
-  clientId: 110,
-  clientName: 230,
-  fye: 75,
-  ya: 80,
-  pic: 125,
-  initialEstimate: 155,
-  followUpStatus: 165,
-  rev6: 155,
-  rev9: 155,
-  rev11: 155,
-  currentEstimatedTax: 160,
-  instalmentsSummary: 125,
-  reviewer: 125,
-  statutoryDueDate: 135,
-  remarks: 220,
+  client: 210,
+  fye: 50,
+  ya: 56,
+  initialEstimate: 122,
+  rev6: 108,
+  rev9: 108,
+  rev11: 108,
+  followUpStatus: 126,
+  pic: 86,
+  currentEstimatedTax: 128,
+  instalmentsSummary: 108,
+  reviewer: 96,
+  statutoryDueDate: 112,
+  remarks: 180,
 };
-
-function matchesClientStatusFilter(clientStatus: string | undefined, filterValue: string): boolean {
-  if (!filterValue) return true;
-  const target = filterValue.trim().toLowerCase();
-  const actual = (clientStatus || '').trim().toLowerCase();
-  if (target === 'active') {
-    return actual === '' || actual === 'active';
-  }
-  return actual === target;
-}
 
 function getFollowUpStatusBadgeClass(status: string): string {
   switch (status) {
@@ -120,6 +116,11 @@ function getFollowUpStatusBadgeClass(status: string): string {
   }
 }
 
+function getCompactFollowUpLabel(status: string): string {
+  if (status === 'CP204 submitted; revisions not recorded') return 'CP204 Submitted';
+  return status;
+}
+
 function formatRevisionExport(rev?: Cp204Revision): string {
   if (!rev) return '—';
   return `${formatCurrencyRM(rev.proposedEstimatedTax)} (${rev.reviewStatus})`;
@@ -132,6 +133,16 @@ interface Cp204ModuleViewProps {
 export const Cp204ModuleView: React.FC<Cp204ModuleViewProps> = ({ initialFilter }) => {
   const { isReadOnly, isManagerOrAdmin } = useAuth();
   const { clients, cp204Records, deleteCp204, refreshAll, refreshing } = useData();
+  const [profileClient, setProfileClient] = useState<ClientRecord | null>(null);
+
+  const handleOpenClientProfile = (ref: { clientId?: string; clientName?: string }, directClient?: ClientRecord) => {
+    const matched = directClient || findClientRecordForRow(clients, ref);
+    if (matched) {
+      setProfileClient(matched);
+    } else {
+      showToast('Client profile not found in Client Master.', 'warning', 2500);
+    }
+  };
 
   const [search, setSearch] = useState('');
   const [yaFilter, setYaFilter] = useState('');
@@ -152,7 +163,7 @@ export const Cp204ModuleView: React.FC<Cp204ModuleViewProps> = ({ initialFilter 
     moveColumn,
     reorderColumn,
     resetColumns,
-  } = useColumnVisibility('cp204', CP204_COLUMNS, ['clientId', 'clientName']);
+  } = useColumnVisibility('cp204', CP204_COLUMNS, ['client']);
   const { headerRowRef, getHeaderStickyProps, getCellStickyProps } = usePinnedColumnOffsets(
     pinnedActiveKeys,
     CP204_COL_FALLBACK_WIDTHS
@@ -189,7 +200,7 @@ export const Cp204ModuleView: React.FC<Cp204ModuleViewProps> = ({ initialFilter 
   const todayStr = useMemo(() => new Date().toISOString().slice(0, 10), []);
   const currentYearStr = useMemo(() => String(new Date().getFullYear()), []);
 
-  // Normalized Client ID lookup ("C 233" === "C233") for Client Status filter & specialRemarks
+  // Normalized Client ID lookup ("C 233" === "C233") for Client Status, FYE/PIC fallback & specialRemarks
   const clientByIdMap = useMemo(() => {
     const map = new Map<string, (typeof clients)[number]>();
     for (const c of clients) {
@@ -201,6 +212,23 @@ export const Cp204ModuleView: React.FC<Cp204ModuleViewProps> = ({ initialFilter 
     }
     return map;
   }, [clients]);
+
+  const resolveMatchedClient = (rec: Cp204Record) =>
+    clientByIdMap.get(normalizeClientIdKey(rec.clientId)) || clientByIdMap.get(rec.clientId);
+
+  const resolveDisplayFye = (rec: Cp204Record) => {
+    const client = resolveMatchedClient(rec);
+    const raw = (rec.fye || client?.fye || '').trim();
+    const num = extractFyeMonth(raw);
+    return num !== null ? String(num) : raw;
+  };
+
+  const resolveDisplayPic = (rec: Cp204Record) => {
+    const own = (rec.pic || '').trim();
+    if (own) return own;
+    const client = resolveMatchedClient(rec);
+    return (client?.taxPic || '').trim();
+  };
 
   const distinctYas = useMemo(() => {
     const set = new Set<string>([currentYearStr]);
@@ -214,15 +242,17 @@ export const Cp204ModuleView: React.FC<Cp204ModuleViewProps> = ({ initialFilter 
   const distinctPics = useMemo(() => {
     const set = new Set<string>();
     for (const r of cp204Records) {
-      if (r.pic) set.add(r.pic.trim());
+      const pic = resolveDisplayPic(r);
+      if (pic) set.add(pic);
     }
     for (const c of clients) {
       if ((c.category === 'Corporate' || c.category === 'Other') && c.taxPic) {
         set.add(c.taxPic.trim());
       }
     }
-    return Array.from(set).sort();
-  }, [cp204Records, clients]);
+    return Array.from(set).sort((a, b) => a.localeCompare(b));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [cp204Records, clients, clientByIdMap]);
 
   const isMissingMode = submissionFilter === 'CP204 record missing';
   const targetMissingYa = yaFilter || currentYearStr;
@@ -240,10 +270,9 @@ export const Cp204ModuleView: React.FC<Cp204ModuleViewProps> = ({ initialFilter 
     return clients.filter((c) => {
       if (c.category !== 'Corporate') return false;
       if (clientStatusFilter) {
-        if (!matchesClientStatusFilter(c.clientStatus, clientStatusFilter)) return false;
+        if (!matchesClientStatusFilterValue(c.clientStatus, clientStatusFilter)) return false;
       } else {
-        const statusLower = (c.clientStatus || '').trim().toLowerCase();
-        if (statusLower === 'inactive' || statusLower === 'dormant' || statusLower === 'resigned') {
+        if (isExcludedComplianceClientStatus(c.clientStatus)) {
           return false;
         }
       }
@@ -274,10 +303,15 @@ export const Cp204ModuleView: React.FC<Cp204ModuleViewProps> = ({ initialFilter 
     return cp204Records.filter((rec) => {
       const client =
         clientByIdMap.get(normalizeClientIdKey(rec.clientId)) || clientByIdMap.get(rec.clientId);
+      const effectiveFye = rec.fye || client?.fye || '';
+      const effectivePic = (rec.pic || client?.taxPic || '').trim();
       if (yaFilter && (rec.ya || '').trim() !== yaFilter) return false;
-      if (fyeFilter && extractFyeMonth(rec.fye) !== extractFyeMonth(fyeFilter)) return false;
-      if (picFilter && (rec.pic || '').trim() !== picFilter) return false;
-      if (clientStatusFilter && !matchesClientStatusFilter(client?.clientStatus, clientStatusFilter)) {
+      if (fyeFilter && extractFyeMonth(effectiveFye) !== extractFyeMonth(fyeFilter)) return false;
+      if (picFilter && effectivePic !== picFilter) return false;
+      if (
+        clientStatusFilter &&
+        !matchesClientStatusFilterValue(client?.clientStatus, clientStatusFilter)
+      ) {
         return false;
       }
       if (submissionFilter) {
@@ -285,7 +319,7 @@ export const Cp204ModuleView: React.FC<Cp204ModuleViewProps> = ({ initialFilter 
         if (bucket !== submissionFilter) return false;
       }
       if (q) {
-        const hay = `${rec.cp204Id} ${rec.clientName} ${rec.clientId} ${rec.ya} ${rec.pic} ${rec.reviewer} ${rec.status} ${rec.remarks} ${client?.specialRemarks || ''}`.toLowerCase();
+        const hay = `${rec.cp204Id} ${rec.clientName} ${rec.clientId} ${rec.ya} ${effectivePic} ${rec.reviewer} ${rec.status} ${rec.remarks} ${client?.specialRemarks || ''}`.toLowerCase();
         if (!hay.includes(q)) return false;
       }
       return true;
@@ -303,14 +337,24 @@ export const Cp204ModuleView: React.FC<Cp204ModuleViewProps> = ({ initialFilter 
     clientByIdMap,
   ]);
 
-  // Status-only column filter values for Initial Estimate, Follow-Up Status, and 6th/9th/11th Revisions
+  // Status-only column filter values for CP204 Initial, Follow-Up, and 6th/9th/11th Revisions
   const cp204ValueGetters = useMemo(
     () => ({
-      clientName: (rec: Cp204Record) => rec.clientName,
-      clientId: (rec: Cp204Record) => rec.clientId,
-      fye: (rec: Cp204Record) => (rec.fye ? String(Number(rec.fye)) : ''),
+      client: (rec: Cp204Record) => `${rec.clientName} (${rec.clientId})`,
+      fye: (rec: Cp204Record) => {
+        const client =
+          clientByIdMap.get(normalizeClientIdKey(rec.clientId)) ||
+          clientByIdMap.get(rec.clientId);
+        const m = extractFyeMonth(rec.fye || client?.fye);
+        return m !== null ? String(m) : '';
+      },
       ya: (rec: Cp204Record) => rec.ya,
-      pic: (rec: Cp204Record) => rec.pic || '',
+      pic: (rec: Cp204Record) => {
+        const client =
+          clientByIdMap.get(normalizeClientIdKey(rec.clientId)) ||
+          clientByIdMap.get(rec.clientId);
+        return (rec.pic || client?.taxPic || '').trim();
+      },
       initialEstimate: (rec: Cp204Record) => (rec.status || 'No CP204 record').trim(),
       followUpStatus: (rec: Cp204Record) => classifyCp204SubmissionStatus(rec, todayStr),
       rev6: (rec: Cp204Record) => {
@@ -336,14 +380,16 @@ export const Cp204ModuleView: React.FC<Cp204ModuleViewProps> = ({ initialFilter 
       statutoryDueDate: (rec: Cp204Record) => formatDateDDMMYYYY(rec.statutoryCp204DueDate),
       remarks: (rec: Cp204Record) => rec.remarks || '',
     }),
-    [todayStr]
+    [todayStr, clientByIdMap]
   );
 
   const missingValueGetters = useMemo(
     () => ({
-      clientName: (c: (typeof clients)[number]) => c.clientName,
-      clientId: (c: (typeof clients)[number]) => c.clientId,
-      fye: (c: (typeof clients)[number]) => (c.fye ? String(Number(c.fye)) : ''),
+      client: (c: (typeof clients)[number]) => `${c.clientName} (${c.clientId})`,
+      fye: (c: (typeof clients)[number]) => {
+        const m = extractFyeMonth(c.fye);
+        return m !== null ? String(m) : '';
+      },
       ya: () => targetMissingYa,
       pic: (c: (typeof clients)[number]) => c.taxPic || '',
       status: () => 'CP204 record missing',
@@ -417,13 +463,17 @@ export const Cp204ModuleView: React.FC<Cp204ModuleViewProps> = ({ initialFilter 
       const rev9 = getRevisionForMonth(rec, '9');
       const rev11 = getRevisionForMonth(rec, '11');
       const instPaid = rec.instalments.filter((i) => i.outstandingAmount === 0 && i.amountDue > 0).length;
+      const displayFye = resolveDisplayFye(rec);
+      const displayPic = resolveDisplayPic(rec);
+      const subDate = rec.originalSubmissionDate
+        ? ` · ${formatDateDDMMYYYY(rec.originalSubmissionDate)}`
+        : '';
       return {
-        clientName: rec.clientName,
-        clientId: rec.clientId,
-        fye: rec.fye ? Number(rec.fye) : '—',
+        client: `${rec.clientName} (${rec.clientId})`,
+        fye: displayFye || '—',
         ya: rec.ya,
-        pic: rec.pic || '—',
-        initialEstimate: `${formatCurrencyRM(rec.originalEstimatedTax)} (${rec.status})`,
+        pic: displayPic || '—',
+        initialEstimate: `${formatCurrencyRM(rec.originalEstimatedTax)} (${rec.status}${subDate})`,
         followUpStatus: classifyCp204SubmissionStatus(rec, todayStr),
         rev6: formatRevisionExport(rev6),
         rev9: formatRevisionExport(rev9),
@@ -490,7 +540,7 @@ export const Cp204ModuleView: React.FC<Cp204ModuleViewProps> = ({ initialFilter 
     }
     return (
       <div className="flex flex-col items-end gap-0.5">
-        <span className="font-mono tabular-nums font-medium text-slate-900">
+        <span className="font-mono tabular-nums text-[11px] font-medium text-slate-900">
           {formatCurrencyRM(rev.proposedEstimatedTax)}
         </span>
         <StatusPill group="CP204_STATUS" value={rev.reviewStatus} />
@@ -670,6 +720,9 @@ export const Cp204ModuleView: React.FC<Cp204ModuleViewProps> = ({ initialFilter 
               className="px-2.5 py-1.5 text-xs bg-white border border-slate-200 rounded-md text-slate-700"
             >
               <option value="">All Client Statuses</option>
+              <option value={ACTIVE_COMPLIANCE_STATUS_FILTER}>
+                Active &amp; WIP (Non-Resigned)
+              </option>
               {CLIENT_STATUS_OPTIONS.map((s) => (
                 <option key={s} value={s}>
                   {s}
@@ -701,7 +754,7 @@ export const Cp204ModuleView: React.FC<Cp204ModuleViewProps> = ({ initialFilter 
               <div className="flex items-center gap-2 font-medium">
                 <AlertTriangle className="w-4 h-4 text-amber-600 shrink-0" />
                 <span>
-                  Showing active Corporate clients without a CP204 record for{' '}
+                  Showing active &amp; WIP Corporate clients without a CP204 record for{' '}
                   <strong className="font-mono">YA {targetMissingYa}</strong>
                   {!yaFilter ? ' (select a specific YA filter above to check another year)' : ''}.
                 </span>
@@ -721,17 +774,21 @@ export const Cp204ModuleView: React.FC<Cp204ModuleViewProps> = ({ initialFilter 
                   <tr>
                     {(
                       [
-                        { key: 'clientId', label: 'Client ID', width: 'w-[110px] min-w-[110px] sticky top-0 left-0 z-30 bg-slate-50 shadow-[inset_-1px_0_0_#e2e8f0]' },
-                        { key: 'clientName', label: 'Company Name', width: 'min-w-[230px] sticky top-0 left-[110px] z-30 bg-slate-50 shadow-[inset_-1px_0_0_#e2e8f0,2px_0_4px_-2px_rgba(15,23,42,0.12)]' },
-                        { key: 'fye', label: 'FYE', width: 'min-w-[75px] sticky top-0 z-20 bg-slate-50' },
-                        { key: 'ya', label: 'Missing YA', width: 'min-w-[95px] sticky top-0 z-20 bg-slate-50' },
-                        { key: 'pic', label: 'Default PIC', width: 'min-w-[130px] sticky top-0 z-20 bg-slate-50' },
-                        { key: 'status', label: 'Status', width: 'min-w-[165px] sticky top-0 z-20 bg-slate-50' },
+                        {
+                          key: 'client',
+                          label: 'Client ID / Company',
+                          width:
+                            'w-[240px] min-w-[210px] sticky top-0 left-0 z-30 bg-slate-50 shadow-[inset_-1px_0_0_#e2e8f0,2px_0_4px_-2px_rgba(15,23,42,0.12)]',
+                        },
+                        { key: 'fye', label: 'FYE', width: 'w-[56px] sticky top-0 z-20 bg-slate-50 text-center' },
+                        { key: 'ya', label: 'Missing YA', width: 'w-[84px] sticky top-0 z-20 bg-slate-50 text-center' },
+                        { key: 'pic', label: 'PIC', width: 'w-[100px] sticky top-0 z-20 bg-slate-50' },
+                        { key: 'status', label: 'Status', width: 'w-[155px] sticky top-0 z-20 bg-slate-50' },
                       ] as const
                     ).map((col) => (
                       <th
                         key={col.key}
-                        className={`px-3 py-2 text-left text-xs font-semibold whitespace-nowrap border-b border-slate-200 ${col.width}`}
+                        className={`px-2.5 py-2 text-left text-xs font-semibold whitespace-nowrap border-b border-slate-200 ${col.width}`}
                       >
                         <ExcelColumnFilter
                           columnKey={col.key}
@@ -748,7 +805,7 @@ export const Cp204ModuleView: React.FC<Cp204ModuleViewProps> = ({ initialFilter 
                         />
                       </th>
                     ))}
-                    <th className="sticky top-0 z-20 bg-slate-50 px-3 py-2 text-right text-xs font-semibold whitespace-nowrap border-b border-slate-200 min-w-[115px]">
+                    <th className="sticky top-0 z-20 bg-slate-50 px-2.5 py-2 text-right text-xs font-semibold whitespace-nowrap border-b border-slate-200 w-[110px]">
                       Action
                     </th>
                   </tr>
@@ -756,19 +813,30 @@ export const Cp204ModuleView: React.FC<Cp204ModuleViewProps> = ({ initialFilter 
                 <tbody className="divide-y divide-slate-100">
                   {displayedMissing.length === 0 ? (
                     <tr>
-                      <td colSpan={7} className="px-4 py-10 text-center text-slate-500">
-                        All active Corporate clients already have a CP204 record for YA{' '}
+                      <td colSpan={6} className="px-4 py-10 text-center text-slate-500">
+                        All in-scope Corporate clients already have a CP204 record for YA{' '}
                         {targetMissingYa}.
                       </td>
                     </tr>
                   ) : (
                     displayedMissing.map((client) => (
                       <tr key={client.id} className="group hover:bg-slate-50">
-                        <td className="sticky left-0 z-10 bg-white group-hover:bg-slate-50 w-[110px] min-w-[110px] px-3 py-2 font-mono text-slate-700 whitespace-nowrap shadow-[inset_-1px_0_0_#e2e8f0]">
-                          {client.clientId}
-                        </td>
-                        <td className="sticky left-[110px] z-10 bg-white group-hover:bg-slate-50 min-w-[230px] px-3 py-2 shadow-[inset_-1px_0_0_#e2e8f0,2px_0_4px_-2px_rgba(15,23,42,0.12)]">
-                          <div className="font-medium text-slate-900">{client.clientName}</div>
+                        <td className="sticky left-0 z-10 bg-white group-hover:bg-slate-50 w-[240px] min-w-[210px] px-2.5 py-2 shadow-[inset_-1px_0_0_#e2e8f0,2px_0_4px_-2px_rgba(15,23,42,0.12)]">
+                          <button
+                            type="button"
+                            onClick={() => handleOpenClientProfile({}, client)}
+                            className="text-left font-medium text-slate-900 leading-snug hover:underline hover:text-teal-700 cursor-pointer block"
+                            title={`${client.clientName} — Click to open Client Profile`}
+                          >
+                            {client.clientName}
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => handleOpenClientProfile({}, client)}
+                            className="text-[11px] font-mono text-slate-400 hover:underline hover:text-teal-700 cursor-pointer block"
+                          >
+                            {client.clientId}
+                          </button>
                           {showSpecialRemarks && client.specialRemarks && (
                             <div className="mt-1 px-2 py-1 rounded bg-amber-50 border border-amber-200 text-[11px] text-amber-900">
                               <RemarksPreviewCell
@@ -782,21 +850,21 @@ export const Cp204ModuleView: React.FC<Cp204ModuleViewProps> = ({ initialFilter 
                             </div>
                           )}
                         </td>
-                        <td className="px-3 py-2 font-mono text-slate-700 whitespace-nowrap">
+                        <td className="px-2.5 py-2 text-center font-mono text-slate-700 whitespace-nowrap">
                           {client.fye ? Number(client.fye) : '—'}
                         </td>
-                        <td className="px-3 py-2 font-mono font-semibold text-slate-900 whitespace-nowrap">
+                        <td className="px-2.5 py-2 text-center font-mono font-semibold text-slate-900 whitespace-nowrap">
                           {targetMissingYa}
                         </td>
-                        <td className="px-3 py-2 text-slate-700 whitespace-nowrap">
+                        <td className="px-2.5 py-2 text-slate-700 whitespace-nowrap">
                           {client.taxPic || '—'}
                         </td>
-                        <td className="px-3 py-2 whitespace-nowrap">
+                        <td className="px-2.5 py-2 whitespace-nowrap">
                           <span className="inline-flex items-center px-2 py-0.5 rounded-full text-[11px] font-semibold bg-rose-50 text-rose-700 border border-rose-200">
                             CP204 record missing
                           </span>
                         </td>
-                        <td className="px-3 py-2 text-right whitespace-nowrap">
+                        <td className="px-2.5 py-2 text-right whitespace-nowrap">
                           {!isReadOnly && (
                             <button
                               type="button"
@@ -822,14 +890,20 @@ export const Cp204ModuleView: React.FC<Cp204ModuleViewProps> = ({ initialFilter 
                 <tr ref={headerRowRef}>
                   {activeColumns.map((col) => {
                     const stickyTh = getHeaderStickyProps(col.key);
+                    const alignCls =
+                      col.align === 'right'
+                        ? 'text-right'
+                        : col.align === 'center'
+                        ? 'text-center'
+                        : 'text-left';
                     return (
                       <th
                         key={col.key}
                         data-pinned-col={stickyTh['data-pinned-col']}
                         style={stickyTh.style}
-                        className={`px-3 py-2 text-xs font-semibold whitespace-nowrap border-b border-slate-200 ${
-                          col.align === 'right' ? 'text-right' : 'text-left'
-                        } ${CP204_COL_WIDTHS[col.key] || 'min-w-[120px]'} ${stickyTh.className}`}
+                        className={`px-2.5 py-2 text-xs font-semibold whitespace-nowrap border-b border-slate-200 ${alignCls} ${
+                          CP204_COL_WIDTHS[col.key] || 'min-w-[100px]'
+                        } ${stickyTh.className}`}
                       >
                         <ExcelColumnFilter
                           columnKey={col.key}
@@ -846,8 +920,8 @@ export const Cp204ModuleView: React.FC<Cp204ModuleViewProps> = ({ initialFilter 
                       </th>
                     );
                   })}
-                  <th className="sticky top-0 z-20 bg-slate-50 px-3 py-2 text-right text-xs font-semibold whitespace-nowrap border-b border-slate-200 min-w-[220px] no-print">
-                    Actions
+                  <th className="sticky top-0 z-20 bg-slate-50 px-2.5 py-2 text-right text-xs font-semibold whitespace-nowrap border-b border-slate-200 w-[116px] min-w-[108px] no-print">
+                    Action
                   </th>
                 </tr>
               </thead>
@@ -862,9 +936,9 @@ export const Cp204ModuleView: React.FC<Cp204ModuleViewProps> = ({ initialFilter 
                   </tr>
                 ) : (
                   displayedRecords.map((rec: Cp204Record) => {
-                    const client =
-                      clientByIdMap.get(normalizeClientIdKey(rec.clientId)) ||
-                      clientByIdMap.get(rec.clientId);
+                    const client = resolveMatchedClient(rec);
+                    const displayFye = resolveDisplayFye(rec);
+                    const displayPic = resolveDisplayPic(rec);
                     const rev6 = getRevisionForMonth(rec, '6');
                     const rev9 = getRevisionForMonth(rec, '9');
                     const rev11 = getRevisionForMonth(rec, '11');
@@ -878,7 +952,7 @@ export const Cp204ModuleView: React.FC<Cp204ModuleViewProps> = ({ initialFilter 
                         {activeColumns.map((col) => {
                           const key = col.key;
                           const stickyTd = getCellStickyProps(key);
-                          const colWidth = CP204_COL_WIDTHS[key] || 'min-w-[120px]';
+                          const colWidth = CP204_COL_WIDTHS[key] || 'min-w-[100px]';
                           const wrapTd = (cls: string, content: React.ReactNode) => (
                             <td
                               key={key}
@@ -890,20 +964,37 @@ export const Cp204ModuleView: React.FC<Cp204ModuleViewProps> = ({ initialFilter 
                           );
 
                           switch (key) {
-                            case 'clientId':
+                            case 'client':
                               return wrapTd(
-                                'px-3 py-2 font-mono text-slate-700 whitespace-nowrap',
-                                rec.clientId
-                              );
-                            case 'clientName':
-                              return wrapTd(
-                                'px-3 py-2',
+                                'px-2.5 py-2',
                                 <>
-                                  <div className="font-semibold text-slate-900 leading-snug">
+                                  <button
+                                    type="button"
+                                    onClick={() =>
+                                      handleOpenClientProfile(
+                                        { clientId: rec.clientId, clientName: rec.clientName },
+                                        client
+                                      )
+                                    }
+                                    className="text-left font-medium text-slate-900 leading-snug line-clamp-2 hover:underline hover:text-teal-700 cursor-pointer block"
+                                    title={`${rec.clientName} — Click to open Client Profile`}
+                                  >
                                     {rec.clientName}
-                                  </div>
-                                  <div className="text-[11px] text-slate-400 font-mono">
-                                    {rec.cp204Id}
+                                  </button>
+                                  <div className="text-[11px] text-slate-400 font-mono truncate">
+                                    <button
+                                      type="button"
+                                      onClick={() =>
+                                        handleOpenClientProfile(
+                                          { clientId: rec.clientId, clientName: rec.clientName },
+                                          client
+                                        )
+                                      }
+                                      className="hover:underline hover:text-teal-700 cursor-pointer"
+                                    >
+                                      {rec.clientId}
+                                    </button>
+                                    {rec.cp204Id ? ` · ${rec.cp204Id}` : ''}
                                   </div>
                                   {showSpecialRemarks && client?.specialRemarks && (
                                     <div className="mt-1 px-2 py-1 rounded bg-amber-50 border border-amber-200 text-[11px] text-amber-900 leading-snug">
@@ -921,82 +1012,88 @@ export const Cp204ModuleView: React.FC<Cp204ModuleViewProps> = ({ initialFilter 
                               );
                             case 'fye':
                               return wrapTd(
-                                'px-3 py-2 font-mono text-slate-700 whitespace-nowrap',
-                                rec.fye ? Number(rec.fye) : '—'
+                                'px-2.5 py-2 text-center font-mono text-slate-700 whitespace-nowrap',
+                                displayFye || '—'
                               );
                             case 'ya':
                               return wrapTd(
-                                'px-3 py-2 font-mono font-semibold text-slate-900 whitespace-nowrap',
+                                'px-2.5 py-2 text-center font-mono font-semibold text-slate-900 whitespace-nowrap',
                                 rec.ya
-                              );
-                            case 'pic':
-                              return wrapTd(
-                                'px-3 py-2 text-slate-700 whitespace-nowrap',
-                                rec.pic || '—'
                               );
                             case 'initialEstimate':
                               return wrapTd(
-                                'px-3 py-2 text-right whitespace-nowrap',
+                                'px-2.5 py-2 text-right whitespace-nowrap',
                                 <div className="flex flex-col items-end gap-0.5">
-                                  <span className="font-mono tabular-nums font-medium text-slate-900">
+                                  <span className="font-mono tabular-nums text-[11px] font-medium text-slate-900">
                                     {formatCurrencyRM(rec.originalEstimatedTax)}
                                   </span>
                                   <StatusPill group="CP204_STATUS" value={rec.status} />
+                                  {rec.originalSubmissionDate && (
+                                    <span className="text-[10px] font-mono text-slate-400 leading-none">
+                                      {formatDateDDMMYYYY(rec.originalSubmissionDate)}
+                                    </span>
+                                  )}
                                 </div>
-                              );
-                            case 'followUpStatus':
-                              return wrapTd(
-                                'px-3 py-2 whitespace-nowrap',
-                                <span
-                                  className={`inline-flex items-center px-2 py-0.5 rounded-full text-[11px] font-medium border ${getFollowUpStatusBadgeClass(
-                                    followUpBucket
-                                  )}`}
-                                >
-                                  {followUpBucket}
-                                </span>
                               );
                             case 'rev6':
                               return wrapTd(
-                                'px-3 py-2 text-right whitespace-nowrap',
+                                'px-2.5 py-2 text-right whitespace-nowrap',
                                 renderRevisionCell(rev6)
                               );
                             case 'rev9':
                               return wrapTd(
-                                'px-3 py-2 text-right whitespace-nowrap',
+                                'px-2.5 py-2 text-right whitespace-nowrap',
                                 renderRevisionCell(rev9)
                               );
                             case 'rev11':
                               return wrapTd(
-                                'px-3 py-2 text-right whitespace-nowrap',
+                                'px-2.5 py-2 text-right whitespace-nowrap',
                                 renderRevisionCell(rev11)
+                              );
+                            case 'followUpStatus':
+                              return wrapTd(
+                                'px-2.5 py-2 whitespace-nowrap',
+                                <span
+                                  title={followUpBucket}
+                                  className={`inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-medium border ${getFollowUpStatusBadgeClass(
+                                    followUpBucket
+                                  )}`}
+                                >
+                                  {getCompactFollowUpLabel(followUpBucket)}
+                                </span>
+                              );
+                            case 'pic':
+                              return wrapTd(
+                                'px-2.5 py-2 text-slate-700 whitespace-nowrap truncate max-w-[96px]',
+                                <span title={displayPic || '—'}>{displayPic || '—'}</span>
                               );
                             case 'currentEstimatedTax':
                               return wrapTd(
-                                'px-3 py-2 text-right whitespace-nowrap',
+                                'px-2.5 py-2 text-right whitespace-nowrap',
                                 <span className="font-mono tabular-nums font-bold text-teal-900">
                                   {formatCurrencyRM(rec.currentEstimatedTax)}
                                 </span>
                               );
                             case 'instalmentsSummary':
                               return wrapTd(
-                                'px-3 py-2 whitespace-nowrap font-mono text-[11px] text-slate-600',
+                                'px-2.5 py-2 whitespace-nowrap font-mono text-[11px] text-slate-600',
                                 rec.instalments.length > 0
                                   ? `${settledInstCount}/${rec.instalments.length} settled`
                                   : 'Not scheduled'
                               );
                             case 'reviewer':
                               return wrapTd(
-                                'px-3 py-2 text-slate-700 whitespace-nowrap',
+                                'px-2.5 py-2 text-slate-700 whitespace-nowrap',
                                 rec.reviewer || '—'
                               );
                             case 'statutoryDueDate':
                               return wrapTd(
-                                'px-3 py-2 font-mono text-slate-700 whitespace-nowrap',
+                                'px-2.5 py-2 font-mono text-slate-700 whitespace-nowrap',
                                 formatDateDDMMYYYY(rec.statutoryCp204DueDate)
                               );
                             case 'remarks':
                               return wrapTd(
-                                'px-3 py-2 whitespace-nowrap',
+                                'px-2.5 py-2 whitespace-nowrap',
                                 <RemarksPreviewCell
                                   text={rec.remarks}
                                   recordTitle={rec.clientName}
@@ -1005,14 +1102,14 @@ export const Cp204ModuleView: React.FC<Cp204ModuleViewProps> = ({ initialFilter 
                                 />
                               );
                             default:
-                              return wrapTd('px-3 py-2 text-slate-600 whitespace-nowrap', '—');
+                              return wrapTd('px-2.5 py-2 text-slate-600 whitespace-nowrap', '—');
                           }
                         })}
-                        <td className="px-3 py-2 text-right whitespace-nowrap no-print">
+                        <td className="px-2.5 py-2 text-right whitespace-nowrap no-print">
                           {confirmDeleteId === rec.id ? (
                             <div className="inline-flex items-center gap-1">
-                              <span className="text-[11px] text-rose-700 font-medium mr-1">
-                                Delete?
+                              <span className="text-[11px] text-rose-700 font-medium mr-0.5">
+                                Del?
                               </span>
                               <button
                                 type="button"
@@ -1033,49 +1130,42 @@ export const Cp204ModuleView: React.FC<Cp204ModuleViewProps> = ({ initialFilter 
                               </button>
                             </div>
                           ) : (
-                            <div className="inline-flex items-center gap-1.5 whitespace-nowrap">
+                            <div className="inline-flex items-center gap-1 whitespace-nowrap">
                               <button
                                 type="button"
                                 onClick={() => openAdvanced('initial', rec.id)}
-                                className="text-xs font-medium text-teal-700 hover:underline"
-                                title="Edit CP204 Master"
+                                className="px-2 py-0.5 text-[11px] font-semibold text-teal-800 bg-teal-50 hover:bg-teal-100 border border-teal-200 rounded"
+                                title="Open CP204 Master & Revisions"
                               >
-                                {isReadOnly ? 'View' : 'Edit'}
+                                Open
                               </button>
                               {!isReadOnly && (
-                                <>
-                                  <span className="text-slate-300">·</span>
-                                  <button
-                                    type="button"
-                                    onClick={() => openQuickRevision(rec.id)}
-                                    className="text-xs font-medium text-sky-700 hover:underline"
-                                    title="Add CP204A Revision"
-                                  >
-                                    Revision
-                                  </button>
-                                </>
+                                <button
+                                  type="button"
+                                  onClick={() => openQuickRevision(rec.id)}
+                                  className="p-1 text-sky-700 hover:bg-sky-50 rounded"
+                                  title="Add CP204A Revision"
+                                >
+                                  <FilePlus2 className="w-3.5 h-3.5" />
+                                </button>
                               )}
-                              <span className="text-slate-300">·</span>
                               <button
                                 type="button"
                                 onClick={() => openAdvanced('instalments', rec.id)}
-                                className="text-xs font-medium text-indigo-700 hover:underline"
+                                className="p-1 text-indigo-700 hover:bg-indigo-50 rounded"
                                 title="Open Monthly Instalments Tracker"
                               >
-                                Instalments
+                                <CalendarRange className="w-3.5 h-3.5" />
                               </button>
                               {isManagerOrAdmin && (
-                                <>
-                                  <span className="text-slate-300">·</span>
-                                  <button
-                                    type="button"
-                                    onClick={() => setConfirmDeleteId(rec.id)}
-                                    className="text-xs font-medium text-rose-600 hover:text-rose-800 hover:underline"
-                                    title="Delete CP204 record"
-                                  >
-                                    Delete
-                                  </button>
-                                </>
+                                <button
+                                  type="button"
+                                  onClick={() => setConfirmDeleteId(rec.id)}
+                                  className="p-1 text-rose-600 hover:bg-rose-50 rounded"
+                                  title="Delete CP204 record"
+                                >
+                                  <Trash2 className="w-3.5 h-3.5" />
+                                </button>
                               )}
                             </div>
                           )}
@@ -1109,6 +1199,12 @@ export const Cp204ModuleView: React.FC<Cp204ModuleViewProps> = ({ initialFilter 
         initialTab={advancedTab}
         initialRecordId={advancedRecordId}
         onClose={() => setAdvancedModalOpen(false)}
+      />
+
+      <ClientModal
+        open={Boolean(profileClient)}
+        client={profileClient}
+        onClose={() => setProfileClient(null)}
       />
     </div>
   );

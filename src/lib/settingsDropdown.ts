@@ -1,4 +1,4 @@
-import { SettingValue } from '../types/tpms';
+import { SettingValue, StaffMember } from '../types/tpms';
 
 export interface DynamicOption {
   value: string;
@@ -106,4 +106,127 @@ export function buildDynamicSelectOptions(
   }
 
   return options;
+}
+
+export interface StaffDropdownOption {
+  value: string;
+  label: string;
+}
+
+export interface StaffExistingRecords {
+  clients?: Array<{ taxPic?: string }>;
+  jobs?: Array<{ taxPic?: string; reviewer?: string }>;
+  cp204Records?: Array<{
+    pic?: string;
+    reviewer?: string;
+    revisions?: Array<{ pic?: string; reviewer?: string }>;
+  }>;
+  correspondenceRecords?: Array<{ pic?: string }>;
+  workDoneRecords?: Array<{ pic?: string; reviewer?: string }>;
+}
+
+/**
+ * Shared staff dropdown builder across all TPMS assignment dropdowns.
+ * Strictly populates from:
+ *  - `-` (blank)
+ *  - Safe current-value fallback (only if the edited record currently holds an Inactive or legacy code,
+ *    labeled `[CODE] (Inactive)` when matching an Inactive staff record)
+ *  - `TO ASSIGN`
+ *  - Active staff in `staffDirectory` (formatted `CODE — Name` when both exist)
+ *
+ * Inactive staff (e.g. AINA, KYC, TQL) and historical codes from other records are never shown
+ * in assignment dropdowns.
+ */
+export function getStaffOptions(
+  staffDirectory: StaffMember[],
+  _existingRecords?: StaffExistingRecords,
+  currentValues?: string | Array<string | undefined | null>
+): StaffDropdownOption[] {
+  const seenActiveValues = new Set<string>();
+  const activeStaffOpts: StaffDropdownOption[] = [];
+  const activeNameToStaff = new Map<string, { code: string; name: string }>();
+  const inactiveTokens = new Set<string>();
+
+  for (const s of staffDirectory) {
+    const code = (s.staffId ?? '').trim();
+    const name = (s.staffName ?? '').trim();
+
+    if (!s.active) {
+      if (code) inactiveTokens.add(code.toLowerCase());
+      if (name) inactiveTokens.add(name.toLowerCase());
+      if (code && name) {
+        inactiveTokens.add(`${code} — ${name}`.toLowerCase());
+        inactiveTokens.add(`${code} - ${name}`.toLowerCase());
+      }
+      continue;
+    }
+
+    const value = code || name;
+    if (!value) continue;
+    const key = value.toLowerCase();
+    if (key === '-' || key === 'to assign' || seenActiveValues.has(key)) continue;
+    seenActiveValues.add(key);
+
+    const label =
+      code && name && code.toLowerCase() !== name.toLowerCase()
+        ? `${code} — ${name}`
+        : value;
+    activeStaffOpts.push({ value, label });
+
+    if (name) {
+      activeNameToStaff.set(name.toLowerCase(), { code, name });
+    }
+  }
+  activeStaffOpts.sort((a, b) => a.label.localeCompare(b.label));
+
+  // Safe Current-Value Fallback (scoped strictly to the record currently being edited)
+  const fallbackOpts: StaffDropdownOption[] = [];
+  const seenFallback = new Set<string>();
+  const currentList =
+    typeof currentValues === 'string'
+      ? [currentValues]
+      : Array.isArray(currentValues)
+      ? currentValues
+      : [];
+
+  for (const raw of currentList) {
+    const val = (raw ?? '').trim();
+    if (!val) continue;
+    const key = val.toLowerCase();
+    if (key === '-' || key === 'to assign') continue;
+    if (seenActiveValues.has(key) || seenFallback.has(key)) continue;
+
+    seenFallback.add(key);
+
+    const matchedActiveByName = activeNameToStaff.get(key);
+    if (matchedActiveByName) {
+      // Stored value is an active staff member's full name instead of staffId — preserve selectable value
+      const label =
+        matchedActiveByName.code &&
+        matchedActiveByName.code.toLowerCase() !== key
+          ? `${matchedActiveByName.code} — ${matchedActiveByName.name}`
+          : val;
+      fallbackOpts.push({ value: val, label });
+      continue;
+    }
+
+    const isInactiveMatch =
+      inactiveTokens.has(key) ||
+      val
+        .split(/\s*[—–-]\s*/)
+        .map((p) => p.trim().toLowerCase())
+        .some((p) => p && inactiveTokens.has(p));
+
+    fallbackOpts.push({
+      value: val,
+      label: isInactiveMatch ? `${val} (Inactive)` : val,
+    });
+  }
+
+  return [
+    { value: '', label: '-' },
+    ...fallbackOpts,
+    { value: 'TO ASSIGN', label: 'TO ASSIGN' },
+    ...activeStaffOpts,
+  ];
 }

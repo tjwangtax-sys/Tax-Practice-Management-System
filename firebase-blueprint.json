@@ -94,6 +94,7 @@
         "relatedPersons": { "type": "array" },
         "partnershipPartners": { "type": "array" },
         "yaMonitoring": { "type": "array" },
+        "picHistory": { "type": "array", "description": "Chronological PIC handover audit history" },
         "createdBy": { "type": "string", "maxLength": 160 },
         "updatedBy": { "type": "string", "maxLength": 160 },
         "createdAt": { "type": "string", "format": "date-time" },
@@ -119,6 +120,7 @@
         "fye": { "type": "string", "maxLength": 10 },
         "ya": { "type": "string", "maxLength": 16 },
         "taxPic": { "type": "string", "maxLength": 120 },
+        "previousPic": { "type": "string", "maxLength": 120, "description": "Previous PIC prior to job handover" },
         "reviewer": { "type": "string", "maxLength": 120 },
         "status": { "type": "string", "maxLength": 60 },
         "priority": { "type": "string", "maxLength": 30 },
@@ -398,6 +400,28 @@
         "updatedAt": { "type": "string", "format": "date-time" }
       },
       "required": ["workDoneId", "clientId", "clientName", "pricingMode", "workDoneStatus", "financeInvoiceStatus", "additionalCharges", "finalPrice", "totalInvoiceAmount", "createdBy", "createdAt", "updatedAt"]
+    },
+    "UserPreferences": {
+      "title": "UserPreferences",
+      "description": "Per-user persisted UI preferences such as table column visibility, pinned columns, and column order.",
+      "type": "object",
+      "properties": {
+        "uid": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "columnPreferences": { "type": "object" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["uid", "columnPreferences", "updatedAt"]
+    },
+    "SystemCalendarSettings": {
+      "title": "SystemCalendarSettings",
+      "description": "Practice-wide calendar configuration such as excluded auto-filled Johor/Malaysia public holiday keys.",
+      "type": "object",
+      "properties": {
+        "excludedHolidays": { "type": "array", "description": "Array of excluded holiday keys formatted YYYY-MM-DD|normalized_name" },
+        "updatedBy": { "type": "string", "maxLength": 160 },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["excludedHolidays", "updatedBy", "updatedAt"]
     }
   },
   "firestore": {
@@ -444,6 +468,14 @@
     "/workDone/{workDoneDocId}": {
       "schema": { "$ref": "#/entities/WorkDoneRecord" },
       "description": "Work done proposals, HOD fee pricing/allocations, SST, and finance invoice tracking."
+    },
+    "/userPreferences/{uid}": {
+      "schema": { "$ref": "#/entities/UserPreferences" },
+      "description": "Per-user persisted column visibility, pin, and order preferences keyed by Firebase Auth UID."
+    },
+    "/systemSettings/{settingDocId}": {
+      "schema": { "$ref": "#/entities/SystemCalendarSettings" },
+      "description": "Practice-wide system settings documents (e.g. calendar excluded public holidays)."
     }
   }
 }

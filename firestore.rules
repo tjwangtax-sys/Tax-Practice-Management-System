@@ -362,5 +362,63 @@ service cloud.firestore {
         && (isAdmin() || isWorkingStaff());
       allow delete: if isVerifiedUser() && isValidId(workDoneDocId) && isAdmin();
     }
+
+    // 12. Per-User UI Preferences (Table Column Visibility, Pins & Sequence)
+    function isValidUserPreferences(d, uid) {
+      let k = d.keys();
+      return k.hasAll(['uid', 'columnPreferences', 'updatedAt'])
+        && k.hasOnly(['uid', 'columnPreferences', 'updatedAt'])
+        && d.uid is string && d.uid == uid && d.uid.size() >= 1 && d.uid.size() <= 128
+        && d.columnPreferences is map && d.columnPreferences.size() <= 30
+        && d.updatedAt is timestamp && d.updatedAt == request.time;
+    }
+
+    match /userPreferences/{uid} {
+      allow get: if isActiveStaff() && isValidId(uid) && uid == request.auth.uid;
+      allow list: if false;
+      allow create: if isActiveStaff()
+        && isValidId(uid)
+        && uid == request.auth.uid
+        && isValidUserPreferences(incoming(), uid);
+      allow update: if isActiveStaff()
+        && isValidId(uid)
+        && uid == request.auth.uid
+        && isValidUserPreferences(incoming(), uid)
+        && incoming().uid == existing().uid
+        && incoming().diff(existing()).affectedKeys().hasOnly(['columnPreferences', 'updatedAt']);
+      allow delete: if isActiveStaff() && isValidId(uid) && uid == request.auth.uid;
+    }
+
+    // 13. Practice-Wide System Settings (e.g. Calendar Excluded Public Holidays)
+    function isValidSystemCalendarSettings(d) {
+      let k = d.keys();
+      return k.hasAll(['excludedHolidays', 'updatedBy', 'updatedAt'])
+        && k.hasOnly(['excludedHolidays', 'updatedBy', 'updatedAt'])
+        && d.excludedHolidays is list
+        && d.excludedHolidays.size() <= 200
+        && (d.excludedHolidays.size() == 0 || d.excludedHolidays[0] is string)
+        && d.updatedBy is string && d.updatedBy.size() >= 1 && d.updatedBy.size() <= 160
+        && d.updatedAt is timestamp && d.updatedAt == request.time;
+    }
+
+    match /systemSettings/{settingDocId} {
+      allow get: if isActiveStaff() && isValidId(settingDocId) && settingDocId == 'calendar';
+      allow list: if false;
+      allow create: if isVerifiedUser()
+        && isValidId(settingDocId)
+        && settingDocId == 'calendar'
+        && isValidSystemCalendarSettings(incoming())
+        && isManagerOrAdmin();
+      allow update: if isVerifiedUser()
+        && isValidId(settingDocId)
+        && settingDocId == 'calendar'
+        && isValidSystemCalendarSettings(incoming())
+        && incoming().diff(existing()).affectedKeys().hasOnly(['excludedHolidays', 'updatedBy', 'updatedAt'])
+        && isManagerOrAdmin();
+      allow delete: if isVerifiedUser()
+        && isValidId(settingDocId)
+        && settingDocId == 'calendar'
+        && isAdmin();
+    }
   }
 }

@@ -17,6 +17,8 @@ import {
 import { useAuth } from '../../context/AuthContext';
 import { useData } from '../../context/DataContext';
 import { ClientSelectorField } from '../../components/ClientSelectorField';
+import { findClientRecordForRow, normalizeFyeMonthString } from '../../lib/jobUtils';
+import { useStaffOptions } from '../../hooks/useStaffOptions';
 import {
   computeCp204BasisDates,
   computeCp204CurrentEstimatedTax,
@@ -62,14 +64,12 @@ export const Cp204InitialQuickModal: React.FC<Cp204InitialQuickModalProps> = ({
   const [remarks, setRemarks] = useState('');
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [inheritedFlags, setInheritedFlags] = useState<{ pic: boolean; fye: boolean }>({
+    pic: false,
+    fye: false,
+  });
 
-  const activeStaffNames = useMemo(
-    () =>
-      Array.from(
-        new Set(staff.filter((s) => s.active).map((s) => s.staffName.trim()).filter(Boolean))
-      ),
-    [staff]
-  );
+  const staffOptions = useStaffOptions([pic, reviewer]);
 
   useEffect(() => {
     if (!open) return;
@@ -78,15 +78,21 @@ export const Cp204InitialQuickModal: React.FC<Cp204InitialQuickModalProps> = ({
     setYa(targetYa);
 
     const matched = prefillClientId
-      ? clients.find((c) => c.clientId === prefillClientId)
+      ? findClientRecordForRow(clients, { clientId: prefillClientId })
       : undefined;
 
     if (matched) {
       setClientId(matched.clientId);
       setClientName(matched.clientName);
-      const nextFye = matched.fye || '12';
+      const clientFye = (matched.fye || '').trim();
+      const nextFye = normalizeFyeMonthString(clientFye) || clientFye || '12';
+      const clientPic = (matched.taxPic || '').trim();
       setFye(nextFye);
-      setPic(matched.taxPic || '');
+      setPic(clientPic);
+      setInheritedFlags({
+        pic: Boolean(clientPic),
+        fye: Boolean(clientFye),
+      });
       const dates = computeCp204BasisDates(targetYa, nextFye);
       setBasisPeriodStart(dates.basisPeriodStart);
       setBasisPeriodEnd(dates.basisPeriodEnd);
@@ -96,6 +102,7 @@ export const Cp204InitialQuickModal: React.FC<Cp204InitialQuickModalProps> = ({
       setClientName('');
       setFye('12');
       setPic('');
+      setInheritedFlags({ pic: false, fye: false });
       const dates = computeCp204BasisDates(targetYa, '12');
       setBasisPeriodStart(dates.basisPeriodStart);
       setBasisPeriodEnd(dates.basisPeriodEnd);
@@ -116,22 +123,32 @@ export const Cp204InitialQuickModal: React.FC<Cp204InitialQuickModalProps> = ({
     if (!found) {
       setClientId('');
       setClientName('');
+      setInheritedFlags({ pic: false, fye: false });
       return;
     }
     setClientId(found.clientId);
     setClientName(found.clientName);
-    const nextFye = found.fye || fye || '12';
+    const clientFye = (found.fye || '').trim();
+    const nextFye = normalizeFyeMonthString(clientFye) || clientFye || fye || '12';
+    const clientPic = (found.taxPic || '').trim();
     setFye(nextFye);
-    if (found.taxPic) setPic(found.taxPic);
+    if (clientPic) setPic(clientPic);
+    setInheritedFlags({
+      pic: Boolean(clientPic),
+      fye: Boolean(clientFye),
+    });
     const dates = computeCp204BasisDates(ya, nextFye);
     setBasisPeriodStart(dates.basisPeriodStart);
     setBasisPeriodEnd(dates.basisPeriodEnd);
     setStatutoryCp204DueDate(dates.statutoryCp204DueDate);
   };
 
-  const handleYaOrFyeChange = (nextYa: string, nextFye: string) => {
+  const handleYaOrFyeChange = (nextYa: string, nextFye: string, fyeManualOverride = false) => {
     setYa(nextYa);
     setFye(nextFye);
+    if (fyeManualOverride) {
+      setInheritedFlags((prev) => ({ ...prev, fye: false }));
+    }
     const dates = computeCp204BasisDates(nextYa, nextFye);
     setBasisPeriodStart(dates.basisPeriodStart);
     setBasisPeriodEnd(dates.basisPeriodEnd);
@@ -231,7 +248,7 @@ export const Cp204InitialQuickModal: React.FC<Cp204InitialQuickModalProps> = ({
               <select
                 disabled={isReadOnly}
                 value={fye}
-                onChange={(e) => handleYaOrFyeChange(ya, e.target.value)}
+                onChange={(e) => handleYaOrFyeChange(ya, e.target.value, true)}
                 className={`${inputCls} font-mono`}
               >
                 <option value="">—</option>
@@ -241,6 +258,11 @@ export const Cp204InitialQuickModal: React.FC<Cp204InitialQuickModalProps> = ({
                   </option>
                 ))}
               </select>
+              {inheritedFlags.fye && (
+                <p className="mt-1 text-[10px] font-medium text-teal-700">
+                  Inherited from Client Master
+                </p>
+              )}
             </div>
             <div>
               <label className={labelCls}>Status</label>
@@ -320,30 +342,41 @@ export const Cp204InitialQuickModal: React.FC<Cp204InitialQuickModalProps> = ({
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
             <div>
               <label className={labelCls}>PIC</label>
-              <input
-                list="cp204-quick-staff"
-                maxLength={120}
+              <select
                 disabled={isReadOnly}
                 value={pic}
-                onChange={(e) => setPic(e.target.value)}
+                onChange={(e) => {
+                  setInheritedFlags((prev) => ({ ...prev, pic: false }));
+                  setPic(e.target.value);
+                }}
                 className={inputCls}
-              />
-              <datalist id="cp204-quick-staff">
-                {activeStaffNames.map((n) => (
-                  <option key={n} value={n} />
+              >
+                {staffOptions.map((opt) => (
+                  <option key={opt.value || '__blank__'} value={opt.value}>
+                    {opt.label}
+                  </option>
                 ))}
-              </datalist>
+              </select>
+              {inheritedFlags.pic && (
+                <p className="mt-1 text-[10px] font-medium text-teal-700">
+                  Inherited from Client Master
+                </p>
+              )}
             </div>
             <div>
               <label className={labelCls}>Reviewer</label>
-              <input
-                list="cp204-quick-staff"
-                maxLength={120}
+              <select
                 disabled={isReadOnly}
                 value={reviewer}
                 onChange={(e) => setReviewer(e.target.value)}
                 className={inputCls}
-              />
+              >
+                {staffOptions.map((opt) => (
+                  <option key={opt.value || '__blank__'} value={opt.value}>
+                    {opt.label}
+                  </option>
+                ))}
+              </select>
             </div>
           </div>
 
@@ -412,7 +445,7 @@ export const Cp204RevisionQuickModal: React.FC<Cp204RevisionQuickModalProps> = (
   onClose,
 }) => {
   const { isReadOnly } = useAuth();
-  const { cp204Records, staff, saveCp204 } = useData();
+  const { clients, cp204Records, saveCp204 } = useData();
 
   const [recordSearch, setRecordSearch] = useState('');
   const [selectedRecordId, setSelectedRecordId] = useState('');
@@ -422,6 +455,7 @@ export const Cp204RevisionQuickModal: React.FC<Cp204RevisionQuickModalProps> = (
   const [reason, setReason] = useState('');
   const [reviewStatus, setReviewStatus] = useState<Cp204RevisionStatus>('In Progress');
   const [pic, setPic] = useState('');
+  const [inheritedPic, setInheritedPic] = useState(false);
   const [reviewer, setReviewer] = useState('');
   const [submissionDeadline, setSubmissionDeadline] = useState('');
   const [submissionDate, setSubmissionDate] = useState('');
@@ -442,13 +476,7 @@ export const Cp204RevisionQuickModal: React.FC<Cp204RevisionQuickModalProps> = (
     );
   }, [cp204Records, recordSearch]);
 
-  const activeStaffNames = useMemo(
-    () =>
-      Array.from(
-        new Set(staff.filter((s) => s.active).map((s) => s.staffName.trim()).filter(Boolean))
-      ),
-    [staff]
-  );
+  const staffOptions = useStaffOptions([pic, reviewer]);
 
   const parentRecord: Cp204Record | undefined = useMemo(
     () => cp204Records.find((r) => r.id === selectedRecordId),
@@ -456,12 +484,23 @@ export const Cp204RevisionQuickModal: React.FC<Cp204RevisionQuickModalProps> = (
   );
 
   const applyParentDefaults = (rec: Cp204Record | undefined, month: Cp204RevisionMonth) => {
-    if (!rec) return;
+    if (!rec) {
+      setInheritedPic(false);
+      return;
+    }
     const prevTax =
       rec.currentEstimatedTax > 0 ? rec.currentEstimatedTax : rec.originalEstimatedTax;
+    const matchedClient = findClientRecordForRow(clients, {
+      clientId: rec.clientId,
+      clientName: rec.clientName,
+    });
+    const recPic = (rec.pic || '').trim();
+    const clientPic = (matchedClient?.taxPic || '').trim();
+    const resolvedPic = recPic || clientPic;
     setPreviousEstimatedTax(String(prevTax));
     setProposedEstimatedTax(String(prevTax));
-    setPic(rec.pic || '');
+    setPic(resolvedPic);
+    setInheritedPic(!recPic && Boolean(clientPic));
     setReviewer(rec.reviewer || '');
     setSubmissionDeadline(computeRevisionDeadline(rec.basisPeriodStart, month));
   };
@@ -489,7 +528,7 @@ export const Cp204RevisionQuickModal: React.FC<Cp204RevisionQuickModalProps> = (
     setSubmissionDate('');
     setAcknowledgementUrl('');
     setRemarks('');
-  }, [open, preselectedRecordId, cp204Records]);
+  }, [open, preselectedRecordId, cp204Records, clients]); // eslint-disable-line react-hooks/exhaustive-deps
 
   if (!open) return null;
 
@@ -541,20 +580,30 @@ export const Cp204RevisionQuickModal: React.FC<Cp204RevisionQuickModalProps> = (
         nextRevisions
       );
 
+      const matchedClient = findClientRecordForRow(clients, {
+        clientId: parentRecord.clientId,
+        clientName: parentRecord.clientName,
+      });
+      const resolvedParentFyeRaw = (parentRecord.fye || '').trim() || (matchedClient?.fye || '').trim();
+      const resolvedParentFye =
+        normalizeFyeMonthString(resolvedParentFyeRaw) || resolvedParentFyeRaw;
+      const resolvedParentPic =
+        (parentRecord.pic || '').trim() || (matchedClient?.taxPic || '').trim() || pic.trim();
+
       await saveCp204(
         {
           cp204Id: parentRecord.cp204Id,
           clientId: parentRecord.clientId,
           clientName: parentRecord.clientName,
           ya: parentRecord.ya,
-          fye: parentRecord.fye,
+          fye: resolvedParentFye,
           basisPeriodStart: parentRecord.basisPeriodStart,
           basisPeriodEnd: parentRecord.basisPeriodEnd,
           originalEstimatedTax: parentRecord.originalEstimatedTax,
           originalSubmissionDate: parentRecord.originalSubmissionDate,
           currentEstimatedTax: nextCurrentTax,
           statutoryCp204DueDate: parentRecord.statutoryCp204DueDate,
-          pic: parentRecord.pic,
+          pic: resolvedParentPic,
           reviewer: parentRecord.reviewer,
           status: parentRecord.status,
           acknowledgementUrl: parentRecord.acknowledgementUrl,
@@ -743,30 +792,41 @@ export const Cp204RevisionQuickModal: React.FC<Cp204RevisionQuickModalProps> = (
             </div>
             <div>
               <label className={labelCls}>PIC</label>
-              <input
-                list="cp204-rev-staff"
-                maxLength={120}
+              <select
                 disabled={isReadOnly}
                 value={pic}
-                onChange={(e) => setPic(e.target.value)}
+                onChange={(e) => {
+                  setInheritedPic(false);
+                  setPic(e.target.value);
+                }}
                 className={inputCls}
-              />
-              <datalist id="cp204-rev-staff">
-                {activeStaffNames.map((n) => (
-                  <option key={n} value={n} />
+              >
+                {staffOptions.map((opt) => (
+                  <option key={opt.value || '__blank__'} value={opt.value}>
+                    {opt.label}
+                  </option>
                 ))}
-              </datalist>
+              </select>
+              {inheritedPic && (
+                <p className="mt-1 text-[10px] font-medium text-teal-700">
+                  Inherited from Client Master
+                </p>
+              )}
             </div>
             <div>
               <label className={labelCls}>Reviewer</label>
-              <input
-                list="cp204-rev-staff"
-                maxLength={120}
+              <select
                 disabled={isReadOnly}
                 value={reviewer}
                 onChange={(e) => setReviewer(e.target.value)}
                 className={inputCls}
-              />
+              >
+                {staffOptions.map((opt) => (
+                  <option key={opt.value || '__blank__'} value={opt.value}>
+                    {opt.label}
+                  </option>
+                ))}
+              </select>
             </div>
           </div>
 

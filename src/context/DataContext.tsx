@@ -1,4 +1,4 @@
-import React, { createContext, useContext, useEffect, useState, useCallback, useMemo } from 'react';
+import React, { createContext, useContext, useEffect, useState, useCallback, useMemo, useRef } from 'react';
 import {
   collection,
   deleteDoc,
@@ -14,6 +14,7 @@ import { db, emailToStaffKey, handleFirestoreError, OperationType } from '../lib
 import { DEFAULT_MALAYSIAN_TAX_SETTINGS } from '../lib/defaultSettings';
 import { normalizeSettingGroup } from '../lib/settingsDropdown';
 import { applyMalaysianJobRules } from '../lib/deadlineUtils';
+import { isJobOpenForWork, normalizeClientIdKey } from '../lib/jobUtils';
 import {
   computeCp204CurrentEstimatedTax,
   generateNextSequentialId,
@@ -29,10 +30,12 @@ import {
   Cp204Record,
   JobHistoryEntry,
   NotificationItem,
+  PicHistoryEntry,
   safeNum,
   sanitizeDocId,
   SettingValue,
   StaffMember,
+  StoredColumnPrefsV2,
   TaxJob,
   TaxPaymentRecord,
   WorkDoneFeeAllocation,
@@ -106,6 +109,13 @@ interface DataContextValue {
   inactivateClient: (clientId: string, dateOfResigned: string) => Promise<void>;
   reactivateClient: (clientId: string) => Promise<void>;
   deleteClient: (clientId: string) => Promise<void>;
+  batchReassignClientPic: (params: {
+    fromPic: string;
+    toPic: string;
+    clientDocIds: string[];
+    cascadeToJobsAndCp204: boolean;
+    note?: string;
+  }) => Promise<{ clientsUpdated: number; jobsUpdated: number; cp204Updated: number }>;
   // Jobs CRUD + Batch Add + Audit History
   saveJob: (job: JobSavePayload, existingId?: string, auditRemarks?: string) => Promise<string>;
   batchCreateJobs: (items: JobSavePayload[]) => Promise<{ createdCount: number; skippedCount: number }>;
@@ -113,7 +123,11 @@ interface DataContextValue {
     items: Array<{ id: string; data: JobSavePayload; auditRemark?: string }>
   ) => Promise<{ updatedCount: number }>;
   deleteJob: (jobId: string) => Promise<void>;
-  // Calendar Events CRUD
+  // Calendar Events CRUD + Excluded Public Holidays
+  excludedHolidays: string[];
+  excludePublicHoliday: (holidayKey: string) => Promise<void>;
+  restorePublicHoliday: (holidayKey: string) => Promise<void>;
+  restoreAllPublicHolidays: () => Promise<void>;
   saveCalendarEvent: (
     event: Omit<CalendarEvent, 'id' | 'createdBy' | 'updatedBy' | 'createdAt' | 'updatedAt'>,
     existingId?: string
@@ -158,11 +172,16 @@ interface DataContextValue {
   markNotificationRead: (notificationId: string) => Promise<void>;
   markAllNotificationsRead: () => Promise<void>;
   localReadIds: string[];
+  // Per-user persisted UI column preferences
+  columnPreferences: Record<string, StoredColumnPrefsV2>;
+  columnPreferencesLoaded: boolean;
+  saveColumnPreference: (moduleKey: string, pref: StoredColumnPrefsV2) => void;
 }
 
 const DataContext = createContext<DataContextValue | null>(null);
 
 const LOCAL_READ_STORAGE_KEY = 'tpms_local_read_notifications_v1';
+const EXCLUDED_HOLIDAYS_STORAGE_KEY = 'tpms_excluded_holidays_v1';
 
 const REQUIRED_CLIENT_KEYS = new Set([
   'clientId',
@@ -286,6 +305,7 @@ function hydrateClientRecord(id: string, raw: Partial<ClientRecord>): ClientReco
     relatedPersons: Array.isArray(raw.relatedPersons) ? raw.relatedPersons : [],
     partnershipPartners: Array.isArray(raw.partnershipPartners) ? raw.partnershipPartners : [],
     yaMonitoring: Array.isArray(raw.yaMonitoring) ? raw.yaMonitoring : [],
+    picHistory: Array.isArray(raw.picHistory) ? raw.picHistory : [],
     createdBy: raw.createdBy ?? '',
     updatedBy: raw.updatedBy ?? '',
     createdAt: raw.createdAt,
@@ -311,6 +331,7 @@ function buildSanitizedJobDocument(
     fye: clampStr(computed.fye, 10),
     ya: clampStr(computed.ya, 16),
     taxPic: clampStr(computed.taxPic, 120),
+    previousPic: clampStr(computed.previousPic, 120),
     reviewer: clampStr(computed.reviewer, 120),
     status: clampStr(computed.status || 'Not Started', 60),
     statusDate: clampStr(computed.statusDate, 20),
@@ -438,6 +459,219 @@ export const DataProvider: React.FC<{ children: React.ReactNode }> = ({ children
       return [];
     }
   });
+  const [columnPreferences, setColumnPreferences] = useState<Record<string, StoredColumnPrefsV2>>({});
+  const [columnPreferencesLoaded, setColumnPreferencesLoaded] = useState(false);
+  const columnPrefsRef = useRef<Record<string, StoredColumnPrefsV2>>({});
+  const columnPrefsSaveTimerRef = useRef<number | null>(null);
+  const [excludedHolidays, setExcludedHolidays] = useState<string[]>(() => {
+    try {
+      const raw = localStorage.getItem(EXCLUDED_HOLIDAYS_STORAGE_KEY);
+      if (!raw) return [];
+      const parsed = JSON.parse(raw);
+      return Array.isArray(parsed)
+        ? parsed.filter((x): x is string => typeof x === 'string' && x.trim().length > 0)
+        : [];
+    } catch {
+      return [];
+    }
+  });
+  const excludedHolidaysRef = useRef<string[]>(excludedHolidays);
+  useEffect(() => {
+    excludedHolidaysRef.current = excludedHolidays;
+  }, [excludedHolidays]);
+
+  useEffect(() => {
+    if (accessStatus !== 'authorized' || !user) return;
+    const calSettingsRef = doc(db, 'systemSettings', 'calendar');
+    const unsubCalSettings = onSnapshot(
+      calSettingsRef,
+      (snap) => {
+        if (snap.exists()) {
+          const data = snap.data() as { excludedHolidays?: unknown };
+          const list = Array.isArray(data?.excludedHolidays)
+            ? Array.from(
+                new Set(
+                  data.excludedHolidays
+                    .filter((x): x is string => typeof x === 'string')
+                    .map((s) => s.trim().toLowerCase())
+                    .filter(Boolean)
+                )
+              )
+            : [];
+          excludedHolidaysRef.current = list;
+          setExcludedHolidays(list);
+          try {
+            localStorage.setItem(EXCLUDED_HOLIDAYS_STORAGE_KEY, JSON.stringify(list));
+          } catch {
+            // ignore storage errors
+          }
+        }
+      },
+      (err) => {
+        console.warn('Unable to sync calendar excluded holidays from Firestore:', err);
+      }
+    );
+    return () => unsubCalSettings();
+  }, [accessStatus, user]);
+
+  const persistExcludedHolidays = useCallback(
+    async (nextList: string[]) => {
+      const cleaned = Array.from(
+        new Set(nextList.map((s) => s.trim().toLowerCase()).filter(Boolean))
+      ).slice(0, 200);
+      excludedHolidaysRef.current = cleaned;
+      setExcludedHolidays(cleaned);
+      try {
+        localStorage.setItem(EXCLUDED_HOLIDAYS_STORAGE_KEY, JSON.stringify(cleaned));
+      } catch {
+        // ignore storage errors
+      }
+      if (accessStatus !== 'authorized' || !user) return;
+      const actor = clampStr(user.email || staffProfile?.email || 'admin', 160);
+      try {
+        await setDoc(doc(db, 'systemSettings', 'calendar'), {
+          excludedHolidays: cleaned,
+          updatedBy: actor,
+          updatedAt: serverTimestamp(),
+        });
+      } catch (err) {
+        console.warn('Failed to persist excluded holidays to Firestore (kept in localStorage):', err);
+      }
+    },
+    [accessStatus, user, staffProfile]
+  );
+
+  const excludePublicHoliday = useCallback(
+    async (holidayKey: string) => {
+      const normalized = holidayKey.trim().toLowerCase();
+      if (!normalized) return;
+      if (excludedHolidaysRef.current.includes(normalized)) return;
+      await persistExcludedHolidays([...excludedHolidaysRef.current, normalized]);
+    },
+    [persistExcludedHolidays]
+  );
+
+  const restorePublicHoliday = useCallback(
+    async (holidayKey: string) => {
+      const normalized = holidayKey.trim().toLowerCase();
+      if (!normalized) return;
+      await persistExcludedHolidays(
+        excludedHolidaysRef.current.filter((k) => k !== normalized)
+      );
+    },
+    [persistExcludedHolidays]
+  );
+
+  const restoreAllPublicHolidays = useCallback(async () => {
+    await persistExcludedHolidays([]);
+  }, [persistExcludedHolidays]);
+
+  useEffect(() => {
+    if (accessStatus !== 'authorized' || !user) {
+      setColumnPreferences({});
+      columnPrefsRef.current = {};
+      setColumnPreferencesLoaded(false);
+      if (columnPrefsSaveTimerRef.current !== null) {
+        window.clearTimeout(columnPrefsSaveTimerRef.current);
+        columnPrefsSaveTimerRef.current = null;
+      }
+      return;
+    }
+
+    const prefRef = doc(db, 'userPreferences', user.uid);
+    const unsubPrefs = onSnapshot(
+      prefRef,
+      (snap) => {
+        if (snap.exists()) {
+          const raw = snap.data() as { columnPreferences?: Record<string, unknown> };
+          const incomingMap: Record<string, StoredColumnPrefsV2> = {};
+          if (raw?.columnPreferences && typeof raw.columnPreferences === 'object') {
+            for (const [modKey, val] of Object.entries(raw.columnPreferences)) {
+              if (!val || typeof val !== 'object') continue;
+              const obj = val as Partial<StoredColumnPrefsV2>;
+              if (obj.visible && typeof obj.visible === 'object') {
+                incomingMap[modKey] = {
+                  version: 2,
+                  visible: obj.visible as Record<string, boolean>,
+                  pinned: Array.isArray(obj.pinned) ? obj.pinned.filter((x): x is string => typeof x === 'string') : [],
+                  order: Array.isArray(obj.order) ? obj.order.filter((x): x is string => typeof x === 'string') : [],
+                  updatedAtMs: typeof obj.updatedAtMs === 'number' ? obj.updatedAtMs : undefined,
+                };
+              }
+            }
+          }
+          // Merge remote with any newer local unsaved entries
+          const merged: Record<string, StoredColumnPrefsV2> = { ...incomingMap };
+          for (const [modKey, localPref] of Object.entries(columnPrefsRef.current)) {
+            const remotePref = incomingMap[modKey];
+            if (!remotePref || (localPref.updatedAtMs ?? 0) > (remotePref.updatedAtMs ?? 0)) {
+              merged[modKey] = localPref;
+            }
+          }
+          columnPrefsRef.current = merged;
+          setColumnPreferences(merged);
+        } else {
+          setColumnPreferences({ ...columnPrefsRef.current });
+        }
+        setColumnPreferencesLoaded(true);
+      },
+      (err) => {
+        console.warn('Unable to sync user column preferences from Firestore:', err);
+        setColumnPreferencesLoaded(true);
+      }
+    );
+
+    return () => {
+      unsubPrefs();
+      if (columnPrefsSaveTimerRef.current !== null) {
+        window.clearTimeout(columnPrefsSaveTimerRef.current);
+        columnPrefsSaveTimerRef.current = null;
+      }
+    };
+  }, [accessStatus, user]);
+
+  const saveColumnPreference = useCallback(
+    (moduleKey: string, pref: StoredColumnPrefsV2) => {
+      const cleanKey = moduleKey.trim().slice(0, 60);
+      if (!cleanKey) return;
+      const sanitizedPref: StoredColumnPrefsV2 = {
+        version: 2,
+        visible: { ...pref.visible },
+        pinned: [...pref.pinned],
+        order: [...pref.order],
+        updatedAtMs: pref.updatedAtMs ?? Date.now(),
+      };
+      const nextMap: Record<string, StoredColumnPrefsV2> = {
+        ...columnPrefsRef.current,
+        [cleanKey]: sanitizedPref,
+      };
+      // Enforce max 30 modules in Firestore map
+      const entries = Object.entries(nextMap);
+      const boundedMap: Record<string, StoredColumnPrefsV2> =
+        entries.length <= 30 ? nextMap : Object.fromEntries(entries.slice(-30));
+
+      columnPrefsRef.current = boundedMap;
+      setColumnPreferences(boundedMap);
+
+      if (accessStatus !== 'authorized' || !user) return;
+
+      if (columnPrefsSaveTimerRef.current !== null) {
+        window.clearTimeout(columnPrefsSaveTimerRef.current);
+      }
+      const targetUid = user.uid;
+      columnPrefsSaveTimerRef.current = window.setTimeout(() => {
+        columnPrefsSaveTimerRef.current = null;
+        void setDoc(doc(db, 'userPreferences', targetUid), {
+          uid: targetUid,
+          columnPreferences: columnPrefsRef.current,
+          updatedAt: serverTimestamp(),
+        }).catch((err) => {
+          console.warn('Failed to persist column preferences to Firestore:', err);
+        });
+      }, 500);
+    },
+    [accessStatus, user]
+  );
 
   useEffect(() => {
     if (accessStatus !== 'authorized' || !user) {
@@ -1063,8 +1297,30 @@ export const DataProvider: React.FC<{ children: React.ReactNode }> = ({ children
       existingId?: string
     ): Promise<string> => {
       const actorEmail = clampStr(user?.email || '', 160);
+      const actorLabel = clampStr(
+        staffProfile ? `${staffProfile.staffName} (${actorEmail})` : actorEmail,
+        160
+      );
       const docId = existingId || sanitizeDocId(`CL_${client.clientId}_${Date.now().toString(36)}`);
       const ref = doc(db, 'clients', docId);
+      const existingClient = existingId ? clients.find((c) => c.id === existingId) : undefined;
+      const nextPicHistory: PicHistoryEntry[] = Array.isArray(client.picHistory)
+        ? [...client.picHistory]
+        : [...(existingClient?.picHistory || [])];
+
+      if (existingClient) {
+        const prevPic = (existingClient.taxPic || '').trim();
+        const nextPic = clampStr(client.taxPic, 120);
+        if (prevPic !== nextPic && (prevPic !== '' || nextPic !== '')) {
+          nextPicHistory.push({
+            date: new Date().toISOString().slice(0, 10),
+            fromPic: prevPic || 'Unassigned',
+            toPic: nextPic || 'Unassigned',
+            transferredBy: actorLabel || actorEmail || 'system',
+            note: 'Updated in Client Profile',
+          });
+        }
+      }
 
       const normalizedFirstYa = clampStr(client.firstYA ?? client.firstYa, 20);
       const basePayload = {
@@ -1131,6 +1387,7 @@ export const DataProvider: React.FC<{ children: React.ReactNode }> = ({ children
         relatedPersons: (client.relatedPersons || []).slice(0, 50),
         partnershipPartners: (client.partnershipPartners || []).slice(0, 50),
         yaMonitoring: (client.yaMonitoring || []).slice(0, 50),
+        picHistory: nextPicHistory.slice(-100),
         updatedBy: actorEmail,
         updatedAt: serverTimestamp(),
       };
@@ -1171,7 +1428,7 @@ export const DataProvider: React.FC<{ children: React.ReactNode }> = ({ children
         );
       }
     },
-    [user, staffProfile]
+    [user, staffProfile, clients]
   );
 
   const inactivateClient = useCallback(
@@ -1227,9 +1484,21 @@ export const DataProvider: React.FC<{ children: React.ReactNode }> = ({ children
       const docId = existingId || sanitizeDocId(`JOB_${job.jobCode}_${Date.now().toString(36)}`);
       const existingJob = existingId ? jobs.find((j) => j.id === existingId) : undefined;
       const oldStatus = existingJob?.status ?? '';
+      const prevJobPic = (existingJob?.taxPic || '').trim();
+      const nextJobPic = clampStr(job.taxPic, 120);
+      const picChanged = Boolean(
+        existingJob && prevJobPic !== nextJobPic && (prevJobPic !== '' || nextJobPic !== '')
+      );
+      const resolvedPreviousPic =
+        picChanged && prevJobPic
+          ? prevJobPic
+          : job.previousPic ?? existingJob?.previousPic ?? '';
 
       const { payload, computedStatus, meta } = buildSanitizedJobDocument(
-        job,
+        {
+          ...job,
+          previousPic: resolvedPreviousPic,
+        },
         actorEmail,
         Boolean(existingId)
       );
@@ -1238,12 +1507,20 @@ export const DataProvider: React.FC<{ children: React.ReactNode }> = ({ children
         ? 'CREATED'
         : oldStatus !== computedStatus
         ? 'STATUS_CHANGED'
+        : picChanged
+        ? 'PIC_HANDOVER'
         : 'UPDATED';
+
+      const handoverRemark = `PIC Handover: ${prevJobPic || 'Unassigned'} → ${
+        nextJobPic || 'Unassigned'
+      } — Continued by ${nextJobPic || 'Unassigned'}${auditRemarks ? ` · ${auditRemarks}` : ''}`;
 
       const defaultRemark = !existingId
         ? `Created ${meta.jobType || meta.module} job (${meta.jobCode}) for ${meta.clientName}`
         : oldStatus !== computedStatus
         ? `Status updated from "${oldStatus}" to "${computedStatus}"`
+        : picChanged
+        ? handoverRemark
         : `Updated job fields for ${meta.jobCode}`;
 
       const historyDocId = sanitizeDocId(
@@ -1263,15 +1540,42 @@ export const DataProvider: React.FC<{ children: React.ReactNode }> = ({ children
           });
         }
 
-        batch.set(doc(db, 'history', historyDocId), {
-          timestamp: serverTimestamp(),
-          jobId: docId,
-          action,
-          oldStatus: clampStr(oldStatus, 60),
-          newStatus: clampStr(computedStatus, 60),
-          user: actorLabel,
-          remarks: clampStr(auditRemarks || defaultRemark, 1000),
-        });
+        if (picChanged && action === 'PIC_HANDOVER') {
+          batch.set(doc(db, 'history', historyDocId), {
+            timestamp: serverTimestamp(),
+            jobId: docId,
+            action: 'PIC_HANDOVER',
+            oldStatus: clampStr(prevJobPic || 'Unassigned', 60),
+            newStatus: clampStr(nextJobPic || 'Unassigned', 60),
+            user: actorLabel,
+            remarks: clampStr(handoverRemark, 1000),
+          });
+        } else {
+          batch.set(doc(db, 'history', historyDocId), {
+            timestamp: serverTimestamp(),
+            jobId: docId,
+            action,
+            oldStatus: clampStr(oldStatus, 60),
+            newStatus: clampStr(computedStatus, 60),
+            user: actorLabel,
+            remarks: clampStr(auditRemarks || defaultRemark, 1000),
+          });
+
+          if (picChanged) {
+            const handoverHistId = sanitizeDocId(
+              `HIST_PIC_${docId}_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 5)}`
+            );
+            batch.set(doc(db, 'history', handoverHistId), {
+              timestamp: serverTimestamp(),
+              jobId: docId,
+              action: 'PIC_HANDOVER',
+              oldStatus: clampStr(prevJobPic || 'Unassigned', 60),
+              newStatus: clampStr(nextJobPic || 'Unassigned', 60),
+              user: actorLabel,
+              remarks: clampStr(handoverRemark, 1000),
+            });
+          }
+        }
 
         await batch.commit();
         return docId;
@@ -2334,6 +2638,191 @@ export const DataProvider: React.FC<{ children: React.ReactNode }> = ({ children
     }
   }, [user, isReadOnly, notifications]);
 
+  const batchReassignClientPic = useCallback(
+    async ({
+      fromPic,
+      toPic,
+      clientDocIds,
+      cascadeToJobsAndCp204,
+      note,
+    }: {
+      fromPic: string;
+      toPic: string;
+      clientDocIds: string[];
+      cascadeToJobsAndCp204: boolean;
+      note?: string;
+    }): Promise<{ clientsUpdated: number; jobsUpdated: number; cp204Updated: number }> => {
+      const actorEmail = clampStr(user?.email || staffProfile?.email || 'system', 160);
+      const actorLabel = clampStr(
+        staffProfile ? `${staffProfile.staffName} (${actorEmail})` : actorEmail,
+        160
+      );
+      const cleanToPic = clampStr(toPic, 120);
+      const cleanFromPic = clampStr(fromPic, 120) || 'Unassigned';
+      const cleanNote = clampStr(note, 300);
+      const todayIso = new Date().toISOString().slice(0, 10);
+      const selectedIdSet = new Set(clientDocIds.filter(Boolean));
+      const targetClients = clients.filter((c) => selectedIdSet.has(c.id));
+      if (targetClients.length === 0) {
+        return { clientsUpdated: 0, jobsUpdated: 0, cp204Updated: 0 };
+      }
+
+      const targetNormClientIds = new Set(
+        targetClients.map((c) => normalizeClientIdKey(c.clientId)).filter(Boolean)
+      );
+
+      const targetJobs = cascadeToJobsAndCp204
+        ? jobs.filter(
+            (j) =>
+              isJobOpenForWork(j) &&
+              ((j.clientDocId && selectedIdSet.has(j.clientDocId)) ||
+                targetNormClientIds.has(normalizeClientIdKey(j.clientId)))
+          )
+        : [];
+
+      const targetCp204 = cascadeToJobsAndCp204
+        ? cp204Records.filter(
+            (rec) =>
+              (rec.status || '').trim().toLowerCase() !== 'completed' &&
+              targetNormClientIds.has(normalizeClientIdKey(rec.clientId))
+          )
+        : [];
+
+      type BatchWriteOp =
+        | { type: 'update'; collectionName: 'clients' | 'jobs' | 'cp204'; id: string; data: Record<string, unknown> }
+        | { type: 'set'; collectionName: 'history'; id: string; data: Record<string, unknown> };
+
+      const ops: BatchWriteOp[] = [];
+      const batchNonce = Date.now().toString(36);
+
+      for (const c of targetClients) {
+        const clientFromPic = (c.taxPic || '').trim() || cleanFromPic;
+        const entry: PicHistoryEntry = {
+          date: todayIso,
+          fromPic: clientFromPic,
+          toPic: cleanToPic || 'Unassigned',
+          transferredBy: actorLabel || actorEmail,
+          note: cleanNote || 'Batch Portfolio Handover',
+        };
+        const nextHistory = [...(Array.isArray(c.picHistory) ? c.picHistory : []), entry].slice(-100);
+        ops.push({
+          type: 'update',
+          collectionName: 'clients',
+          id: c.id,
+          data: {
+            taxPic: cleanToPic,
+            picHistory: nextHistory,
+            updatedBy: actorEmail,
+            updatedAt: serverTimestamp(),
+          },
+        });
+      }
+
+      targetJobs.forEach((j, idx) => {
+        const priorJobPic = (j.taxPic || '').trim() || cleanFromPic;
+        ops.push({
+          type: 'update',
+          collectionName: 'jobs',
+          id: j.id,
+          data: {
+            taxPic: cleanToPic,
+            previousPic: priorJobPic,
+            updatedBy: actorEmail,
+            updatedAt: serverTimestamp(),
+          },
+        });
+
+        const jobHistId = sanitizeDocId(`HIST_PIC_${j.id}_${batchNonce}_${idx}`);
+        ops.push({
+          type: 'set',
+          collectionName: 'history',
+          id: jobHistId,
+          data: {
+            timestamp: serverTimestamp(),
+            jobId: j.id,
+            action: 'PIC_HANDOVER',
+            oldStatus: clampStr(priorJobPic, 60),
+            newStatus: clampStr(cleanToPic || 'Unassigned', 60),
+            user: actorLabel || actorEmail,
+            remarks: clampStr(
+              `PIC Handover: ${priorJobPic} → ${cleanToPic || 'Unassigned'} — Continued by ${
+                cleanToPic || 'Unassigned'
+              } (Batch Portfolio Handover${cleanNote ? `: ${cleanNote}` : ''})`,
+              1000
+            ),
+          },
+        });
+      });
+
+      for (const r of targetCp204) {
+        ops.push({
+          type: 'update',
+          collectionName: 'cp204',
+          id: r.id,
+          data: {
+            pic: cleanToPic,
+            updatedBy: actorEmail,
+            updatedAt: serverTimestamp(),
+          },
+        });
+      }
+
+      const summaryHistId = sanitizeDocId(
+        `HIST_PIC_BATCH_${batchNonce}_${Math.random().toString(36).slice(2, 6)}`
+      );
+      const extraSummary = cascadeToJobsAndCp204
+        ? ` (+ ${targetJobs.length} open job${targetJobs.length === 1 ? '' : 's'}, ${targetCp204.length} active CP204)`
+        : '';
+      ops.push({
+        type: 'set',
+        collectionName: 'history',
+        id: summaryHistId,
+        data: {
+          timestamp: serverTimestamp(),
+          jobId: 'BATCH_PIC_TRANSFER',
+          action: 'Batch PIC Transfer',
+          oldStatus: clampStr(cleanFromPic, 60),
+          newStatus: clampStr(cleanToPic || 'Unassigned', 60),
+          user: actorLabel || actorEmail,
+          remarks: clampStr(
+            `Batch PIC Transfer: ${cleanFromPic} → ${cleanToPic || 'Unassigned'} (${
+              targetClients.length
+            } client${targetClients.length === 1 ? '' : 's'})${extraSummary}${
+              cleanNote ? ` · Note: ${cleanNote}` : ''
+            }`,
+            1000
+          ),
+        },
+      });
+
+      const CHUNK_SIZE = 400;
+      try {
+        for (let i = 0; i < ops.length; i += CHUNK_SIZE) {
+          const chunk = ops.slice(i, i + CHUNK_SIZE);
+          const batch = writeBatch(db);
+          for (const op of chunk) {
+            const targetRef = doc(db, op.collectionName, op.id);
+            if (op.type === 'update') {
+              batch.update(targetRef, op.data);
+            } else {
+              batch.set(targetRef, op.data);
+            }
+          }
+          await batch.commit();
+        }
+      } catch (err) {
+        handleFirestoreError(err, OperationType.UPDATE, 'clients/batch_reassign_pic');
+      }
+
+      return {
+        clientsUpdated: targetClients.length,
+        jobsUpdated: targetJobs.length,
+        cp204Updated: targetCp204.length,
+      };
+    },
+    [clients, jobs, cp204Records, user, staffProfile]
+  );
+
   return (
     <DataContext.Provider
       value={{
@@ -2364,10 +2853,15 @@ export const DataProvider: React.FC<{ children: React.ReactNode }> = ({ children
         inactivateClient,
         reactivateClient,
         deleteClient,
+        batchReassignClientPic,
         saveJob,
         batchCreateJobs,
         batchUpdateJobs,
         deleteJob,
+        excludedHolidays,
+        excludePublicHoliday,
+        restorePublicHoliday,
+        restoreAllPublicHolidays,
         saveCalendarEvent,
         batchSaveCalendarEvents,
         batchUpdateCalendarEvents,
@@ -2387,6 +2881,9 @@ export const DataProvider: React.FC<{ children: React.ReactNode }> = ({ children
         markNotificationRead,
         markAllNotificationsRead,
         localReadIds,
+        columnPreferences,
+        columnPreferencesLoaded,
+        saveColumnPreference,
       }}
     >
       {children}
@@ -2398,4 +2895,8 @@ export function useData(): DataContextValue {
   const ctx = useContext(DataContext);
   if (!ctx) throw new Error('useData must be used inside DataProvider');
   return ctx;
+}
+
+export function useOptionalData(): DataContextValue | null {
+  return useContext(DataContext);
 }

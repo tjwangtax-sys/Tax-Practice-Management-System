@@ -32,9 +32,13 @@ import { ClientSelectorField } from '../../components/ClientSelectorField';
 import { ExcelColumnFilter } from '../../components/ExcelColumnFilter';
 import { useColumnVisibility, usePinnedColumnOffsets } from '../../hooks/useColumnVisibility';
 import { useExcelTableFilters } from '../../hooks/useExcelTableFilters';
+import { useStaffOptions } from '../../hooks/useStaffOptions';
 import { buildDynamicSelectOptions } from '../../lib/settingsDropdown';
 import { exportToExcel, printRegisterHtml } from '../../lib/exportUtils';
 import { addCalendarDays, formatDateDDMMYYYY } from '../../lib/deadlineUtils';
+import { findClientRecordForRow } from '../../lib/jobUtils';
+import { showToast } from '../../lib/toast';
+import { ClientModal } from '../ClientMaster/ClientModal';
 
 type DueDateFilter = '' | 'overdue' | 'due7' | 'due14';
 
@@ -138,13 +142,7 @@ const CorrespondenceModal: React.FC<CorrespondenceModalProps> = ({ open, editing
     [jobs, clientId]
   );
 
-  const activeStaffNames = useMemo(
-    () =>
-      Array.from(
-        new Set(staff.filter((s) => s.active).map((s) => s.staffName.trim()).filter(Boolean))
-      ),
-    [staff]
-  );
+  const staffOptions = useStaffOptions(pic);
 
   useEffect(() => {
     if (!open) return;
@@ -456,19 +454,18 @@ const CorrespondenceModal: React.FC<CorrespondenceModalProps> = ({ open, editing
             </div>
             <div>
               <label className={labelCls}>PIC</label>
-              <input
-                list="cor-modal-staff"
-                maxLength={120}
+              <select
                 disabled={isReadOnly}
                 value={pic}
                 onChange={(e) => setPic(e.target.value)}
                 className={inputCls}
-              />
-              <datalist id="cor-modal-staff">
-                {activeStaffNames.map((n) => (
-                  <option key={n} value={n} />
+              >
+                {staffOptions.map((opt) => (
+                  <option key={opt.value || '__blank__'} value={opt.value}>
+                    {opt.label}
+                  </option>
                 ))}
-              </datalist>
+              </select>
             </div>
             <div>
               <label className={labelCls}>Action Status</label>
@@ -580,8 +577,18 @@ const CorrespondenceModal: React.FC<CorrespondenceModalProps> = ({ open, editing
 // =============================================================================
 export const CorrespondenceView: React.FC = () => {
   const { isReadOnly, isManagerOrAdmin } = useAuth();
-  const { correspondenceRecords, deleteCorrespondence, refreshAll, refreshing, getSettingsByGroup } =
+  const { clients, correspondenceRecords, deleteCorrespondence, refreshAll, refreshing, getSettingsByGroup } =
     useData();
+  const [profileClient, setProfileClient] = useState<ClientRecord | null>(null);
+
+  const handleOpenClientProfile = (clientId?: string, clientName?: string) => {
+    const matched = findClientRecordForRow(clients, { clientId, clientName });
+    if (matched) {
+      setProfileClient(matched);
+    } else {
+      showToast('Client profile not found in Client Master.', 'warning', 2500);
+    }
+  };
 
   const [search, setSearch] = useState('');
   const [statusFilter, setStatusFilter] = useState('');
@@ -1038,12 +1045,21 @@ export const CorrespondenceView: React.FC = () => {
                             return wrapTd(
                               'px-3 py-2',
                               <>
-                                <div className="font-semibold text-slate-900 leading-snug">
+                                <button
+                                  type="button"
+                                  onClick={() => handleOpenClientProfile(r.clientId, r.clientName)}
+                                  className="text-left font-medium text-slate-900 leading-snug hover:underline hover:text-teal-700 cursor-pointer block"
+                                  title={`${r.clientName} — Click to open Client Profile`}
+                                >
                                   {r.clientName}
-                                </div>
-                                <div className="text-[11px] font-mono text-slate-400">
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={() => handleOpenClientProfile(r.clientId, r.clientName)}
+                                  className="text-[11px] font-mono text-slate-400 hover:underline hover:text-teal-700 cursor-pointer block"
+                                >
                                   {r.clientId}
-                                </div>
+                                </button>
                               </>
                             );
                           case 'ya':
@@ -1234,6 +1250,12 @@ export const CorrespondenceView: React.FC = () => {
         open={modalOpen}
         editing={editingRecord}
         onClose={() => setModalOpen(false)}
+      />
+
+      <ClientModal
+        open={Boolean(profileClient)}
+        client={profileClient}
+        onClose={() => setProfileClient(null)}
       />
     </div>
   );

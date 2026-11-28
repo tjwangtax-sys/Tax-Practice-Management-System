@@ -11,8 +11,17 @@ import {
   ShieldAlert,
   Save,
   Upload,
+  ArrowRight,
+  AlertTriangle,
 } from 'lucide-react';
-import { ColumnDef, SettingValue, StaffMember, StaffRole } from '../../types/tpms';
+import {
+  ColumnDef,
+  NavigationFilterPreset,
+  NavRoute,
+  SettingValue,
+  StaffMember,
+  StaffRole,
+} from '../../types/tpms';
 import { SETTING_GROUPS, SETTING_MODULES } from '../../lib/defaultSettings';
 import { normalizeSettingGroup } from '../../lib/settingsDropdown';
 import { db } from '../../lib/firebase';
@@ -51,10 +60,15 @@ const SETTINGS_COLUMNS: ColumnDef[] = [
   { key: 'active', label: 'Active', defaultVisible: true },
 ];
 
-export const StaffSettingsView: React.FC = () => {
+interface StaffSettingsViewProps {
+  onNavigate?: (route: NavRoute, preset?: Omit<NavigationFilterPreset, 'nonce'>) => void;
+}
+
+export const StaffSettingsView: React.FC<StaffSettingsViewProps> = ({ onNavigate }) => {
   const { isAdmin, isManagerOrAdmin, user } = useAuth();
   const {
     staff,
+    clients,
     settings,
     saveStaffMember,
     deleteStaffMember,
@@ -107,6 +121,11 @@ export const StaffSettingsView: React.FC = () => {
   const [mergingDuplicates, setMergingDuplicates] = useState(false);
   const [seedMessage, setSeedMessage] = useState<string | null>(null);
   const [formError, setFormError] = useState<string | null>(null);
+  const [handoverPrompt, setHandoverPrompt] = useState<{
+    staffLabel: string;
+    picCode: string;
+    clientCount: number;
+  } | null>(null);
 
   const staffColVis = useColumnVisibility('admin_staff', STAFF_COLUMNS);
   const settingColVis = useColumnVisibility('admin_settings', SETTINGS_COLUMNS);
@@ -244,6 +263,12 @@ export const StaffSettingsView: React.FC = () => {
     setBusy(true);
     setFormError(null);
     try {
+      const wasActive = editingStaff ? editingStaff.active : true;
+      const prevLeaveDate = (editingStaff?.leaveDate || '').trim();
+      const nextLeaveDate = (staffForm.leaveDate || '').trim();
+      const isDeactivatingOrLeaving =
+        !staffForm.active || (nextLeaveDate !== '' && nextLeaveDate !== prevLeaveDate);
+
       await saveStaffMember(
         {
           ...staffForm,
@@ -253,6 +278,66 @@ export const StaffSettingsView: React.FC = () => {
         editingStaff?.id
       );
       setStaffModalOpen(false);
+
+      if (isDeactivatingOrLeaving) {
+        const candidateTokens = new Set<string>(
+          [
+            staffForm.staffId,
+            staffForm.staffName,
+            editingStaff?.staffId || '',
+            editingStaff?.staffName || '',
+          ]
+            .map((v) => v.trim().toUpperCase())
+            .filter(Boolean)
+        );
+
+        const matchedClients = clients.filter((c) => {
+          const raw = (c.taxPic || '').trim();
+          if (!raw) return false;
+          const parts = raw
+            .split(/\s*[—–-]\s*/)
+            .map((p) => p.trim().toUpperCase())
+            .filter(Boolean);
+          return candidateTokens.has(raw.toUpperCase()) || parts.some((p) => candidateTokens.has(p));
+        });
+
+        if (matchedClients.length > 0) {
+          // Pick the most frequent taxPic string among matched clients for exact pre-selection
+          const counts = new Map<string, number>();
+          for (const mc of matchedClients) {
+            const k = (mc.taxPic || '').trim();
+            if (k) counts.set(k, (counts.get(k) ?? 0) + 1);
+          }
+          let topPic = staffForm.staffId.trim() || staffForm.staffName.trim();
+          let topCount = -1;
+          for (const [k, cnt] of counts.entries()) {
+            if (cnt > topCount) {
+              topCount = cnt;
+              topPic = k;
+            }
+          }
+
+          const code = staffForm.staffId.trim();
+          const name = staffForm.staffName.trim();
+          const staffLabel =
+            code && name && code.toLowerCase() !== name.toLowerCase()
+              ? `${code} — ${name}`
+              : code || name || topPic;
+
+          setHandoverPrompt({
+            staffLabel,
+            picCode: topPic,
+            clientCount: matchedClients.length,
+          });
+          showToast(
+            `${staffLabel} still has ${matchedClients.length} assigned client${matchedClients.length === 1 ? '' : 's'}. Click "Reassign ${matchedClients.length} Clients →" to transfer their portfolio.`,
+            'info',
+            6000
+          );
+        } else if (wasActive && !staffForm.active) {
+          setHandoverPrompt(null);
+        }
+      }
     } catch (err) {
       setFormError(err instanceof Error ? err.message : 'Failed to save staff member.');
     } finally {
@@ -520,6 +605,53 @@ export const StaffSettingsView: React.FC = () => {
       {/* TAB 1: STAFF DIRECTORY (Admin Only) */}
       {isAdmin && activeTab === 'staff' && (
         <div className="space-y-3">
+          {handoverPrompt && (
+            <div className="p-3.5 rounded-lg bg-amber-50 border border-amber-300 text-xs text-amber-950 flex flex-wrap items-center justify-between gap-3 shadow-xs">
+              <div className="flex items-start gap-2.5 min-w-0">
+                <AlertTriangle className="w-4 h-4 text-amber-600 shrink-0 mt-0.5" />
+                <div>
+                  <div className="font-semibold text-amber-950">
+                    Portfolio Handover Recommended — {handoverPrompt.staffLabel}
+                  </div>
+                  <p className="text-[11px] text-amber-900 mt-0.5">
+                    This staff member still holds{' '}
+                    <span className="font-semibold">
+                      {handoverPrompt.clientCount} assigned client
+                      {handoverPrompt.clientCount === 1 ? '' : 's'}
+                    </span>{' '}
+                    in Client Master. Reassign their clients and open compliance jobs to an active
+                    Tax PIC now.
+                  </p>
+                </div>
+              </div>
+              <div className="flex items-center gap-2 shrink-0">
+                {onNavigate && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      const targetPic = handoverPrompt.picCode;
+                      setHandoverPrompt(null);
+                      onNavigate('client-master', { reassignFromPic: targetPic });
+                    }}
+                    className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold text-white bg-teal-700 hover:bg-teal-800 rounded-md transition-colors whitespace-nowrap"
+                  >
+                    Reassign {handoverPrompt.clientCount} Client
+                    {handoverPrompt.clientCount === 1 ? '' : 's'}
+                    <ArrowRight className="w-3.5 h-3.5" />
+                  </button>
+                )}
+                <button
+                  type="button"
+                  onClick={() => setHandoverPrompt(null)}
+                  className="p-1 rounded text-amber-700 hover:text-amber-950 hover:bg-amber-200/60"
+                  aria-label="Dismiss handover prompt"
+                >
+                  <X className="w-3.5 h-3.5" />
+                </button>
+              </div>
+            </div>
+          )}
+
           <RegisterToolbar
             searchValue={staffSearch}
             onSearchChange={setStaffSearch}

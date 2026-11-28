@@ -19,11 +19,14 @@ import { useAuth } from '../../context/AuthContext';
 import { useData } from '../../context/DataContext';
 import { extractFyeMonth, formatDateDDMMYYYY, isIsoDateString } from '../../lib/deadlineUtils';
 import {
+  ACTIVE_COMPLIANCE_STATUS_FILTER,
   buildClientLookupMap,
   buildLoggedInStaffMatchKeys,
   findMatchedClient,
   getCurrentWeekRangeIso,
   getEffectiveJobDeadline,
+  isCp204InScopeCorporateClient,
+  isExcludedComplianceClientStatus,
   isFormCSubmittedStatus,
   isJobAssignedToLoggedInStaff,
   isJobDueThisWeek,
@@ -72,20 +75,14 @@ function daysBetweenIso(earlierIso: string, laterIso: string): number {
   return Math.round((d2 - d1) / (1000 * 60 * 60 * 24));
 }
 
-function isActiveCorporateClient(status: string | undefined, category: string | undefined): boolean {
-  if (category !== 'Corporate') return false;
-  const s = (status || '').trim().toLowerCase();
-  return s === '' || s === 'active';
-}
-
-function isExcludedClientStatus(status: string | undefined): boolean {
-  const s = (status || '').trim().toLowerCase();
-  return s === 'resigned' || s === 'inactive';
-}
-
 function isSpecialIncludedStatus(status: string | undefined): boolean {
   const s = (status || '').trim().toLowerCase();
-  return s.includes('strike') || s.includes('re-appoint') || s.includes('reappoint');
+  return (
+    s.includes('strike') ||
+    s.includes('winding') ||
+    s.includes('re-appoint') ||
+    s.includes('reappoint')
+  );
 }
 
 type PanelKey = 'cp204' | 'formC' | 'overdueJobs' | 'overdueCorr';
@@ -147,17 +144,18 @@ export const DashboardView: React.FC<DashboardViewProps> = ({ onNavigate }) => {
     refreshAll();
   };
 
-  // Active Corporate clients list (strictly Active or blank status, used by CP204 timeline)
-  const activeCorporateClients = useMemo(
-    () => clients.filter((c) => isActiveCorporateClient(c.clientStatus, c.category)),
+  // In-scope Corporate clients for CP204 timeline:
+  // Active (or blank), Re-appoint, WIP-Strike Off, WIP-Winding Up (excluding Resigned, Inactive, Struck Off, Wound Up)
+  const inScopeCp204Clients = useMemo(
+    () => clients.filter((c) => isCp204InScopeCorporateClient(c.clientStatus, c.category)),
     [clients]
   );
 
-  // Non-active Corporate clients (WIP-Strike Off, Resigned, Inactive, etc.) for CP204 exclusion sub-note
+  // Explicitly excluded Corporate clients (Resigned, Inactive, Struck Off, Wound Up) for CP204 sub-note
   const excludedCorporateClients = useMemo(
     () =>
       clients.filter(
-        (c) => c.category === 'Corporate' && !isActiveCorporateClient(c.clientStatus, c.category)
+        (c) => c.category === 'Corporate' && isExcludedComplianceClientStatus(c.clientStatus)
       ),
     [clients]
   );
@@ -229,7 +227,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({ onNavigate }) => {
     };
   }, [jobs, correspondenceRecords, todayStr, myStaffMatchKeys, weekRange]);
 
-  // 1. Current Month Focus — CP204 / CP204A Timeline (strictly Active corporate clients)
+  // 1. Current Month Focus — CP204 / CP204A Timeline (Active, Re-appoint, WIP-Strike Off, WIP-Winding Up corporate clients)
   const cp204TimelineRows = useMemo(() => {
     const defs = [
       { category: 'CP204 Initial', offsetMonths: 13 },
@@ -243,9 +241,30 @@ export const DashboardView: React.FC<DashboardViewProps> = ({ onNavigate }) => {
       const fyeMonthStr = String(target.month).padStart(2, '0');
       const targetYa = String(target.year);
 
-      const matchingClients = activeCorporateClients.filter(
+      const matchingClients = inScopeCp204Clients.filter(
         (c) => extractFyeMonth(c.fye) === target.month
       );
+
+      // Track included WIP-Strike Off / WIP-Winding Up / Re-appoint clients for subtle note
+      const includedSpecialCounts = new Map<string, number>();
+      const includedSpecialLines: string[] = [];
+      for (const mc of matchingClients) {
+        const rawStatus = (mc.clientStatus || '').trim();
+        if (isSpecialIncludedStatus(rawStatus)) {
+          includedSpecialCounts.set(rawStatus, (includedSpecialCounts.get(rawStatus) || 0) + 1);
+          includedSpecialLines.push(
+            `${mc.clientId ? `${mc.clientId} ` : ''}${mc.clientName} (${rawStatus})`
+          );
+        }
+      }
+      const includedSpecialNote =
+        includedSpecialCounts.size > 0
+          ? `incl. ${Array.from(includedSpecialCounts.entries())
+              .map(([label, count]) => `${count} ${label}`)
+              .join(', ')}`
+          : '';
+      const includedSpecialTooltip =
+        includedSpecialLines.length > 0 ? includedSpecialLines.join('\n') : undefined;
 
       const excludedForFye = excludedCorporateClients.filter(
         (c) => extractFyeMonth(c.fye) === target.month
@@ -266,10 +285,11 @@ export const DashboardView: React.FC<DashboardViewProps> = ({ onNavigate }) => {
       const excludedStatusTooltip =
         excludedClientLines.length > 0 ? excludedClientLines.join('\n') : undefined;
 
-      // Match against cp204Records for targetYa & fyeMonth using normalized Client ID
+      // Match against cp204Records for targetYa & fyeMonth using normalized Client ID (with Client Master FYE fallback)
       const trackedClientIds = new Set<string>();
       for (const rec of cp204Records) {
-        const recFye = extractFyeMonth(rec.fye);
+        const matchedClient = findMatchedClient({ clientId: rec.clientId }, clientLookup);
+        const recFye = extractFyeMonth(rec.fye || matchedClient?.fye);
         if ((rec.ya || '').trim() === targetYa && recFye === target.month) {
           const normKey = normalizeClientIdKey(rec.clientId);
           if (normKey) trackedClientIds.add(normKey);
@@ -300,14 +320,17 @@ export const DashboardView: React.FC<DashboardViewProps> = ({ onNavigate }) => {
         companiesCount,
         foundCount,
         trackerStatus,
+        includedSpecialNote,
+        includedSpecialTooltip,
         excludedStatusNote,
         excludedStatusTooltip,
       };
     });
   }, [
-    activeCorporateClients,
+    inScopeCp204Clients,
     excludedCorporateClients,
     cp204Records,
+    clientLookup,
     currentYear,
     currentMonth,
     currentMonthLabel,
@@ -338,7 +361,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({ onNavigate }) => {
         if (extractFyeMonth(displayFye) !== target.month) return false;
 
         const matchedClient = findMatchedClient(j, clientLookup);
-        if (matchedClient && isExcludedClientStatus(matchedClient.clientStatus)) {
+        if (matchedClient && isExcludedComplianceClientStatus(matchedClient.clientStatus)) {
           return false;
         }
         return true;
@@ -619,7 +642,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({ onNavigate }) => {
               Current Month Focus — CP204 / CP204A Timeline
             </h2>
             <p className="text-[11px] text-slate-500">
-              Active corporate clients with CP204 Initial or Revision due in {currentMonthLabel}.
+              Active &amp; WIP corporate clients (incl. Re-appoint, WIP-Strike Off &amp; WIP-Winding Up) with CP204 Initial or Revision due in {currentMonthLabel}.
               {lastRefreshedAt ? ` Updated ${lastRefreshedAt.toLocaleTimeString('en-MY', { hour: '2-digit', minute: '2-digit' })}.` : ''}
             </p>
           </div>
@@ -695,6 +718,14 @@ export const DashboardView: React.FC<DashboardViewProps> = ({ onNavigate }) => {
                             </span>
                           )}
                         </div>
+                        {row.includedSpecialNote && (
+                          <div
+                            className="text-[10px] font-normal font-sans text-amber-700 mt-0.5"
+                            title={row.includedSpecialTooltip}
+                          >
+                            {row.includedSpecialNote}
+                          </div>
+                        )}
                         {row.excludedStatusNote && (
                           <div
                             className="text-[10px] font-normal font-sans text-slate-400 mt-0.5"
@@ -719,13 +750,13 @@ export const DashboardView: React.FC<DashboardViewProps> = ({ onNavigate }) => {
                               onNavigate('cp204', {
                                 fye: row.fyeMonthStr,
                                 ya: row.targetYa,
-                                clientStatus: 'Active',
+                                clientStatus: ACTIVE_COMPLIANCE_STATUS_FILTER,
                               });
                             } else {
                               onNavigate('client-master', {
                                 category: 'Corporate',
                                 fye: row.fyeMonthStr,
-                                clientStatus: 'Active',
+                                clientStatus: ACTIVE_COMPLIANCE_STATUS_FILTER,
                               });
                             }
                           }}

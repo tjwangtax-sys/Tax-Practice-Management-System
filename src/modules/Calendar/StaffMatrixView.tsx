@@ -4,13 +4,17 @@ import {
   AlertTriangle,
   CalendarClock,
   Clock,
+  Edit3,
   Eraser,
   ExternalLink,
   Info,
   MousePointerClick,
   Paintbrush,
+  Plus,
   Repeat2,
+  Trash2,
   Users,
+  X,
 } from 'lucide-react';
 import {
   ClientRecord,
@@ -65,7 +69,11 @@ interface StaffMatrixViewProps {
   cp204Records: Cp204Record[];
   clients: ClientRecord[];
   isReadOnly: boolean;
+  canManageHolidays: boolean;
   onCellSelectModal: (staffName: string, isoDate: string, existingEvent?: ParsedCalendarEvent) => void;
+  onOpenEventPreview: (ev: ParsedCalendarEvent) => void;
+  onExcludeHoliday: (ph: PublicHolidayRef) => void;
+  onDeleteCompanyHoliday?: (ev: ParsedCalendarEvent) => void;
   onPaintRange: (staffName: string, startIso: string, endIso: string, tool: Exclude<PaintTool, 'select'>) => Promise<void>;
   onNavigate?: (route: NavRoute, preset?: Omit<NavigationFilterPreset, 'nonce'>) => void;
 }
@@ -106,7 +114,11 @@ export const StaffMatrixView: React.FC<StaffMatrixViewProps> = ({
   cp204Records,
   clients,
   isReadOnly,
+  canManageHolidays,
   onCellSelectModal,
+  onOpenEventPreview,
+  onExcludeHoliday,
+  onDeleteCompanyHoliday,
   onPaintRange,
   onNavigate,
 }) => {
@@ -133,6 +145,12 @@ export const StaffMatrixView: React.FC<StaffMatrixViewProps> = ({
     label: string;
     timeOffNote: string;
     notes: string;
+  } | null>(null);
+  const [holidayPopover, setHolidayPopover] = useState<{
+    rect: DOMRect;
+    iso: string;
+    ph?: PublicHolidayRef;
+    compHol?: ParsedCalendarEvent;
   } | null>(null);
 
   const todayIso = useMemo(() => toIsoDate(new Date()), []);
@@ -619,14 +637,40 @@ export const StaffMatrixView: React.FC<StaffMatrixViewProps> = ({
                     const isWeekend = dow === 0 || dow === 6;
                     const isToday = iso === todayIso;
                     const weekEndDivider = isEndOfWeek(d, idx);
+                    const phHeader = holidaysByDate.get(iso);
+                    const compHolHeader = companyHolidayByDate.get(iso);
+                    const isHolidayCol = Boolean(phHeader || compHolHeader);
                     return (
                       <th
                         key={`dow-${iso}`}
+                        onClick={
+                          isHolidayCol
+                            ? (e) => {
+                                e.stopPropagation();
+                                setHoveredCollision(null);
+                                setHolidayPopover({
+                                  rect: e.currentTarget.getBoundingClientRect(),
+                                  iso,
+                                  ph: phHeader,
+                                  compHol: compHolHeader,
+                                });
+                              }
+                            : undefined
+                        }
+                        title={
+                          isHolidayCol
+                            ? `${compHolHeader ? compHolHeader.cleanLabel : phHeader!.name} — Click for holiday options`
+                            : undefined
+                        }
                         className={`px-0.5 py-1 text-center text-[9px] font-semibold border-b border-emerald-700/70 overflow-hidden ${
+                          isHolidayCol ? 'cursor-pointer hover:brightness-95' : ''
+                        } ${
                           weekEndDivider ? 'border-r-2 border-r-slate-800' : 'border-r border-r-emerald-700/60'
                         } ${
                           isToday
                             ? 'bg-emerald-900 text-amber-200'
+                            : isHolidayCol
+                            ? 'bg-[#facc15] text-amber-950'
                             : isWeekend
                             ? 'bg-[#15803d]/90 text-emerald-100'
                             : 'bg-[#16a34a] text-white'
@@ -708,19 +752,44 @@ export const StaffMatrixView: React.FC<StaffMatrixViewProps> = ({
                     }
 
                     const headerTitle = headerParts.join(' — ');
+                    const phHeader = holidaysByDate.get(iso);
+                    const compHolHeader = companyHolidayByDate.get(iso);
+                    const isHolidayCol = Boolean(phHeader || compHolHeader);
                     return (
                       <th
                         key={`dt-${iso}`}
+                        onClick={
+                          isHolidayCol
+                            ? (e) => {
+                                e.stopPropagation();
+                                setHoveredCollision(null);
+                                setHolidayPopover({
+                                  rect: e.currentTarget.getBoundingClientRect(),
+                                  iso,
+                                  ph: phHeader,
+                                  compHol: compHolHeader,
+                                });
+                              }
+                            : undefined
+                        }
                         className={`px-0.5 py-1 text-center text-[10px] font-mono tabular-nums font-semibold border-b-2 border-b-slate-800 whitespace-nowrap overflow-hidden ${
+                          isHolidayCol ? 'cursor-pointer hover:brightness-95' : ''
+                        } ${
                           weekEndDivider ? 'border-r-2 border-r-slate-800' : 'border-r border-r-emerald-700/60'
                         } ${
                           isToday
                             ? 'bg-emerald-900 text-amber-200 underline decoration-amber-300'
+                            : isHolidayCol
+                            ? 'bg-[#facc15] text-amber-950'
                             : isWeekend
                             ? 'bg-[#15803d]/90 text-emerald-100'
                             : 'bg-[#16a34a] text-white'
                         }`}
-                        title={headerTitle}
+                        title={
+                          isHolidayCol
+                            ? `${headerTitle} · ${compHolHeader ? compHolHeader.cleanLabel : phHeader!.name} (Click for holiday options)`
+                            : headerTitle
+                        }
                       >
                         <span className="inline-flex items-center justify-center gap-0.5">
                           {d.getDate()}
@@ -844,12 +913,20 @@ export const StaffMatrixView: React.FC<StaffMatrixViewProps> = ({
                             <td
                               key={`hol-${iso}`}
                               rowSpan={rowSummaries.length}
-                              onClick={() => {
-                                if (compHol) {
-                                  onCellSelectModal('', iso, compHol);
-                                } else if (!isReadOnly) {
-                                  onCellSelectModal('', iso);
-                                }
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                setHoveredCollision(null);
+                                const rawRect = e.currentTarget.getBoundingClientRect();
+                                const anchorY = Math.max(
+                                  rawRect.top + 8,
+                                  Math.min(e.clientY, rawRect.bottom - 8)
+                                );
+                                setHolidayPopover({
+                                  rect: new DOMRect(rawRect.left, anchorY - 14, rawRect.width, 28),
+                                  iso,
+                                  ph,
+                                  compHol,
+                                });
                               }}
                               onMouseEnter={(e) => {
                                 if (holCollisions.length > 0) {
@@ -1117,12 +1194,13 @@ export const StaffMatrixView: React.FC<StaffMatrixViewProps> = ({
                               {firmEvents.length > 0 && (
                                 <button
                                   type="button"
+                                  onMouseDown={(e) => e.stopPropagation()}
                                   onClick={(e) => {
                                     e.stopPropagation();
                                     onCellSelectModal('', iso, firmEvents[0]);
                                   }}
                                   title={`Firm Event: ${firmEvents.map((f) => f.displayTitle).join(', ')}`}
-                                  className="w-full truncate text-[10px] leading-tight px-1 py-0.5 block text-center font-semibold rounded hover:underline"
+                                  className="w-full truncate text-[10px] leading-tight px-1 py-0.5 block text-center font-semibold rounded hover:underline cursor-pointer"
                                   style={{
                                     backgroundColor: primaryLeave
                                       ? firmEvents[0].color || '#f0abfc'
@@ -1136,21 +1214,23 @@ export const StaffMatrixView: React.FC<StaffMatrixViewProps> = ({
                                 </button>
                               )}
 
-                              {/* Clickable Client Appointment Chips */}
+                              {/* Clickable Client Appointment / [OUT OFFICE] Chips */}
                               {clientAppointments.map((appt) => {
                                 const client = appt.raw.clientId
                                   ? clientsById.get(appt.raw.clientId.trim().toLowerCase())
                                   : undefined;
                                 const hoverInfo = [
-                                  `Client: ${appt.raw.clientName || 'N/A'}${
-                                    appt.raw.clientId ? ` (${appt.raw.clientId})` : ''
-                                  }`,
+                                  `Event: ${appt.displayTitle}`,
+                                  appt.raw.clientName
+                                    ? `Client: ${appt.raw.clientName}${
+                                        appt.raw.clientId ? ` (${appt.raw.clientId})` : ''
+                                      }`
+                                    : '',
                                   client?.tin ? `TIN: ${client.tin}` : '',
                                   client?.fye ? `FYE: Month ${client.fye}` : '',
                                   client?.taxPic ? `Tax PIC: ${client.taxPic}` : '',
-                                  `Event: ${appt.cleanLabel}`,
-                                  appt.raw.notes ? `Notes: ${appt.raw.notes}` : '',
-                                  'Click to open Client Master (Shift+Click to edit event)',
+                                  appt.raw.notes ? `Remarks: ${appt.raw.notes}` : '',
+                                  'Click for quick preview & Client Profile',
                                 ]
                                   .filter(Boolean)
                                   .join('\n');
@@ -1162,18 +1242,17 @@ export const StaffMatrixView: React.FC<StaffMatrixViewProps> = ({
                                   <button
                                     key={appt.raw.id}
                                     type="button"
+                                    onMouseDown={(e) => {
+                                      e.stopPropagation();
+                                    }}
                                     onClick={(e) => {
                                       e.stopPropagation();
-                                      if (e.shiftKey || !onNavigate) {
-                                        onCellSelectModal(s.staffName, iso, appt);
-                                        return;
-                                      }
-                                      onNavigate('client-master', {
-                                        search: appt.raw.clientId || appt.raw.clientName || '',
-                                      });
+                                      setHoveredCollision(null);
+                                      setHoveredTimeOff(null);
+                                      onOpenEventPreview(appt);
                                     }}
                                     title={hoverInfo}
-                                    className="w-full truncate text-[10px] leading-tight px-1 py-0.5 block text-center rounded border border-sky-900/20 font-medium hover:brightness-95 transition"
+                                    className="relative z-10 w-full truncate text-[10px] leading-tight px-1 py-0.5 block text-center rounded border border-sky-900/20 font-medium hover:brightness-95 transition cursor-pointer"
                                     style={{
                                       backgroundColor: chipColor,
                                       color: getContrastingTextColor(chipColor),
@@ -1184,25 +1263,39 @@ export const StaffMatrixView: React.FC<StaffMatrixViewProps> = ({
                                 );
                               })}
 
-                              {/* Other Personal Events (e.g. [TRAINING], Internal Events) */}
-                              {otherPersonalEvents.map((ev) => (
-                                <button
-                                  key={ev.raw.id}
-                                  type="button"
-                                  onClick={(e) => {
-                                    e.stopPropagation();
-                                    onCellSelectModal(s.staffName, iso, ev);
-                                  }}
-                                  title={`${ev.displayTitle}${ev.raw.notes ? `\n${ev.raw.notes}` : ''}`}
-                                  className="w-full truncate text-[10px] leading-tight px-1 py-0.5 block text-center rounded font-medium border border-slate-900/15"
-                                  style={{
-                                    backgroundColor: ev.color,
-                                    color: getContrastingTextColor(ev.color),
-                                  }}
-                                >
-                                  {ev.cleanLabel}
-                                </button>
-                              ))}
+                              {/* Other Personal Events (e.g. [TRAINING], [OUT OFFICE], Internal Events) */}
+                              {otherPersonalEvents.map((ev) => {
+                                const isOutOfficeOrClient =
+                                  ev.raw.title.toUpperCase().includes('[OUT OFFICE]') ||
+                                  Boolean(ev.raw.clientId || ev.raw.clientName);
+                                return (
+                                  <button
+                                    key={ev.raw.id}
+                                    type="button"
+                                    onMouseDown={(e) => {
+                                      e.stopPropagation();
+                                    }}
+                                    onClick={(e) => {
+                                      e.stopPropagation();
+                                      setHoveredCollision(null);
+                                      setHoveredTimeOff(null);
+                                      if (isOutOfficeOrClient) {
+                                        onOpenEventPreview(ev);
+                                      } else {
+                                        onCellSelectModal(s.staffName, iso, ev);
+                                      }
+                                    }}
+                                    title={`${ev.displayTitle}${ev.raw.notes ? `\n${ev.raw.notes}` : ''}`}
+                                    className="relative z-10 w-full truncate text-[10px] leading-tight px-1 py-0.5 block text-center rounded font-medium border border-slate-900/15 hover:brightness-95 transition cursor-pointer"
+                                    style={{
+                                      backgroundColor: ev.color,
+                                      color: getContrastingTextColor(ev.color),
+                                    }}
+                                  >
+                                    {ev.cleanLabel}
+                                  </button>
+                                );
+                              })}
                             </div>
                           </td>
                         );
@@ -1258,7 +1351,7 @@ export const StaffMatrixView: React.FC<StaffMatrixViewProps> = ({
             </span>
             <span className="inline-flex items-center gap-1">
               <span className="w-2.5 h-2.5 rounded-xs bg-[#bae6fd] border border-slate-300" />
-              Client Appt (click to view Client; Shift+Click to edit)
+              Client Appt / [OUT OFFICE] (click for preview &amp; Client Profile)
             </span>
             <span className="inline-flex items-center gap-1">
               <span className="w-3.5 h-3.5 rounded-full bg-rose-600 text-white text-[9px] font-bold inline-flex items-center justify-center">
@@ -1371,15 +1464,30 @@ export const StaffMatrixView: React.FC<StaffMatrixViewProps> = ({
             {monthlyNotes.phs.map((ph) => (
               <div
                 key={`${ph.date}-${ph.name}`}
-                className="p-2 rounded-md border border-amber-200/80 bg-amber-50/40 flex items-start gap-2"
+                className="p-2 rounded-md border border-amber-200/80 bg-amber-50/40 flex items-start justify-between gap-2"
               >
-                <span className="w-2.5 h-2.5 rounded-xs mt-1 shrink-0 bg-[#facc15] border border-amber-500/40" />
-                <div className="min-w-0 flex-1">
-                  <div className="text-xs font-semibold text-slate-900 truncate">{ph.name}</div>
-                  <div className="text-[11px] font-mono tabular-nums text-slate-500">
-                    {formatDateDDMMYYYY(ph.date)} · {ph.scope} Holiday
+                <div className="flex items-start gap-2 min-w-0 flex-1">
+                  <span className="w-2.5 h-2.5 rounded-xs mt-1 shrink-0 bg-[#facc15] border border-amber-500/40" />
+                  <div className="min-w-0 flex-1">
+                    <div className="text-xs font-semibold text-slate-900 truncate" title={ph.name}>
+                      {ph.name}
+                    </div>
+                    <div className="text-[11px] font-mono tabular-nums text-slate-500">
+                      {formatDateDDMMYYYY(ph.date)} · {ph.scope} Holiday
+                    </div>
                   </div>
                 </div>
+                {canManageHolidays && (
+                  <button
+                    type="button"
+                    onClick={() => onExcludeHoliday(ph)}
+                    className="inline-flex items-center gap-1 px-2 py-1 rounded border border-rose-200 bg-white text-[10px] font-semibold text-rose-700 hover:bg-rose-50 hover:border-rose-300 transition-colors shrink-0 cursor-pointer"
+                    title="Remove this auto-filled public holiday and restore date as a working day"
+                  >
+                    <Trash2 className="w-3 h-3" />
+                    <span>Remove</span>
+                  </button>
+                )}
               </div>
             ))}
           </div>
@@ -1616,6 +1724,145 @@ export const StaffMatrixView: React.FC<StaffMatrixViewProps> = ({
                   )}
                 </div>
               </div>
+            );
+          })(),
+          document.body
+        )}
+
+      {/* Portal-Rendered Holiday Confirmation Popover (Clicked Yellow Header or Full-Height Banner) */}
+      {holidayPopover &&
+        typeof document !== 'undefined' &&
+        createPortal(
+          (() => {
+            const popW = 285;
+            const margin = 12;
+            const vw = window.innerWidth;
+            const vh = window.innerHeight;
+            const estH = 165;
+            const left = Math.max(
+              margin,
+              Math.min(
+                holidayPopover.rect.left + holidayPopover.rect.width / 2 - popW / 2,
+                vw - popW - margin
+              )
+            );
+            const spaceBelow = vh - holidayPopover.rect.bottom;
+            const top =
+              spaceBelow < estH + 12 && holidayPopover.rect.top > spaceBelow
+                ? Math.max(margin, holidayPopover.rect.top - estH - 8)
+                : Math.min(vh - estH - margin, holidayPopover.rect.bottom + 8);
+            const titleText = holidayPopover.compHol
+              ? holidayPopover.compHol.cleanLabel
+              : holidayPopover.ph?.name || 'Holiday';
+            const scopeText = holidayPopover.compHol
+              ? 'Company Holiday'
+              : `${holidayPopover.ph?.scope || 'Public'} Holiday`;
+
+            return (
+              <>
+                <div
+                  className="fixed inset-0 z-[9990]"
+                  onClick={() => setHolidayPopover(null)}
+                />
+                <div
+                  className="fixed z-[9995] bg-white border border-amber-300 rounded-xl shadow-2xl overflow-hidden text-xs"
+                  style={{ left, top, width: popW }}
+                >
+                  <div className="px-3 py-2 bg-[#facc15] text-amber-950 flex items-center justify-between gap-2">
+                    <div className="min-w-0">
+                      <div className="font-bold truncate" title={titleText}>
+                        {titleText}
+                      </div>
+                      <div className="text-[10px] font-mono opacity-90">
+                        {formatDateDDMMYYYY(holidayPopover.iso)} · {scopeText}
+                      </div>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => setHolidayPopover(null)}
+                      className="p-0.5 rounded text-amber-950/70 hover:text-amber-950 hover:bg-amber-300/60"
+                      aria-label="Close holiday actions"
+                    >
+                      <X className="w-3.5 h-3.5" />
+                    </button>
+                  </div>
+
+                  <div className="p-3 space-y-2">
+                    {holidayPopover.ph && (
+                      <p className="text-[11px] text-slate-600 leading-snug">
+                        Auto-filled public holiday. Removing it restores{' '}
+                        <span className="font-mono font-semibold text-slate-800">
+                          {formatDateDDMMYYYY(holidayPopover.iso)}
+                        </span>{' '}
+                        as a regular working day across the Staff Matrix and exports.
+                      </p>
+                    )}
+
+                    <div className="flex flex-col gap-1.5 pt-1">
+                      {holidayPopover.ph && canManageHolidays && (
+                        <button
+                          type="button"
+                          onClick={() => {
+                            onExcludeHoliday(holidayPopover.ph!);
+                            setHolidayPopover(null);
+                          }}
+                          className="w-full inline-flex items-center justify-center gap-1.5 px-3 py-1.5 text-xs font-semibold text-white bg-rose-600 hover:bg-rose-700 rounded-md transition-colors cursor-pointer"
+                        >
+                          <Trash2 className="w-3.5 h-3.5" />
+                          Remove Holiday
+                        </button>
+                      )}
+
+                      {holidayPopover.compHol && (
+                        <div className="flex items-center gap-1.5">
+                          <button
+                            type="button"
+                            onClick={() => {
+                              const ev = holidayPopover.compHol!;
+                              const iso = holidayPopover.iso;
+                              setHolidayPopover(null);
+                              onCellSelectModal('', iso, ev);
+                            }}
+                            className="flex-1 inline-flex items-center justify-center gap-1.5 px-3 py-1.5 text-xs font-semibold text-white bg-teal-700 hover:bg-teal-800 rounded-md cursor-pointer"
+                          >
+                            <Edit3 className="w-3.5 h-3.5" />
+                            Edit Holiday
+                          </button>
+                          {canManageHolidays && onDeleteCompanyHoliday && (
+                            <button
+                              type="button"
+                              onClick={() => {
+                                const ev = holidayPopover.compHol!;
+                                setHolidayPopover(null);
+                                onDeleteCompanyHoliday(ev);
+                              }}
+                              className="inline-flex items-center justify-center gap-1 px-2.5 py-1.5 text-xs font-semibold text-rose-700 bg-rose-50 border border-rose-200 hover:bg-rose-100 rounded-md cursor-pointer"
+                            >
+                              <Trash2 className="w-3.5 h-3.5" />
+                              Delete
+                            </button>
+                          )}
+                        </div>
+                      )}
+
+                      {!isReadOnly && !holidayPopover.compHol && (
+                        <button
+                          type="button"
+                          onClick={() => {
+                            const iso = holidayPopover.iso;
+                            setHolidayPopover(null);
+                            onCellSelectModal('', iso);
+                          }}
+                          className="w-full inline-flex items-center justify-center gap-1.5 px-3 py-1.5 text-xs font-medium text-slate-700 bg-slate-50 border border-slate-200 hover:bg-slate-100 rounded-md cursor-pointer"
+                        >
+                          <Plus className="w-3.5 h-3.5" />
+                          Add Event / Company Holiday
+                        </button>
+                      )}
+                    </div>
+                  </div>
+                </div>
+              </>
             );
           })(),
           document.body

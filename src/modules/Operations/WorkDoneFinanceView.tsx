@@ -13,6 +13,7 @@ import {
   Printer,
 } from 'lucide-react';
 import {
+  ClientRecord,
   ColumnDef,
   FINANCE_INVOICE_STATUSES,
   formatCurrencyRM,
@@ -26,7 +27,9 @@ import { useColumnVisibility, usePinnedColumnOffsets } from '../../hooks/useColu
 import { RegisterToolbar } from '../../components/RegisterToolbar';
 import { exportToExcel, printRegisterHtml } from '../../lib/exportUtils';
 import { formatDateDDMMYYYY } from '../../lib/deadlineUtils';
+import { findClientRecordForRow } from '../../lib/jobUtils';
 import { showToast } from '../../lib/toast';
+import { ClientModal } from '../ClientMaster/ClientModal';
 import { WorkDoneModal } from './WorkDoneModal';
 import {
   createWorkDonePdfPreviewUrl,
@@ -157,7 +160,17 @@ function formatOptionalMoney(val: number | null | undefined): string {
 
 export const WorkDoneFinanceView: React.FC = () => {
   const { isAdmin, isReadOnly } = useAuth();
-  const { workDoneRecords, deleteWorkDone } = useData();
+  const { clients, workDoneRecords, deleteWorkDone } = useData();
+  const [profileClient, setProfileClient] = useState<ClientRecord | null>(null);
+
+  const handleOpenClientProfile = (clientId?: string, clientName?: string) => {
+    const matched = findClientRecordForRow(clients, { clientId, clientName });
+    if (matched) {
+      setProfileClient(matched);
+    } else {
+      showToast('Client profile not found in Client Master.', 'warning', 2500);
+    }
+  };
   const {
     visibleColumns,
     pinnedColumns,
@@ -772,16 +785,22 @@ export const WorkDoneFinanceView: React.FC = () => {
                           return wrapTd(
                             'py-2 px-3 whitespace-nowrap',
                             <>
-                              <div
-                                className="font-medium text-slate-900 leading-tight max-w-[240px] truncate"
-                                title={rec.clientName}
+                              <button
+                                type="button"
+                                onClick={() => handleOpenClientProfile(rec.clientId, rec.clientName)}
+                                className="text-left font-medium text-slate-900 leading-tight max-w-[240px] truncate block hover:underline hover:text-teal-700 cursor-pointer"
+                                title={`${rec.clientName} — Click to open Client Profile`}
                               >
                                 {rec.clientName}
-                              </div>
+                              </button>
                               {rec.clientId && (
-                                <div className="text-[10px] font-mono text-slate-400">
+                                <button
+                                  type="button"
+                                  onClick={() => handleOpenClientProfile(rec.clientId, rec.clientName)}
+                                  className="text-[10px] font-mono text-slate-400 hover:underline hover:text-teal-700 cursor-pointer block"
+                                >
                                   {rec.clientId}
-                                </div>
+                                </button>
                               )}
                             </>
                           );
@@ -1043,6 +1062,12 @@ export const WorkDoneFinanceView: React.FC = () => {
           </div>
         </div>
       )}
+
+      <ClientModal
+        open={Boolean(profileClient)}
+        client={profileClient}
+        onClose={() => setProfileClient(null)}
+      />
     </div>
   );
 };

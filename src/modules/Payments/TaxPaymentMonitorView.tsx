@@ -33,6 +33,9 @@ import { useColumnVisibility, usePinnedColumnOffsets } from '../../hooks/useColu
 import { useExcelTableFilters } from '../../hooks/useExcelTableFilters';
 import { exportToExcel, printRegisterHtml } from '../../lib/exportUtils';
 import { formatDateDDMMYYYY } from '../../lib/deadlineUtils';
+import { findClientRecordForRow } from '../../lib/jobUtils';
+import { showToast } from '../../lib/toast';
+import { ClientModal } from '../ClientMaster/ClientModal';
 
 const PAYMENT_COLUMNS: ColumnDef[] = [
   { key: 'paymentId', label: 'Payment ID', defaultVisible: true },
@@ -475,7 +478,17 @@ const TaxPaymentModal: React.FC<TaxPaymentModalProps> = ({ open, editing, onClos
 // =============================================================================
 export const TaxPaymentMonitorView: React.FC = () => {
   const { isReadOnly, isManagerOrAdmin } = useAuth();
-  const { taxPayments, deleteTaxPayment, refreshAll, refreshing } = useData();
+  const { clients, taxPayments, deleteTaxPayment, refreshAll, refreshing } = useData();
+  const [profileClient, setProfileClient] = useState<ClientRecord | null>(null);
+
+  const handleOpenClientProfile = (clientId?: string, clientName?: string) => {
+    const matched = findClientRecordForRow(clients, { clientId, clientName });
+    if (matched) {
+      setProfileClient(matched);
+    } else {
+      showToast('Client profile not found in Client Master.', 'warning', 2500);
+    }
+  };
 
   const [search, setSearch] = useState('');
   const [typeFilter, setTypeFilter] = useState('');
@@ -912,12 +925,21 @@ export const TaxPaymentMonitorView: React.FC = () => {
                             return wrapTd(
                               'px-3 py-2',
                               <>
-                                <div className="font-semibold text-slate-900 leading-snug">
+                                <button
+                                  type="button"
+                                  onClick={() => handleOpenClientProfile(p.clientId, p.clientName)}
+                                  className="text-left font-medium text-slate-900 leading-snug hover:underline hover:text-teal-700 cursor-pointer block"
+                                  title={`${p.clientName} — Click to open Client Profile`}
+                                >
                                   {p.clientName}
-                                </div>
-                                <div className="text-[11px] font-mono text-slate-400">
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={() => handleOpenClientProfile(p.clientId, p.clientName)}
+                                  className="text-[11px] font-mono text-slate-400 hover:underline hover:text-teal-700 cursor-pointer block"
+                                >
                                   {p.clientId}
-                                </div>
+                                </button>
                               </>
                             );
                           case 'paymentType':
@@ -1075,6 +1097,12 @@ export const TaxPaymentMonitorView: React.FC = () => {
         open={modalOpen}
         editing={editingRecord}
         onClose={() => setModalOpen(false)}
+      />
+
+      <ClientModal
+        open={Boolean(profileClient)}
+        client={profileClient}
+        onClose={() => setProfileClient(null)}
       />
     </div>
   );

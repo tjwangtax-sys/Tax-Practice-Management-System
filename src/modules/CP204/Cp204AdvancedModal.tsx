@@ -29,6 +29,8 @@ import { Cp204SavePayload, useData } from '../../context/DataContext';
 import { StatusPill } from '../../components/StatusPill';
 import { ClientSelectorField } from '../../components/ClientSelectorField';
 import { formatDateDDMMYYYY } from '../../lib/deadlineUtils';
+import { findClientRecordForRow, normalizeFyeMonthString } from '../../lib/jobUtils';
+import { useStaffOptions } from '../../hooks/useStaffOptions';
 import {
   computeCp204BasisDates,
   computeCp204CurrentEstimatedTax,
@@ -72,38 +74,67 @@ export const Cp204AdvancedModal: React.FC<Cp204AdvancedModalProps> = ({
 
   // Tab 2/3/4: Working copy of selected CP204 record
   const [draft, setDraft] = useState<Cp204SavePayload | null>(null);
+  const [inheritedFlags, setInheritedFlags] = useState<{ pic: boolean; fye: boolean }>({
+    pic: false,
+    fye: false,
+  });
 
   const corporateClients = useMemo(
     () => clients.filter((c) => c.category === 'Corporate' || c.category === 'Other'),
     [clients]
   );
 
-  const activeStaffNames = useMemo(
-    () =>
-      Array.from(
-        new Set(staff.filter((s) => s.active).map((s) => s.staffName.trim()).filter(Boolean))
-      ),
-    [staff]
-  );
+  const currentDraftStaffValues = useMemo(() => {
+    if (!draft) return [] as string[];
+    const vals: string[] = [draft.pic, draft.reviewer];
+    for (const r of draft.revisions) {
+      if (r.pic) vals.push(r.pic);
+      if (r.reviewer) vals.push(r.reviewer);
+    }
+    return vals;
+  }, [draft]);
+
+  const staffOptions = useStaffOptions(currentDraftStaffValues);
 
   const loadRecordIntoDraft = (rec: Cp204Record | undefined) => {
     if (!rec) {
       setDraft(null);
+      setInheritedFlags({ pic: false, fye: false });
       return;
     }
+
+    const matchedClient = findClientRecordForRow(clients, {
+      clientId: rec.clientId,
+      clientName: rec.clientName,
+    });
+
+    const rawRecordFye = (rec.fye || '').trim();
+    const clientFye = (matchedClient?.fye || '').trim();
+    const fyeInherited = !rawRecordFye && Boolean(clientFye);
+    const resolvedFyeRaw = rawRecordFye || clientFye;
+    const resolvedFye = normalizeFyeMonthString(resolvedFyeRaw) || resolvedFyeRaw;
+
+    const rawRecordPic = (rec.pic || '').trim();
+    const clientPic = (matchedClient?.taxPic || '').trim();
+    const picInherited = !rawRecordPic && Boolean(clientPic);
+    const resolvedPic = rawRecordPic || clientPic;
+
+    const computedDates = resolvedFye ? computeCp204BasisDates(rec.ya, resolvedFye) : null;
+
+    setInheritedFlags({ pic: picInherited, fye: fyeInherited });
     setDraft({
       cp204Id: rec.cp204Id,
       clientId: rec.clientId,
       clientName: rec.clientName,
       ya: rec.ya,
-      fye: rec.fye,
-      basisPeriodStart: rec.basisPeriodStart,
-      basisPeriodEnd: rec.basisPeriodEnd,
+      fye: resolvedFye,
+      basisPeriodStart: rec.basisPeriodStart || computedDates?.basisPeriodStart || '',
+      basisPeriodEnd: rec.basisPeriodEnd || computedDates?.basisPeriodEnd || '',
       originalEstimatedTax: rec.originalEstimatedTax,
       originalSubmissionDate: rec.originalSubmissionDate,
       currentEstimatedTax: rec.currentEstimatedTax,
-      statutoryCp204DueDate: rec.statutoryCp204DueDate,
-      pic: rec.pic,
+      statutoryCp204DueDate: rec.statutoryCp204DueDate || computedDates?.statutoryCp204DueDate || '',
+      pic: resolvedPic,
       reviewer: rec.reviewer,
       status: rec.status,
       acknowledgementUrl: rec.acknowledgementUrl,
@@ -128,6 +159,44 @@ export const Cp204AdvancedModal: React.FC<Cp204AdvancedModalProps> = ({
       setBulkClientId(corporateClients[0].clientId);
     }
   }, [open, initialTab, initialRecordId]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Backfill PIC & FYE if clients finish loading after modal opened and draft fields are still empty
+  useEffect(() => {
+    if (!open || !draft || clients.length === 0) return;
+    if ((draft.pic || '').trim() && (draft.fye || '').trim()) return;
+    const matchedClient = findClientRecordForRow(clients, {
+      clientId: draft.clientId,
+      clientName: draft.clientName,
+    });
+    if (!matchedClient) return;
+
+    const needsPic = !(draft.pic || '').trim() && Boolean((matchedClient.taxPic || '').trim());
+    const needsFye = !(draft.fye || '').trim() && Boolean((matchedClient.fye || '').trim());
+    if (!needsPic && !needsFye) return;
+
+    const nextFye = needsFye
+      ? normalizeFyeMonthString(matchedClient.fye) || matchedClient.fye.trim()
+      : draft.fye;
+    const computedDates = needsFye && nextFye ? computeCp204BasisDates(draft.ya, nextFye) : null;
+
+    setDraft((prev) =>
+      prev
+        ? {
+            ...prev,
+            pic: needsPic ? matchedClient.taxPic.trim() : prev.pic,
+            fye: nextFye,
+            basisPeriodStart: prev.basisPeriodStart || computedDates?.basisPeriodStart || '',
+            basisPeriodEnd: prev.basisPeriodEnd || computedDates?.basisPeriodEnd || '',
+            statutoryCp204DueDate:
+              prev.statutoryCp204DueDate || computedDates?.statutoryCp204DueDate || '',
+          }
+        : prev
+    );
+    setInheritedFlags((prev) => ({
+      pic: prev.pic || needsPic,
+      fye: prev.fye || needsFye,
+    }));
+  }, [open, clients, draft]);
 
   // Keep selected record in sync when user switches record dropdown
   const handleSwitchRecord = (recId: string) => {
@@ -269,6 +338,7 @@ export const Cp204AdvancedModal: React.FC<Cp204AdvancedModalProps> = ({
         },
         selectedRecordId
       );
+      setInheritedFlags({ pic: false, fye: false });
       setSuccessMsg(`Saved ${draft.cp204Id || ''} (${draft.clientName} · YA ${draft.ya}).`);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to save CP204 record.');
@@ -593,9 +663,13 @@ export const Cp204AdvancedModal: React.FC<Cp204AdvancedModalProps> = ({
                             {rec.ya}
                           </td>
                           <td className="px-3 py-2 font-mono text-slate-700">
-                            {rec.fye ? Number(rec.fye) : '—'}
+                            {rec.fye || selectedBulkClient?.fye
+                              ? Number(rec.fye || selectedBulkClient?.fye)
+                              : '—'}
                           </td>
-                          <td className="px-3 py-2 text-slate-700">{rec.pic || '—'}</td>
+                          <td className="px-3 py-2 text-slate-700">
+                            {rec.pic || selectedBulkClient?.taxPic || '—'}
+                          </td>
                           <td className="px-3 py-2 font-mono text-right text-slate-700">
                             {formatCurrencyRM(rec.originalEstimatedTax)}
                           </td>
@@ -692,6 +766,7 @@ export const Cp204AdvancedModal: React.FC<Cp204AdvancedModalProps> = ({
                         onChange={(e) => {
                           const nextFye = e.target.value;
                           const dates = computeCp204BasisDates(draft.ya, nextFye);
+                          setInheritedFlags((prev) => ({ ...prev, fye: false }));
                           setDraft({ ...draft, fye: nextFye, ...dates });
                         }}
                         className={`${inputCls} font-mono`}
@@ -703,6 +778,11 @@ export const Cp204AdvancedModal: React.FC<Cp204AdvancedModalProps> = ({
                           </option>
                         ))}
                       </select>
+                      {inheritedFlags.fye && (
+                        <p className="mt-1 text-[10px] font-medium text-teal-700">
+                          Inherited from Client Master
+                        </p>
+                      )}
                     </div>
                     <div>
                       <label className={labelCls}>Basis Period Start</label>
@@ -788,30 +868,41 @@ export const Cp204AdvancedModal: React.FC<Cp204AdvancedModalProps> = ({
 
                     <div>
                       <label className={labelCls}>PIC</label>
-                      <input
-                        list="cp204-adv-staff"
-                        maxLength={120}
+                      <select
                         disabled={isReadOnly}
                         value={draft.pic}
-                        onChange={(e) => setDraft({ ...draft, pic: e.target.value })}
+                        onChange={(e) => {
+                          setInheritedFlags((prev) => ({ ...prev, pic: false }));
+                          setDraft({ ...draft, pic: e.target.value });
+                        }}
                         className={inputCls}
-                      />
-                      <datalist id="cp204-adv-staff">
-                        {activeStaffNames.map((n) => (
-                          <option key={n} value={n} />
+                      >
+                        {staffOptions.map((opt) => (
+                          <option key={opt.value || '__blank__'} value={opt.value}>
+                            {opt.label}
+                          </option>
                         ))}
-                      </datalist>
+                      </select>
+                      {inheritedFlags.pic && (
+                        <p className="mt-1 text-[10px] font-medium text-teal-700">
+                          Inherited from Client Master
+                        </p>
+                      )}
                     </div>
                     <div>
                       <label className={labelCls}>Reviewer</label>
-                      <input
-                        list="cp204-adv-staff"
-                        maxLength={120}
+                      <select
                         disabled={isReadOnly}
                         value={draft.reviewer}
                         onChange={(e) => setDraft({ ...draft, reviewer: e.target.value })}
                         className={inputCls}
-                      />
+                      >
+                        {staffOptions.map((opt) => (
+                          <option key={opt.value || '__blank__'} value={opt.value}>
+                            {opt.label}
+                          </option>
+                        ))}
+                      </select>
                     </div>
                     <div className="sm:col-span-2">
                       <label className={labelCls}>Acknowledgement URL</label>
@@ -1038,23 +1129,33 @@ export const Cp204AdvancedModal: React.FC<Cp204AdvancedModalProps> = ({
                             </div>
                             <div>
                               <label className={labelCls}>PIC</label>
-                              <input
-                                list="cp204-adv-staff"
+                              <select
                                 disabled={isReadOnly}
                                 value={rev.pic}
                                 onChange={(e) => updateRevision(idx, { pic: e.target.value })}
                                 className={inputCls}
-                              />
+                              >
+                                {staffOptions.map((opt) => (
+                                  <option key={opt.value || '__blank__'} value={opt.value}>
+                                    {opt.label}
+                                  </option>
+                                ))}
+                              </select>
                             </div>
                             <div>
                               <label className={labelCls}>Reviewer</label>
-                              <input
-                                list="cp204-adv-staff"
+                              <select
                                 disabled={isReadOnly}
                                 value={rev.reviewer}
                                 onChange={(e) => updateRevision(idx, { reviewer: e.target.value })}
                                 className={inputCls}
-                              />
+                              >
+                                {staffOptions.map((opt) => (
+                                  <option key={opt.value || '__blank__'} value={opt.value}>
+                                    {opt.label}
+                                  </option>
+                                ))}
+                              </select>
                             </div>
                             <div>
                               <label className={labelCls}>Ack URL</label>

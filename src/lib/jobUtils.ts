@@ -107,6 +107,35 @@ export function findMatchedClient(
 }
 
 /**
+ * Finds a ClientRecord across Client Master by Firestore doc ID, normalized Client ID,
+ * or case-insensitive Client Name (trimmed) so any register table or calendar chip can
+ * open ClientModal directly on top of the current view.
+ */
+export function findClientRecordForRow(
+  clients: ClientRecord[],
+  ref: { clientDocId?: string | null; clientId?: string | null; clientName?: string | null }
+): ClientRecord | undefined {
+  const docId = (ref.clientDocId ?? '').trim();
+  if (docId) {
+    const byDoc = clients.find((c) => c.id === docId);
+    if (byDoc) return byDoc;
+  }
+  const normId = normalizeClientIdKey(ref.clientId);
+  if (normId) {
+    const byId = clients.find((c) => normalizeClientIdKey(c.clientId) === normId);
+    if (byId) return byId;
+  }
+  const normName = (ref.clientName ?? '').trim().toLowerCase().replace(/\s+/g, ' ');
+  if (normName) {
+    const byName = clients.find(
+      (c) => (c.clientName ?? '').trim().toLowerCase().replace(/\s+/g, ' ') === normName
+    );
+    if (byName) return byName;
+  }
+  return undefined;
+}
+
+/**
  * Resolves a job's effective FYE string from job.fye -> job.companyFye -> matchedClient.fye.
  */
 export function resolveJobDisplayFye(
@@ -675,4 +704,64 @@ export function isJobAssignedToLoggedInStaff(
     matchesLoggedInStaff(job.reviewer, matchKeys)
   );
 }
+
+/**
+ * Special Client Status filter value representing all active compliance clients
+ * (Active / blank, Re-appoint, WIP-Strike Off, WIP-Winding Up), excluding only
+ * Resigned, Inactive, Struck Off, and Wound Up.
+ */
+export const ACTIVE_COMPLIANCE_STATUS_FILTER = '__ACTIVE_COMPLIANCE__';
+
+const EXCLUDED_COMPLIANCE_CLIENT_STATUSES = new Set([
+  'resigned',
+  'inactive',
+  'struck off',
+  'wound up',
+]);
+
+/**
+ * Returns true ONLY when a client's status is explicitly Resigned, Inactive, Struck Off, or Wound Up.
+ * Active, blank, Re-appoint, WIP-Strike Off, and WIP-Winding Up return false (in-scope).
+ */
+export function isExcludedComplianceClientStatus(status: string | undefined | null): boolean {
+  const normalized = (status ?? '')
+    .trim()
+    .toLowerCase()
+    .replace(/[-_]+/g, ' ')
+    .replace(/\s+/g, ' ');
+  return EXCLUDED_COMPLIANCE_CLIENT_STATUSES.has(normalized);
+}
+
+/**
+ * Returns true if a client is an in-scope Corporate client for CP204 / CP204A compliance
+ * (Active/blank, Re-appoint, WIP-Strike Off, WIP-Winding Up — excluding Resigned, Inactive, Struck Off, Wound Up).
+ */
+export function isCp204InScopeCorporateClient(
+  status: string | undefined | null,
+  category: string | undefined | null
+): boolean {
+  if (category !== 'Corporate') return false;
+  return !isExcludedComplianceClientStatus(status);
+}
+
+/**
+ * Unified Client Status filter matcher used by ClientMasterView and Cp204ModuleView
+ * so Dashboard "View companies →" links match 1-to-1.
+ */
+export function matchesClientStatusFilterValue(
+  clientStatus: string | undefined | null,
+  filterValue: string
+): boolean {
+  if (!filterValue) return true;
+  if (filterValue === ACTIVE_COMPLIANCE_STATUS_FILTER) {
+    return !isExcludedComplianceClientStatus(clientStatus);
+  }
+  const target = filterValue.trim().toLowerCase();
+  const actual = (clientStatus || '').trim().toLowerCase();
+  if (target === 'active') {
+    return actual === '' || actual === 'active';
+  }
+  return actual === target;
+}
+
 

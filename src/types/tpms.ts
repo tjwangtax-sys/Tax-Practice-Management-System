@@ -223,6 +223,14 @@ export interface YaMonitoringItem {
   formESubmissionDate?: string;
 }
 
+export interface PicHistoryEntry {
+  date: string;
+  fromPic: string;
+  toPic: string;
+  transferredBy: string;
+  note?: string;
+}
+
 export interface ClientRecord {
   id: string;
   // Core 40 fields
@@ -291,6 +299,7 @@ export interface ClientRecord {
   relatedPersons: RelatedPersonItem[];
   partnershipPartners: PartnershipPartnerItem[];
   yaMonitoring: YaMonitoringItem[];
+  picHistory?: PicHistoryEntry[];
   // Audit
   createdBy: string;
   updatedBy?: string;
@@ -311,6 +320,7 @@ export interface TaxJob {
   companyFye?: string;
   ya?: string;
   taxPic?: string;
+  previousPic?: string;
   reviewer?: string;
   status: string;
   statusDate?: string;
@@ -704,6 +714,7 @@ export interface NavigationFilterPreset {
   dueTodayOnly?: boolean;
   clientStatus?: string;
   category?: 'Corporate' | 'Individual' | 'All';
+  reassignFromPic?: string;
   nonce: number;
 }
 
@@ -752,6 +763,14 @@ export interface ColumnDef {
   defaultVisible: boolean;
   optional?: boolean;
   align?: 'left' | 'right' | 'center';
+}
+
+export interface StoredColumnPrefsV2 {
+  version: 2;
+  visible: Record<string, boolean>;
+  pinned: string[];
+  order: string[];
+  updatedAtMs?: number;
 }
 
 export function clampStr(val: string | undefined | null, maxLen: number): string {

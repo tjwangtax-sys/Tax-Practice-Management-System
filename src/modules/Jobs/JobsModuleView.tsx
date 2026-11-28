@@ -12,6 +12,7 @@ import {
   X,
 } from 'lucide-react';
 import {
+  ClientRecord,
   ColumnDef,
   formatCurrencyRM,
   FYE_MONTHS,
@@ -38,6 +39,7 @@ import {
   buildClientLookupMap,
   buildLoggedInStaffMatchKeys,
   extractFyeMonth,
+  findClientRecordForRow,
   findMatchedClient,
   formatDateDDMMYYYY,
   formatOverdueLabel,
@@ -60,6 +62,7 @@ import {
   recomputeJobDeadlinesAndStatus,
   resolveJobDisplayFye,
 } from '../../lib/jobUtils';
+import { ClientModal } from '../ClientMaster/ClientModal';
 import { JobModal, JobModalTab } from './JobModal';
 import { BatchAddJobsModal, BatchModalVariant } from './BatchAddJobsModal';
 
@@ -594,6 +597,20 @@ export const JobsModuleView: React.FC<JobsModuleViewProps> = ({ mode, initialFil
   const { user, staffProfile, isReadOnly, isManagerOrAdmin } = useAuth();
   const { jobs, clients, history, loading, batchUpdateJobs, deleteJob, getSettingsByGroup } =
     useData();
+  const [profileClient, setProfileClient] = useState<ClientRecord | null>(null);
+
+  const handleOpenClientProfile = (job: TaxJob) => {
+    const matched = findClientRecordForRow(clients, {
+      clientDocId: job.clientDocId,
+      clientId: job.clientId,
+      clientName: job.clientName,
+    });
+    if (matched) {
+      setProfileClient(matched);
+    } else {
+      showToast('Client profile not found in Client Master.', 'warning', 2500);
+    }
+  };
 
   const isCorporateView = mode === 'Corporate';
   const columns = useMemo(() => getColumnsForMode(mode), [mode]);
@@ -898,6 +915,7 @@ export const JobsModuleView: React.FC<JobsModuleViewProps> = ({ mode, initialFil
           j.groupId,
           displayFye,
           j.taxPic,
+          j.previousPic,
           j.reviewer,
           j.auditType,
           j.auditor || clientRec?.auditor,
@@ -1840,14 +1858,32 @@ export const JobsModuleView: React.FC<JobsModuleViewProps> = ({ mode, initialFil
                         if (key === 'clientId') {
                           return wrapTd(
                             'px-3 py-2 text-xs font-mono font-medium text-slate-800 whitespace-nowrap',
-                            j.clientId || '—'
+                            j.clientId ? (
+                              <button
+                                type="button"
+                                onClick={() => handleOpenClientProfile(j)}
+                                className="hover:underline hover:text-teal-700 cursor-pointer font-medium text-left"
+                                title={`Open Client Profile (${j.clientName || j.clientId})`}
+                              >
+                                {j.clientId}
+                              </button>
+                            ) : (
+                              '—'
+                            )
                           );
                         }
 
                         if (key === 'jobCode') {
                           return wrapTd(
                             'px-3 py-2 text-xs font-mono font-medium text-slate-900 whitespace-nowrap',
-                            j.jobCode
+                            <button
+                              type="button"
+                              onClick={() => openJobModal(j, 'basic')}
+                              className="hover:underline hover:text-teal-700 cursor-pointer font-medium text-left"
+                              title="Open Tax Job"
+                            >
+                              {j.jobCode}
+                            </button>
                           );
                         }
 
@@ -1863,9 +1899,9 @@ export const JobsModuleView: React.FC<JobsModuleViewProps> = ({ mode, initialFil
                             'px-3 py-2 text-xs font-medium text-slate-900 whitespace-nowrap',
                             <button
                               type="button"
-                              onClick={() => openJobModal(j, 'basic')}
-                              className="text-left hover:text-teal-700 hover:underline max-w-[260px] truncate block"
-                              title={j.clientName}
+                              onClick={() => handleOpenClientProfile(j)}
+                              className="text-left hover:text-teal-700 hover:underline cursor-pointer font-medium max-w-[260px] truncate block"
+                              title={`${j.clientName} — Click to open Client Profile`}
                             >
                               {j.clientName}
                             </button>
@@ -2155,6 +2191,22 @@ export const JobsModuleView: React.FC<JobsModuleViewProps> = ({ mode, initialFil
                           );
                         }
 
+                        if (key === 'taxPic') {
+                          return wrapTd(
+                            'px-3 py-2 text-xs whitespace-nowrap',
+                            <div className="flex flex-col items-start gap-0.5">
+                              <span className="font-medium text-slate-800 leading-tight">
+                                {j.taxPic || '—'}
+                              </span>
+                              {j.previousPic && (
+                                <span className="text-[10px] text-slate-400 leading-tight">
+                                  Prev: {j.previousPic}
+                                </span>
+                              )}
+                            </div>
+                          );
+                        }
+
                         if (key === 'remarks' || key === 'statusRemarks') {
                           const remarkVal = j[key as keyof TaxJob] as string | undefined;
                           return wrapTd(
@@ -2282,6 +2334,12 @@ export const JobsModuleView: React.FC<JobsModuleViewProps> = ({ mode, initialFil
           onClose={() => setBatchModalVariant(null)}
         />
       )}
+
+      <ClientModal
+        open={Boolean(profileClient)}
+        client={profileClient}
+        onClose={() => setProfileClient(null)}
+      />
     </div>
   );
 };

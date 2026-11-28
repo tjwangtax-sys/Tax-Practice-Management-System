@@ -26,6 +26,7 @@ import { useAuth } from '../../context/AuthContext';
 import { useData, WorkDoneSavePayload } from '../../context/DataContext';
 import { ClientSelectorField } from '../../components/ClientSelectorField';
 import { buildDynamicSelectOptions } from '../../lib/settingsDropdown';
+import { useStaffOptions } from '../../hooks/useStaffOptions';
 
 interface WorkDoneModalProps {
   open: boolean;
@@ -139,18 +140,7 @@ export const WorkDoneModal: React.FC<WorkDoneModalProps> = ({ open, record, onCl
     [getSettingsByGroup, jobType]
   );
 
-  const activeStaffNames = useMemo(
-    () =>
-      Array.from(
-        new Set(
-          staff
-            .filter((s) => s.active)
-            .map((s) => s.staffName.trim())
-            .filter(Boolean)
-        )
-      ).sort((a, b) => a.localeCompare(b)),
-    [staff]
-  );
+  const staffOptions = useStaffOptions([pic, reviewer]);
 
   useEffect(() => {
     if (!open) return;
@@ -639,10 +629,9 @@ export const WorkDoneModal: React.FC<WorkDoneModalProps> = ({ open, record, onCl
                   disabled={formDisabled}
                   className="w-full px-2.5 py-1.5 text-xs bg-white border border-slate-200 rounded-md disabled:bg-slate-100"
                 >
-                  <option value="">— Select PIC —</option>
-                  {activeStaffNames.map((n) => (
-                    <option key={n} value={n}>
-                      {n}
+                  {staffOptions.map((opt) => (
+                    <option key={opt.value || '__blank__'} value={opt.value}>
+                      {opt.label}
                     </option>
                   ))}
                 </select>
@@ -657,10 +646,9 @@ export const WorkDoneModal: React.FC<WorkDoneModalProps> = ({ open, record, onCl
                   disabled={formDisabled}
                   className="w-full px-2.5 py-1.5 text-xs bg-white border border-slate-200 rounded-md disabled:bg-slate-100"
                 >
-                  <option value="">— Select Reviewer —</option>
-                  {activeStaffNames.map((n) => (
-                    <option key={n} value={n}>
-                      {n}
+                  {staffOptions.map((opt) => (
+                    <option key={opt.value || '__blank__'} value={opt.value}>
+                      {opt.label}
                     </option>
                   ))}
                 </select>
