@@ -188,6 +188,37 @@ export function exportToExcel(
   }
 }
 
+/**
+ * Exports rows to a UTF-8 CSV file (with BOM for Excel compatibility) via Blob download.
+ */
+export function exportToCsv(
+  filename: string,
+  columns: ExportColumn[],
+  rows: Record<string, unknown>[]
+): void {
+  try {
+    const escapeCsvCell = (raw: unknown): string => {
+      const str = raw === null || raw === undefined ? '' : String(raw);
+      if (/[",\r\n]/.test(str)) {
+        return `"${str.replace(/"/g, '""')}"`;
+      }
+      return str;
+    };
+
+    const headerLine = columns.map((c) => escapeCsvCell(c.label)).join(',');
+    const dataLines = rows.map((row) =>
+      columns.map((c) => escapeCsvCell(row[c.key])).join(',')
+    );
+    const csvContent = '\uFEFF' + [headerLine, ...dataLines].join('\r\n');
+    const safeFilename = filename.endsWith('.csv') ? filename : `${filename}.csv`;
+    const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
+    triggerBlobDownload(blob, safeFilename);
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    showToast(`CSV export failed: ${msg}`, 'error');
+  }
+}
+
 export interface MultiSheetExportTab {
   sheetName: string;
   headers: string[];

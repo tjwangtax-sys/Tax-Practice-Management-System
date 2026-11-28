@@ -154,6 +154,7 @@ export const DataImportTab: React.FC = () => {
     staff,
     settings,
     history,
+    writeAuditLog,
   } = useData();
 
   const fileInputRef = useRef<HTMLInputElement | null>(null);
@@ -1549,6 +1550,25 @@ export const DataImportTab: React.FC = () => {
     const totalCreated = workingResults.reduce((s, r) => s + r.created, 0);
     const totalUpdated = workingResults.reduce((s, r) => s + r.updated, 0);
     const totalErrors = workingResults.reduce((s, r) => s + r.errors.length, 0);
+
+    const perCollectionSummary = workingResults
+      .filter((r) => r.created > 0 || r.updated > 0 || r.errors.length > 0)
+      .map(
+        (r) =>
+          `${r.label}: +${r.created} new, ${r.updated} updated${
+            r.errors.length > 0 ? `, ${r.errors.length} err` : ''
+          }`
+      )
+      .join(' | ');
+
+    void writeAuditLog({
+      module: 'Data Import',
+      action: 'Bulk Import',
+      recordId: fileName || 'DATA_IMPORT',
+      details: `Imported "${fileName || 'uploaded file'}" (${totalCreated} created, ${totalUpdated} updated${
+        totalErrors > 0 ? `, ${totalErrors} error(s)` : ''
+      })${perCollectionSummary ? ` — ${perCollectionSummary}` : ''}`,
+    });
 
     if (totalErrors === 0) {
       showToast(

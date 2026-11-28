@@ -23,6 +23,8 @@ import {
   validateCp204Instalments,
 } from '../modules/CP204/cp204Utils';
 import {
+  AuditLogEntry,
+  AuditLogWritePayload,
   CalendarEvent,
   clampStr,
   ClientRecord,
@@ -74,12 +76,14 @@ interface DataContextValue {
   clients: ClientRecord[];
   jobs: TaxJob[];
   history: JobHistoryEntry[];
+  auditLogs: AuditLogEntry[];
   calendarEvents: CalendarEvent[];
   notifications: NotificationItem[];
   cp204Records: Cp204Record[];
   taxPayments: TaxPaymentRecord[];
   correspondenceRecords: CorrespondenceRecord[];
   workDoneRecords: WorkDoneRecord[];
+  writeAuditLog: (entry: AuditLogWritePayload) => Promise<void>;
   loading: boolean;
   refreshing: boolean;
   lastRefreshedAt: Date | null;
@@ -434,13 +438,14 @@ function buildSanitizedJobDocument(
 }
 
 export const DataProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
-  const { user, staffProfile, accessStatus, isReadOnly } = useAuth();
+  const { user, staffProfile, accessStatus, isAdmin, isReadOnly } = useAuth();
 
   const [staff, setStaff] = useState<StaffMember[]>([]);
   const [settings, setSettings] = useState<SettingValue[]>([]);
   const [clients, setClients] = useState<ClientRecord[]>([]);
   const [jobs, setJobs] = useState<TaxJob[]>([]);
   const [history, setHistory] = useState<JobHistoryEntry[]>([]);
+  const [auditLogs, setAuditLogs] = useState<AuditLogEntry[]>([]);
   const [calendarEvents, setCalendarEvents] = useState<CalendarEvent[]>([]);
   const [notifications, setNotifications] = useState<NotificationItem[]>([]);
   const [cp204Records, setCp204Records] = useState<Cp204Record[]>([]);
@@ -1001,6 +1006,103 @@ export const DataProvider: React.FC<{ children: React.ReactNode }> = ({ children
     };
   }, [accessStatus, user, refreshNonce]);
 
+  // Admin-only real-time listener for practice-wide immutable auditLogs (sorted newest first)
+  useEffect(() => {
+    if (accessStatus !== 'authorized' || !user || !isAdmin) {
+      setAuditLogs([]);
+      return;
+    }
+
+    const unsubAuditLogs = onSnapshot(
+      collection(db, 'auditLogs'),
+      (snap) => {
+        const list: AuditLogEntry[] = snap.docs
+          .map((d) => {
+            const raw = d.data() as Record<string, unknown>;
+            const ts = (raw.timestamp ?? raw.createdAt) as AuditLogEntry['timestamp'];
+            const userEmail = String(raw.userEmail ?? raw.email ?? raw.actorEmail ?? '').trim();
+            const userName = String(
+              raw.userName ?? raw.staffName ?? raw.user ?? raw.actorName ?? userEmail ?? 'System'
+            ).trim();
+            const userStaffId = String(raw.userStaffId ?? raw.staffId ?? '').trim();
+            const moduleName = String(raw.module ?? raw.collection ?? 'General').trim();
+            const actionName = String(raw.action ?? 'UPDATED').trim();
+            const recordId = String(raw.recordId ?? raw.entityId ?? raw.docId ?? d.id).trim();
+            const clientId = String(raw.clientId ?? '').trim();
+            const clientName = String(raw.clientName ?? '').trim();
+            const details = String(raw.details ?? raw.summary ?? raw.remarks ?? '').trim();
+            return {
+              id: d.id,
+              timestamp: ts,
+              userEmail,
+              userName,
+              userStaffId: userStaffId || undefined,
+              module: moduleName,
+              action: actionName,
+              recordId,
+              clientId: clientId || undefined,
+              clientName: clientName || undefined,
+              details,
+            };
+          })
+          .sort((a, b) => {
+            const ta = a.timestamp?.toMillis?.() ?? 0;
+            const tb = b.timestamp?.toMillis?.() ?? 0;
+            return tb - ta;
+          });
+        setAuditLogs(list);
+      },
+      (err) => {
+        console.warn('Unable to sync auditLogs from Firestore:', err);
+      }
+    );
+
+    return () => unsubAuditLogs();
+  }, [accessStatus, user, isAdmin, refreshNonce]);
+
+  const writeAuditLog = useCallback(
+    async (entry: AuditLogWritePayload): Promise<void> => {
+      if (accessStatus !== 'authorized' || !user?.email || isReadOnly) return;
+      const actorEmail = clampStr(user.email.trim(), 160);
+      if (actorEmail.length < 3) return;
+      const actorName = clampStr(
+        staffProfile?.staffName || user.displayName || actorEmail.split('@')[0] || 'Staff',
+        120
+      );
+      const actorStaffId = clampStr(staffProfile?.staffId || '', 40);
+      const moduleClean = clampStr(entry.module || 'General', 60) || 'General';
+      const actionClean = clampStr(entry.action || 'UPDATED', 64) || 'UPDATED';
+      const recordIdClean = clampStr(entry.recordId || 'RECORD', 128) || 'RECORD';
+      const detailsClean = clampStr(entry.details || `${actionClean} ${recordIdClean}`, 1500) || actionClean;
+      const clientIdClean = clampStr(entry.clientId || '', 60);
+      const clientNameClean = clampStr(entry.clientName || '', 240);
+
+      const logId = sanitizeDocId(
+        `AUD_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 7)}`
+      );
+
+      const payload: Record<string, unknown> = {
+        timestamp: serverTimestamp(),
+        userEmail: actorEmail,
+        userName: actorName,
+        module: moduleClean,
+        action: actionClean,
+        recordId: recordIdClean,
+        details: detailsClean,
+      };
+      if (actorStaffId) payload.userStaffId = actorStaffId;
+      if (clientIdClean) payload.clientId = clientIdClean;
+      if (clientNameClean) payload.clientName = clientNameClean;
+
+      try {
+        await setDoc(doc(db, 'auditLogs', logId), payload);
+      } catch (err) {
+        console.warn('Failed to write audit log entry:', err);
+      }
+    },
+    [accessStatus, user, staffProfile, isReadOnly]
+  );
+
   const refreshAll = useCallback(() => {
     setRefreshing(true);
     setRefreshNonce((n) => n + 1);
@@ -1178,6 +1280,17 @@ export const DataProvider: React.FC<{ children: React.ReactNode }> = ({ children
             await deleteDoc(doc(db, 'staff', existingDocId));
           }
         }
+        void writeAuditLog({
+          module: 'Staff Directory',
+          action: isEdit ? 'Updated' : 'Created',
+          recordId: staffIdClean || targetDocId,
+          details: `${isEdit ? 'Updated' : 'Added'} staff ${staffIdClean} — ${clampStr(
+            member.staffName,
+            120
+          )} (${member.role}, ${member.active ? 'Active' : 'Inactive'}${
+            member.leaveDate ? `, Leave: ${member.leaveDate}` : ''
+          })`,
+        });
       } catch (err) {
         handleFirestoreError(
           err,
@@ -1186,16 +1299,26 @@ export const DataProvider: React.FC<{ children: React.ReactNode }> = ({ children
         );
       }
     },
-    []
+    [writeAuditLog]
   );
 
-  const deleteStaffMember = useCallback(async (id: string) => {
-    try {
-      await deleteDoc(doc(db, 'staff', id));
-    } catch (err) {
-      handleFirestoreError(err, OperationType.DELETE, `staff/${id}`);
-    }
-  }, []);
+  const deleteStaffMember = useCallback(
+    async (id: string) => {
+      const prev = staff.find((s) => s.id === id);
+      try {
+        await deleteDoc(doc(db, 'staff', id));
+        void writeAuditLog({
+          module: 'Staff Directory',
+          action: 'Deleted',
+          recordId: prev?.staffId || id,
+          details: `Deleted staff ${prev ? `${prev.staffId} — ${prev.staffName} (${prev.email || 'no email'})` : id}`,
+        });
+      } catch (err) {
+        handleFirestoreError(err, OperationType.DELETE, `staff/${id}`);
+      }
+    },
+    [staff, writeAuditLog]
+  );
 
   // ---------------------- SETTINGS CRUD ----------------------
   const saveSetting = useCallback(
@@ -1220,6 +1343,12 @@ export const DataProvider: React.FC<{ children: React.ReactNode }> = ({ children
         } else {
           await setDoc(ref, { ...payload, createdAt: serverTimestamp() });
         }
+        void writeAuditLog({
+          module: 'Controlled Values',
+          action: isEdit ? 'Updated' : 'Created',
+          recordId: docId,
+          details: `${isEdit ? 'Updated' : 'Created'} [${payload.group}] ${payload.displayName} (Code: ${payload.code}, Active: ${payload.active ? 'Yes' : 'No'})`,
+        });
       } catch (err) {
         handleFirestoreError(
           err,
@@ -1228,16 +1357,26 @@ export const DataProvider: React.FC<{ children: React.ReactNode }> = ({ children
         );
       }
     },
-    []
+    [writeAuditLog]
   );
 
-  const deleteSetting = useCallback(async (id: string) => {
-    try {
-      await deleteDoc(doc(db, 'settings', id));
-    } catch (err) {
-      handleFirestoreError(err, OperationType.DELETE, `settings/${id}`);
-    }
-  }, []);
+  const deleteSetting = useCallback(
+    async (id: string) => {
+      const prev = settings.find((s) => s.id === id);
+      try {
+        await deleteDoc(doc(db, 'settings', id));
+        void writeAuditLog({
+          module: 'Controlled Values',
+          action: 'Deleted',
+          recordId: id,
+          details: `Deleted setting ${prev ? `[${prev.group}] ${prev.displayName}` : id}`,
+        });
+      } catch (err) {
+        handleFirestoreError(err, OperationType.DELETE, `settings/${id}`);
+      }
+    },
+    [settings, writeAuditLog]
+  );
 
   const seedDefaultSettings = useCallback(async (): Promise<number> => {
     const existingById = new Map(settings.map((s) => [s.id, s]));
@@ -1296,11 +1435,17 @@ export const DataProvider: React.FC<{ children: React.ReactNode }> = ({ children
         });
       }
       await batch.commit();
+      void writeAuditLog({
+        module: 'Controlled Values',
+        action: 'Seed Defaults',
+        recordId: 'SETTINGS_SEED',
+        details: `Seeded ${toCreate.length} new and upgraded ${toUpgrade.length} default Malaysian tax settings`,
+      });
       return toCreate.length + toUpgrade.length;
     } catch (err) {
       handleFirestoreError(err, OperationType.WRITE, 'settings/seed');
     }
-  }, [settings]);
+  }, [settings, writeAuditLog]);
 
   // ---------------------- CLIENTS CRUD ----------------------
   const saveClient = useCallback(
@@ -1431,6 +1576,21 @@ export const DataProvider: React.FC<{ children: React.ReactNode }> = ({ children
           );
           await setDoc(ref, compacted);
         }
+        const prevPic = (existingClient?.taxPic || '').trim();
+        const nextPic = clampStr(client.taxPic, 120);
+        const picChangedInModal = Boolean(existingClient && prevPic !== nextPic);
+        void writeAuditLog({
+          module: 'Client Master',
+          action: !existingId ? 'Created' : picChangedInModal ? 'PIC Handover' : 'Updated',
+          recordId: clampStr(client.clientId, 40) || docId,
+          clientId: clampStr(client.clientId, 40),
+          clientName: clampStr(client.clientName, 200),
+          details: !existingId
+            ? `Created ${client.category} client ${client.clientId} — ${client.clientName} (Status: ${client.clientStatus || 'Active'}, PIC: ${nextPic || 'Unassigned'})`
+            : picChangedInModal
+            ? `PIC changed from "${prevPic || 'Unassigned'}" to "${nextPic || 'Unassigned'}" and updated profile for ${client.clientName}`
+            : `Updated client profile for ${client.clientName} (Status: ${client.clientStatus || 'Active'}, FYE: ${client.fye || '—'}, PIC: ${nextPic || 'Unassigned'})`,
+        });
         return docId;
       } catch (err) {
         handleFirestoreError(
@@ -1440,12 +1600,13 @@ export const DataProvider: React.FC<{ children: React.ReactNode }> = ({ children
         );
       }
     },
-    [user, staffProfile, clients]
+    [user, staffProfile, clients, writeAuditLog]
   );
 
   const inactivateClient = useCallback(
     async (clientDocId: string, dateOfResigned: string) => {
       const ref = doc(db, 'clients', clientDocId);
+      const prev = clients.find((c) => c.id === clientDocId);
       try {
         await updateDoc(ref, {
           clientStatus: 'Resigned',
@@ -1453,16 +1614,25 @@ export const DataProvider: React.FC<{ children: React.ReactNode }> = ({ children
           updatedBy: clampStr(user?.email || '', 160),
           updatedAt: serverTimestamp(),
         });
+        void writeAuditLog({
+          module: 'Client Master',
+          action: 'Status Changed',
+          recordId: prev?.clientId || clientDocId,
+          clientId: prev?.clientId,
+          clientName: prev?.clientName,
+          details: `Marked client ${prev?.clientName || clientDocId} as Resigned (Date: ${dateOfResigned || '—'})`,
+        });
       } catch (err) {
         handleFirestoreError(err, OperationType.UPDATE, `clients/${clientDocId}`);
       }
     },
-    [user]
+    [user, clients, writeAuditLog]
   );
 
   const reactivateClient = useCallback(
     async (clientDocId: string) => {
       const ref = doc(db, 'clients', clientDocId);
+      const prev = clients.find((c) => c.id === clientDocId);
       try {
         await updateDoc(ref, {
           clientStatus: 'Active',
@@ -1470,20 +1640,40 @@ export const DataProvider: React.FC<{ children: React.ReactNode }> = ({ children
           updatedBy: clampStr(user?.email || '', 160),
           updatedAt: serverTimestamp(),
         });
+        void writeAuditLog({
+          module: 'Client Master',
+          action: 'Status Changed',
+          recordId: prev?.clientId || clientDocId,
+          clientId: prev?.clientId,
+          clientName: prev?.clientName,
+          details: `Reactivated client ${prev?.clientName || clientDocId} to Active`,
+        });
       } catch (err) {
         handleFirestoreError(err, OperationType.UPDATE, `clients/${clientDocId}`);
       }
     },
-    [user]
+    [user, clients, writeAuditLog]
   );
 
-  const deleteClient = useCallback(async (clientDocId: string) => {
-    try {
-      await deleteDoc(doc(db, 'clients', clientDocId));
-    } catch (err) {
-      handleFirestoreError(err, OperationType.DELETE, `clients/${clientDocId}`);
-    }
-  }, []);
+  const deleteClient = useCallback(
+    async (clientDocId: string) => {
+      const prev = clients.find((c) => c.id === clientDocId);
+      try {
+        await deleteDoc(doc(db, 'clients', clientDocId));
+        void writeAuditLog({
+          module: 'Client Master',
+          action: 'Deleted',
+          recordId: prev?.clientId || clientDocId,
+          clientId: prev?.clientId,
+          clientName: prev?.clientName,
+          details: `Deleted client ${prev ? `${prev.clientId} — ${prev.clientName}` : clientDocId}`,
+        });
+      } catch (err) {
+        handleFirestoreError(err, OperationType.DELETE, `clients/${clientDocId}`);
+      }
+    },
+    [clients, writeAuditLog]
+  );
 
   // ---------------------- JOBS CRUD + AUDIT HISTORY ----------------------
   const saveJob = useCallback(
@@ -1590,6 +1780,21 @@ export const DataProvider: React.FC<{ children: React.ReactNode }> = ({ children
         }
 
         await batch.commit();
+        void writeAuditLog({
+          module: `Jobs (${meta.module})`,
+          action:
+            action === 'CREATED'
+              ? 'Created'
+              : action === 'STATUS_CHANGED'
+              ? 'Status Changed'
+              : action === 'PIC_HANDOVER'
+              ? 'PIC Handover'
+              : 'Updated',
+          recordId: meta.jobCode || docId,
+          clientId: clampStr(job.clientId, 60),
+          clientName: meta.clientName,
+          details: clampStr(auditRemarks || defaultRemark, 1500),
+        });
         return docId;
       } catch (err) {
         handleFirestoreError(
@@ -1599,7 +1804,7 @@ export const DataProvider: React.FC<{ children: React.ReactNode }> = ({ children
         );
       }
     },
-    [user, staffProfile, jobs]
+    [user, staffProfile, jobs, writeAuditLog]
   );
 
   const batchCreateJobs = useCallback(
@@ -1678,12 +1883,22 @@ export const DataProvider: React.FC<{ children: React.ReactNode }> = ({ children
           }
           await batch.commit();
         }
+        void writeAuditLog({
+          module: 'Jobs',
+          action: 'Batch Created',
+          recordId: `BATCH_JOBS_${createdCount}`,
+          details: `Batch created ${createdCount} compliance job(s)${
+            skippedCount > 0 ? ` (${skippedCount} duplicate skipped)` : ''
+          }${toCreate[0]?.ya ? ` · YA ${toCreate[0].ya}` : ''}${
+            toCreate[0]?.module ? ` · ${toCreate[0].module}` : ''
+          }`,
+        });
         return { createdCount, skippedCount };
       } catch (err) {
         handleFirestoreError(err, OperationType.WRITE, 'jobs/batch_create');
       }
     },
-    [user, staffProfile, jobs]
+    [user, staffProfile, jobs, writeAuditLog]
   );
 
   const batchUpdateJobs = useCallback(
@@ -1734,23 +1949,40 @@ export const DataProvider: React.FC<{ children: React.ReactNode }> = ({ children
           }
           await batch.commit();
         }
+        void writeAuditLog({
+          module: 'Jobs',
+          action: 'Batch Updated',
+          recordId: `BATCH_UPDATE_${updatedCount}`,
+          details: `Batch updated ${updatedCount} job(s)${
+            items[0]?.auditRemark ? ` · ${items[0].auditRemark}` : ''
+          }`,
+        });
         return { updatedCount };
       } catch (err) {
         handleFirestoreError(err, OperationType.UPDATE, 'jobs/batch_update');
       }
     },
-    [user, staffProfile, jobs]
+    [user, staffProfile, jobs, writeAuditLog]
   );
 
   const deleteJob = useCallback(
     async (jobId: string) => {
+      const prev = jobs.find((j) => j.id === jobId);
       try {
         await deleteDoc(doc(db, 'jobs', jobId));
+        void writeAuditLog({
+          module: prev ? `Jobs (${prev.module})` : 'Jobs',
+          action: 'Deleted',
+          recordId: prev?.jobCode || jobId,
+          clientId: prev?.clientId,
+          clientName: prev?.clientName,
+          details: `Deleted job ${prev ? `${prev.jobCode} (${prev.jobType || prev.module}, YA ${prev.ya || '—'}) for ${prev.clientName}` : jobId}`,
+        });
       } catch (err) {
         handleFirestoreError(err, OperationType.DELETE, `jobs/${jobId}`);
       }
     },
-    []
+    [jobs, writeAuditLog]
   );
 
   // ---------------------- CALENDAR EVENTS CRUD ----------------------
@@ -1812,6 +2044,14 @@ export const DataProvider: React.FC<{ children: React.ReactNode }> = ({ children
             createdAt: serverTimestamp(),
           });
         }
+        void writeAuditLog({
+          module: 'Team Calendar',
+          action: existingId ? 'Updated' : 'Created',
+          recordId: docId,
+          clientId: event.clientId,
+          clientName: event.clientName,
+          details: `${existingId ? 'Updated' : 'Created'} ${event.eventType} "${event.title}" (${event.startDate}${event.endDate && event.endDate !== event.startDate ? ` to ${event.endDate}` : ''}${event.assignedTo ? `, Staff: ${event.assignedTo}` : ''})`,
+        });
         return docId;
       } catch (err) {
         handleFirestoreError(
@@ -1821,7 +2061,7 @@ export const DataProvider: React.FC<{ children: React.ReactNode }> = ({ children
         );
       }
     },
-    [user, buildCalendarEventPayload]
+    [user, buildCalendarEventPayload, writeAuditLog]
   );
 
   const batchSaveCalendarEvents = useCallback(
@@ -1852,12 +2092,20 @@ export const DataProvider: React.FC<{ children: React.ReactNode }> = ({ children
           }
           await batch.commit();
         }
+        void writeAuditLog({
+          module: 'Team Calendar',
+          action: 'Batch Created',
+          recordId: `CAL_BATCH_${createdIds.length}`,
+          clientId: events[0]?.clientId,
+          clientName: events[0]?.clientName,
+          details: `Created ${createdIds.length} calendar event(s) — "${events[0]?.title || 'Schedule'}" (${events[0]?.eventType || 'Event'})`,
+        });
         return createdIds;
       } catch (err) {
         handleFirestoreError(err, OperationType.CREATE, 'calendarEvents/batch_create');
       }
     },
-    [user, buildCalendarEventPayload]
+    [user, buildCalendarEventPayload, writeAuditLog]
   );
 
   const batchUpdateCalendarEvents = useCallback(
@@ -1911,38 +2159,65 @@ export const DataProvider: React.FC<{ children: React.ReactNode }> = ({ children
           }
           await batch.commit();
         }
+        void writeAuditLog({
+          module: 'Team Calendar',
+          action: 'Batch Updated',
+          recordId: `CAL_UPDATE_${updates.length}`,
+          details: `Updated ${updates.length} calendar event(s)`,
+        });
       } catch (err) {
         handleFirestoreError(err, OperationType.UPDATE, 'calendarEvents/batch_update');
       }
     },
-    [user]
+    [user, writeAuditLog]
   );
 
-  const deleteCalendarEvent = useCallback(async (eventId: string) => {
-    try {
-      await deleteDoc(doc(db, 'calendarEvents', eventId));
-    } catch (err) {
-      handleFirestoreError(err, OperationType.DELETE, `calendarEvents/${eventId}`);
-    }
-  }, []);
-
-  const batchDeleteCalendarEvents = useCallback(async (eventIds: string[]) => {
-    const uniqueIds = Array.from(new Set(eventIds.filter(Boolean)));
-    if (uniqueIds.length === 0) return;
-    const CHUNK_SIZE = 400;
-    try {
-      for (let i = 0; i < uniqueIds.length; i += CHUNK_SIZE) {
-        const slice = uniqueIds.slice(i, i + CHUNK_SIZE);
-        const batch = writeBatch(db);
-        for (const id of slice) {
-          batch.delete(doc(db, 'calendarEvents', id));
-        }
-        await batch.commit();
+  const deleteCalendarEvent = useCallback(
+    async (eventId: string) => {
+      const prev = calendarEvents.find((e) => e.id === eventId);
+      try {
+        await deleteDoc(doc(db, 'calendarEvents', eventId));
+        void writeAuditLog({
+          module: 'Team Calendar',
+          action: 'Deleted',
+          recordId: eventId,
+          clientId: prev?.clientId,
+          clientName: prev?.clientName,
+          details: `Deleted calendar event "${prev?.title || eventId}"${prev?.startDate ? ` (${prev.startDate})` : ''}`,
+        });
+      } catch (err) {
+        handleFirestoreError(err, OperationType.DELETE, `calendarEvents/${eventId}`);
       }
-    } catch (err) {
-      handleFirestoreError(err, OperationType.DELETE, 'calendarEvents/batch_delete');
-    }
-  }, []);
+    },
+    [calendarEvents, writeAuditLog]
+  );
+
+  const batchDeleteCalendarEvents = useCallback(
+    async (eventIds: string[]) => {
+      const uniqueIds = Array.from(new Set(eventIds.filter(Boolean)));
+      if (uniqueIds.length === 0) return;
+      const CHUNK_SIZE = 400;
+      try {
+        for (let i = 0; i < uniqueIds.length; i += CHUNK_SIZE) {
+          const slice = uniqueIds.slice(i, i + CHUNK_SIZE);
+          const batch = writeBatch(db);
+          for (const id of slice) {
+            batch.delete(doc(db, 'calendarEvents', id));
+          }
+          await batch.commit();
+        }
+        void writeAuditLog({
+          module: 'Team Calendar',
+          action: 'Batch Deleted',
+          recordId: `CAL_DEL_${uniqueIds.length}`,
+          details: `Deleted ${uniqueIds.length} recurring/grouped calendar event(s)`,
+        });
+      } catch (err) {
+        handleFirestoreError(err, OperationType.DELETE, 'calendarEvents/batch_delete');
+      }
+    },
+    [writeAuditLog]
+  );
 
   // ---------------------- CP204 MONITORING CRUD ----------------------
   const saveCp204 = useCallback(
@@ -2027,6 +2302,14 @@ export const DataProvider: React.FC<{ children: React.ReactNode }> = ({ children
             createdAt: serverTimestamp(),
           });
         }
+        void writeAuditLog({
+          module: 'CP204 Monitoring',
+          action: existingId ? 'Updated' : 'Created',
+          recordId: cp204Id,
+          clientId: normClientId,
+          clientName: clampStr(record.clientName, 200),
+          details: `${existingId ? 'Updated' : 'Created'} ${cp204Id} (YA ${normYa}, Status: ${basePayload.status}, Est: RM ${currentEstimatedTax.toLocaleString('en-MY', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}, Revisions: ${normalizedRevisions.length})`,
+        });
         return docId;
       } catch (err) {
         handleFirestoreError(
@@ -2036,7 +2319,7 @@ export const DataProvider: React.FC<{ children: React.ReactNode }> = ({ children
         );
       }
     },
-    [user, cp204Records]
+    [user, cp204Records, writeAuditLog]
   );
 
   const batchCreateCp204 = useCallback(
@@ -2110,21 +2393,39 @@ export const DataProvider: React.FC<{ children: React.ReactNode }> = ({ children
           }
           await batch.commit();
         }
+        void writeAuditLog({
+          module: 'CP204 Monitoring',
+          action: 'Batch Created',
+          recordId: `CP204_BATCH_${createdCount}`,
+          details: `Batch created ${createdCount} CP204 record(s)${skippedCount > 0 ? ` (${skippedCount} skipped)` : ''}${toCreate[0]?.item.ya ? ` · YA ${toCreate[0].item.ya}` : ''}`,
+        });
         return { createdCount, skippedCount };
       } catch (err) {
         handleFirestoreError(err, OperationType.WRITE, 'cp204/batch_create');
       }
     },
-    [user, cp204Records]
+    [user, cp204Records, writeAuditLog]
   );
 
-  const deleteCp204 = useCallback(async (id: string) => {
-    try {
-      await deleteDoc(doc(db, 'cp204', id));
-    } catch (err) {
-      handleFirestoreError(err, OperationType.DELETE, `cp204/${id}`);
-    }
-  }, []);
+  const deleteCp204 = useCallback(
+    async (id: string) => {
+      const prev = cp204Records.find((r) => r.id === id);
+      try {
+        await deleteDoc(doc(db, 'cp204', id));
+        void writeAuditLog({
+          module: 'CP204 Monitoring',
+          action: 'Deleted',
+          recordId: prev?.cp204Id || id,
+          clientId: prev?.clientId,
+          clientName: prev?.clientName,
+          details: `Deleted CP204 record ${prev ? `${prev.cp204Id} (YA ${prev.ya}) for ${prev.clientName}` : id}`,
+        });
+      } catch (err) {
+        handleFirestoreError(err, OperationType.DELETE, `cp204/${id}`);
+      }
+    },
+    [cp204Records, writeAuditLog]
+  );
 
   // ---------------------- TAX PAYMENT MONITOR CRUD ----------------------
   const saveTaxPayment = useCallback(
@@ -2191,6 +2492,14 @@ export const DataProvider: React.FC<{ children: React.ReactNode }> = ({ children
             createdAt: serverTimestamp(),
           });
         }
+        void writeAuditLog({
+          module: 'Tax Payment Monitor',
+          action: existingId ? 'Updated' : 'Created',
+          recordId: paymentId,
+          clientId: basePayload.clientId,
+          clientName: basePayload.clientName,
+          details: `${existingId ? 'Updated' : 'Created'} ${paymentId} (${basePayload.paymentType}, YA ${basePayload.ya || '—'}, Paid: RM ${amountPaid.toFixed(2)} / Due: RM ${amountDue.toFixed(2)}, Status: ${basePayload.followUpStatus})`,
+        });
         return docId;
       } catch (err) {
         handleFirestoreError(
@@ -2200,16 +2509,28 @@ export const DataProvider: React.FC<{ children: React.ReactNode }> = ({ children
         );
       }
     },
-    [user, taxPayments]
+    [user, taxPayments, writeAuditLog]
   );
 
-  const deleteTaxPayment = useCallback(async (id: string) => {
-    try {
-      await deleteDoc(doc(db, 'taxPayments', id));
-    } catch (err) {
-      handleFirestoreError(err, OperationType.DELETE, `taxPayments/${id}`);
-    }
-  }, []);
+  const deleteTaxPayment = useCallback(
+    async (id: string) => {
+      const prev = taxPayments.find((p) => p.id === id);
+      try {
+        await deleteDoc(doc(db, 'taxPayments', id));
+        void writeAuditLog({
+          module: 'Tax Payment Monitor',
+          action: 'Deleted',
+          recordId: prev?.paymentId || id,
+          clientId: prev?.clientId,
+          clientName: prev?.clientName,
+          details: `Deleted tax payment ${prev ? `${prev.paymentId} (${prev.paymentType}) for ${prev.clientName}` : id}`,
+        });
+      } catch (err) {
+        handleFirestoreError(err, OperationType.DELETE, `taxPayments/${id}`);
+      }
+    },
+    [taxPayments, writeAuditLog]
+  );
 
   // ---------------------- CORRESPONDENCE CRUD ----------------------
   const saveCorrespondence = useCallback(
@@ -2271,6 +2592,14 @@ export const DataProvider: React.FC<{ children: React.ReactNode }> = ({ children
             createdAt: serverTimestamp(),
           });
         }
+        void writeAuditLog({
+          module: 'Correspondence',
+          action: existingId ? 'Updated' : 'Created',
+          recordId: correspondenceId,
+          clientId: basePayload.clientId,
+          clientName: basePayload.clientName,
+          details: `${existingId ? 'Updated' : 'Logged'} ${correspondenceId} [${basePayload.category} · ${basePayload.letterType}] "${basePayload.letterSubject}" (Status: ${basePayload.actionStatus})`,
+        });
         return docId;
       } catch (err) {
         handleFirestoreError(
@@ -2280,16 +2609,28 @@ export const DataProvider: React.FC<{ children: React.ReactNode }> = ({ children
         );
       }
     },
-    [user, correspondenceRecords]
+    [user, correspondenceRecords, writeAuditLog]
   );
 
-  const deleteCorrespondence = useCallback(async (id: string) => {
-    try {
-      await deleteDoc(doc(db, 'correspondence', id));
-    } catch (err) {
-      handleFirestoreError(err, OperationType.DELETE, `correspondence/${id}`);
-    }
-  }, []);
+  const deleteCorrespondence = useCallback(
+    async (id: string) => {
+      const prev = correspondenceRecords.find((c) => c.id === id);
+      try {
+        await deleteDoc(doc(db, 'correspondence', id));
+        void writeAuditLog({
+          module: 'Correspondence',
+          action: 'Deleted',
+          recordId: prev?.correspondenceId || id,
+          clientId: prev?.clientId,
+          clientName: prev?.clientName,
+          details: `Deleted correspondence ${prev ? `${prev.correspondenceId} "${prev.letterSubject}" for ${prev.clientName}` : id}`,
+        });
+      } catch (err) {
+        handleFirestoreError(err, OperationType.DELETE, `correspondence/${id}`);
+      }
+    },
+    [correspondenceRecords, writeAuditLog]
+  );
 
   // ---------------------- WORK DONE & FINANCE CRUD ----------------------
   const saveWorkDone = useCallback(
@@ -2511,6 +2852,14 @@ export const DataProvider: React.FC<{ children: React.ReactNode }> = ({ children
             createdAt: serverTimestamp(),
           });
         }
+        void writeAuditLog({
+          module: 'Work Done & Finance',
+          action: existingId ? 'Updated' : 'Created',
+          recordId: workDoneId,
+          clientId: String(commonPayload.clientId || ''),
+          clientName: String(commonPayload.clientName || ''),
+          details: `${existingId ? 'Updated' : 'Created'} ${workDoneId} (Status: ${commonPayload.workDoneStatus}, Finance: ${financeInvoiceStatus}, Total: RM ${totalInvoiceAmount.toFixed(2)}${invoiceNo ? `, Inv: ${invoiceNo}` : ''})`,
+        });
         return docId;
       } catch (err) {
         handleFirestoreError(
@@ -2520,16 +2869,28 @@ export const DataProvider: React.FC<{ children: React.ReactNode }> = ({ children
         );
       }
     },
-    [user, staffProfile, workDoneRecords]
+    [user, staffProfile, workDoneRecords, writeAuditLog]
   );
 
-  const deleteWorkDone = useCallback(async (id: string) => {
-    try {
-      await deleteDoc(doc(db, 'workDone', id));
-    } catch (err) {
-      handleFirestoreError(err, OperationType.DELETE, `workDone/${id}`);
-    }
-  }, []);
+  const deleteWorkDone = useCallback(
+    async (id: string) => {
+      const prev = workDoneRecords.find((w) => w.id === id);
+      try {
+        await deleteDoc(doc(db, 'workDone', id));
+        void writeAuditLog({
+          module: 'Work Done & Finance',
+          action: 'Deleted',
+          recordId: prev?.workDoneId || id,
+          clientId: prev?.clientId,
+          clientName: prev?.clientName,
+          details: `Deleted Work Done ${prev ? `${prev.workDoneId} for ${prev.clientName}` : id}`,
+        });
+      } catch (err) {
+        handleFirestoreError(err, OperationType.DELETE, `workDone/${id}`);
+      }
+    },
+    [workDoneRecords, writeAuditLog]
+  );
 
   // ---------------------- NOTIFICATIONS ----------------------
   const publishAnnouncement = useCallback(
@@ -2826,13 +3187,29 @@ export const DataProvider: React.FC<{ children: React.ReactNode }> = ({ children
         handleFirestoreError(err, OperationType.UPDATE, 'clients/batch_reassign_pic');
       }
 
+      void writeAuditLog({
+        module: 'Client Master',
+        action: 'Batch PIC Handover',
+        recordId: 'BATCH_PIC_TRANSFER',
+        clientName:
+          targetClients.length === 1
+            ? targetClients[0].clientName
+            : `${targetClients.length} Clients`,
+        clientId: targetClients.length === 1 ? targetClients[0].clientId : undefined,
+        details: `Batch PIC Transfer: ${cleanFromPic} → ${cleanToPic || 'Unassigned'} (${
+          targetClients.length
+        } client${targetClients.length === 1 ? '' : 's'})${extraSummary}${
+          cleanNote ? ` · Note: ${cleanNote}` : ''
+        }`,
+      });
+
       return {
         clientsUpdated: targetClients.length,
         jobsUpdated: targetJobs.length,
         cp204Updated: targetCp204.length,
       };
     },
-    [clients, jobs, cp204Records, user, staffProfile]
+    [clients, jobs, cp204Records, user, staffProfile, writeAuditLog]
   );
 
   return (
@@ -2843,12 +3220,14 @@ export const DataProvider: React.FC<{ children: React.ReactNode }> = ({ children
         clients,
         jobs,
         history,
+        auditLogs,
         calendarEvents,
         notifications,
         cp204Records,
         taxPayments,
         correspondenceRecords,
         workDoneRecords,
+        writeAuditLog,
         loading,
         refreshing,
         lastRefreshedAt,

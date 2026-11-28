@@ -117,6 +117,29 @@ export interface JobHistoryEntry {
   remarks: string;
 }
 
+export interface AuditLogEntry {
+  id: string;
+  timestamp?: Timestamp;
+  userEmail: string;
+  userName: string;
+  userStaffId?: string;
+  module: string;
+  action: string;
+  recordId: string;
+  clientId?: string;
+  clientName?: string;
+  details: string;
+}
+
+export interface AuditLogWritePayload {
+  module: string;
+  action: string;
+  recordId: string;
+  clientId?: string;
+  clientName?: string;
+  details: string;
+}
+
 export type ClientCategory = 'Corporate' | 'Individual' | 'Other';
 
 export const CLIENT_STATUS_OPTIONS = [

@@ -13,6 +13,7 @@ import {
   Upload,
   ArrowRight,
   AlertTriangle,
+  History,
 } from 'lucide-react';
 import {
   ColumnDef,
@@ -36,6 +37,7 @@ import { StatusPill } from '../../components/StatusPill';
 import { exportToExcel, printRegisterHtml } from '../../lib/exportUtils';
 import { formatDateDDMMYYYY } from '../../lib/deadlineUtils';
 import { DataImportTab } from './DataImportTab';
+import { AuditTrailTab } from './AuditTrailTab';
 
 const STAFF_COLUMNS: ColumnDef[] = [
   { key: 'staffId', label: 'Staff ID', defaultVisible: true },
@@ -70,6 +72,8 @@ export const StaffSettingsView: React.FC<StaffSettingsViewProps> = ({ onNavigate
     staff,
     clients,
     settings,
+    auditLogs,
+    writeAuditLog,
     saveStaffMember,
     deleteStaffMember,
     saveSetting,
@@ -77,7 +81,7 @@ export const StaffSettingsView: React.FC<StaffSettingsViewProps> = ({ onNavigate
     seedDefaultSettings,
   } = useData();
 
-  const [tab, setTab] = useState<'staff' | 'settings' | 'import'>(() =>
+  const [tab, setTab] = useState<'staff' | 'settings' | 'import' | 'audit'>(() =>
     isAdmin ? 'staff' : 'settings'
   );
 
@@ -205,7 +209,7 @@ export const StaffSettingsView: React.FC<StaffSettingsViewProps> = ({ onNavigate
   const displayedStaff = staffExcel.rows;
   const displayedSettings = settingsExcel.rows;
 
-  const activeTab: 'staff' | 'settings' | 'import' = isAdmin ? tab : 'settings';
+  const activeTab: 'staff' | 'settings' | 'import' | 'audit' = isAdmin ? tab : 'settings';
 
   if (!isManagerOrAdmin) {
     return (
@@ -537,6 +541,12 @@ export const StaffSettingsView: React.FC<StaffSettingsViewProps> = ({ onNavigate
       const summary = `Normalized ${normalizedCount} setting(s), merged ${mergedGroupsCount} duplicate value(s) (kept Active), and deleted ${deletedCount} duplicate document(s).`;
       setSeedMessage(summary);
       showToast(summary, 'success', 4800);
+      void writeAuditLog({
+        module: 'Controlled Values',
+        action: 'Merge Duplicates',
+        recordId: 'SETTINGS_MERGE',
+        details: summary,
+      });
     } catch (err) {
       const msg = err instanceof Error ? err.message : 'Failed to merge duplicate setting groups.';
       setSeedMessage(`Merge failed: ${msg}`);
@@ -597,6 +607,23 @@ export const StaffSettingsView: React.FC<StaffSettingsViewProps> = ({ onNavigate
             >
               <Upload className="w-3.5 h-3.5" />
               Data Import
+            </button>
+          )}
+          {isAdmin && (
+            <button
+              type="button"
+              onClick={() => setTab('audit')}
+              className={`inline-flex items-center gap-1.5 px-3.5 py-1.5 text-xs font-semibold rounded-md transition-colors ${
+                activeTab === 'audit'
+                  ? 'bg-white text-slate-900 shadow-xs'
+                  : 'text-slate-600 hover:text-slate-900'
+              }`}
+            >
+              <History className="w-3.5 h-3.5" />
+              Audit Trail
+              {auditLogs.length > 0 && (
+                <span className="ml-0.5 font-mono text-slate-400">({auditLogs.length})</span>
+              )}
             </button>
           )}
         </div>
@@ -1203,6 +1230,9 @@ export const StaffSettingsView: React.FC<StaffSettingsViewProps> = ({ onNavigate
 
       {/* TAB 3: BULK DATA IMPORT (Admin Only) */}
       {isAdmin && activeTab === 'import' && <DataImportTab />}
+
+      {/* TAB 4: READ-ONLY AUDIT TRAIL (Admin Only) */}
+      {isAdmin && activeTab === 'audit' && <AuditTrailTab />}
 
       {/* Add/Edit Staff Modal */}
       {staffModalOpen && (

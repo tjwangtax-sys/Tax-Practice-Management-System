@@ -422,6 +422,24 @@
         "updatedAt": { "type": "string", "format": "date-time" }
       },
       "required": ["excludedHolidays", "updatedBy", "updatedAt"]
+    },
+    "AuditLogEntry": {
+      "title": "AuditLogEntry",
+      "description": "Immutable practice-wide audit trail log capturing live edits, deletes, imports, and handovers across all TPMS modules.",
+      "type": "object",
+      "properties": {
+        "timestamp": { "type": "string", "format": "date-time" },
+        "userEmail": { "type": "string", "minLength": 3, "maxLength": 160 },
+        "userName": { "type": "string", "minLength": 1, "maxLength": 120 },
+        "userStaffId": { "type": "string", "maxLength": 40 },
+        "module": { "type": "string", "minLength": 1, "maxLength": 60 },
+        "action": { "type": "string", "minLength": 1, "maxLength": 64 },
+        "recordId": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "clientId": { "type": "string", "maxLength": 60 },
+        "clientName": { "type": "string", "maxLength": 240 },
+        "details": { "type": "string", "minLength": 1, "maxLength": 1500 }
+      },
+      "required": ["timestamp", "userEmail", "userName", "module", "action", "recordId", "details"]
     }
   },
   "firestore": {
@@ -476,6 +494,10 @@
     "/systemSettings/{settingDocId}": {
       "schema": { "$ref": "#/entities/SystemCalendarSettings" },
       "description": "Practice-wide system settings documents (e.g. calendar excluded public holidays)."
+    },
+    "/auditLogs/{logId}": {
+      "schema": { "$ref": "#/entities/AuditLogEntry" },
+      "description": "Immutable, append-only practice-wide audit trail readable only by Admins."
     }
   }
 }

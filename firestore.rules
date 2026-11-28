@@ -420,5 +420,37 @@ service cloud.firestore {
         && settingDocId == 'calendar'
         && isAdmin();
     }
+
+    // 14. Practice-Wide Immutable Audit Trail (Append-Only, Admin Read-Only)
+    function isValidAuditLog(d) {
+      let k = d.keys();
+      return k.hasAll(['timestamp', 'userEmail', 'userName', 'module', 'action', 'recordId', 'details'])
+        && k.hasOnly([
+          'timestamp', 'userEmail', 'userName', 'userStaffId',
+          'module', 'action', 'recordId', 'clientId', 'clientName', 'details'
+        ])
+        && d.timestamp is timestamp
+        && d.userEmail is string && d.userEmail.size() >= 3 && d.userEmail.size() <= 160
+        && d.userName is string && d.userName.size() >= 1 && d.userName.size() <= 120
+        && (!('userStaffId' in d) || (d.userStaffId is string && d.userStaffId.size() <= 40))
+        && d.module is string && d.module.size() >= 1 && d.module.size() <= 60
+        && d.action is string && d.action.size() >= 1 && d.action.size() <= 64
+        && d.recordId is string && d.recordId.size() >= 1 && d.recordId.size() <= 128
+        && (!('clientId' in d) || (d.clientId is string && d.clientId.size() <= 60))
+        && (!('clientName' in d) || (d.clientName is string && d.clientName.size() <= 240))
+        && d.details is string && d.details.size() >= 1 && d.details.size() <= 1500;
+    }
+
+    match /auditLogs/{logId} {
+      allow get: if isAdmin() && isValidId(logId);
+      allow list: if isAdmin();
+      allow create: if isVerifiedUser()
+        && isValidId(logId)
+        && isValidAuditLog(incoming())
+        && incoming().userEmail.lower() == userEmailLower()
+        && incoming().timestamp == request.time
+        && (isAdmin() || isWorkingStaff());
+      allow update, delete: if false;
+    }
   }
 }
