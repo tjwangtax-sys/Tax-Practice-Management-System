@@ -23,6 +23,9 @@ export const SETTING_GROUPS = [
   'TAX AGENT',
   'JOB TYPE',
   'JOB STATUS',
+  'AUDIT TYPE',
+  'FORM C SUBMISSION STATUS',
+  'MITRS SUBMISSION STATUS',
   'CP204 STATUS',
   'CORP STATUS',
   'INDIV STATUS',
@@ -133,6 +136,26 @@ const RAW_MALAYSIAN_TAX_SETTINGS: SeedSettingTemplate[] = [
   { id: 'JS_SUBMITTED', group: 'JOB STATUS', code: 'SUBMITTED_LHDN', displayName: 'Submitted to LHDN', module: 'All Jobs', badgeColor: '#0F766E', active: true, sortOrder: 7 },
   { id: 'JS_COMPLETED', group: 'JOB STATUS', code: 'COMPLETED', displayName: 'Completed', module: 'All Jobs', badgeColor: '#CA8A04', active: true, sortOrder: 8 },
   { id: 'JS_ON_HOLD', group: 'JOB STATUS', code: 'ON_HOLD', displayName: 'On Hold', module: 'All Jobs', badgeColor: '#B91C1C', active: true, sortOrder: 9 },
+
+  // AUDIT TYPE
+  { id: 'AT_AUDITED', group: 'AUDIT TYPE', code: 'AUDITED', displayName: 'Audited', module: 'Corporate', badgeColor: '#0369A1', active: true, sortOrder: 1 },
+  { id: 'AT_UNAUDITED', group: 'AUDIT TYPE', code: 'UNAUDITED', displayName: 'Unaudited', module: 'Corporate', badgeColor: '#B45309', active: true, sortOrder: 2 },
+  { id: 'AT_EPC', group: 'AUDIT TYPE', code: 'EPC', displayName: 'EPC', module: 'Corporate', badgeColor: '#7C3AED', active: true, sortOrder: 3 },
+
+  // FORM C SUBMISSION STATUS
+  { id: 'FC_PENDING', group: 'FORM C SUBMISSION STATUS', code: 'PENDING', displayName: 'Pending', module: 'Corporate', badgeColor: '#64748B', active: true, sortOrder: 1 },
+  { id: 'FC_IN_PROGRESS', group: 'FORM C SUBMISSION STATUS', code: 'IN_PROGRESS', displayName: 'In Progress', module: 'Corporate', badgeColor: '#0369A1', active: true, sortOrder: 2 },
+  { id: 'FC_PREPARED', group: 'FORM C SUBMISSION STATUS', code: 'PREPARED', displayName: 'Prepared', module: 'Corporate', badgeColor: '#4338CA', active: true, sortOrder: 3 },
+  { id: 'FC_REVIEW', group: 'FORM C SUBMISSION STATUS', code: 'MANAGER_REVIEW', displayName: 'Manager Review', module: 'Corporate', badgeColor: '#B45309', active: true, sortOrder: 4 },
+  { id: 'FC_APPROVAL', group: 'FORM C SUBMISSION STATUS', code: 'CLIENT_APPROVAL', displayName: 'Client Approval', module: 'Corporate', badgeColor: '#7C3AED', active: true, sortOrder: 5 },
+  { id: 'FC_SUBMITTED', group: 'FORM C SUBMISSION STATUS', code: 'SUBMITTED', displayName: 'Submitted', module: 'Corporate', badgeColor: '#15803D', active: true, sortOrder: 6 },
+  { id: 'FC_NA', group: 'FORM C SUBMISSION STATUS', code: 'NOT_APPLICABLE', displayName: 'Not Applicable', module: 'Corporate', badgeColor: '#64748B', active: true, sortOrder: 7 },
+
+  // MITRS SUBMISSION STATUS
+  { id: 'MITRS_PENDING', group: 'MITRS SUBMISSION STATUS', code: 'PENDING', displayName: 'Pending', module: 'Corporate', badgeColor: '#64748B', active: true, sortOrder: 1 },
+  { id: 'MITRS_SUBMITTED', group: 'MITRS SUBMISSION STATUS', code: 'SUBMITTED', displayName: 'Submitted', module: 'Corporate', badgeColor: '#15803D', active: true, sortOrder: 2 },
+  { id: 'MITRS_SELF_SUBMIT', group: 'MITRS SUBMISSION STATUS', code: 'SELF_SUBMIT', displayName: 'Self-Submit', module: 'Corporate', badgeColor: '#0F766E', active: true, sortOrder: 3 },
+  { id: 'MITRS_NA', group: 'MITRS SUBMISSION STATUS', code: 'NOT_APPLICABLE', displayName: 'Not Applicable', module: 'Corporate', badgeColor: '#64748B', active: true, sortOrder: 4 },
 
   // CP204 STATUS
   { id: 'CP_DRAFT', group: 'CP204 STATUS', code: 'ESTIMATE_DRAFT', displayName: 'Estimate Drafted', module: 'CP204', badgeColor: '#0369A1', active: true, sortOrder: 1 },

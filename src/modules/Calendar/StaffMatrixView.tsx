@@ -1,11 +1,15 @@
 import React, { useEffect, useMemo, useState } from 'react';
+import { createPortal } from 'react-dom';
 import {
   AlertTriangle,
+  CalendarClock,
+  Clock,
   Eraser,
   ExternalLink,
   Info,
   MousePointerClick,
   Paintbrush,
+  Repeat2,
   Users,
 } from 'lucide-react';
 import {
@@ -18,21 +22,27 @@ import {
 } from '../../types/tpms';
 import { formatDateDDMMYYYY } from '../../lib/deadlineUtils';
 import {
+  computeHolidayDeadlineCollisions,
   computeOpenJobsByStaff,
   computeStaffDeadlineCollisions,
+  computeStaffRowSummaries,
   DeadlineCollisionItem,
   EVENT_TYPE_DEFAULT_COLORS,
   eventCoversDate,
   formatClientChipLabel,
+  formatRecurrenceRuleLabel,
   formatShortDayMonth,
   getContrastingTextColor,
+  getMalaysianStatutoryDeadlinesForDate,
   getMonthDays,
+  isDateWithinStaffEmployment,
   isPeakFilingDate,
   PaintTool,
   ParsedCalendarEvent,
   PeakCoverageAlert,
   PublicHolidayRef,
   StaffMatrixRowSummary,
+  StatutoryDeadlineRef,
   toIsoDate,
 } from './calendarUtils';
 
@@ -71,6 +81,7 @@ const PAINT_TOOLS: Array<{
   { id: 'RL', label: 'RL', hint: 'Replacement Leave (1.0 day)', swatch: '#fb923c' },
   { id: 'UPL', label: 'UPL', hint: 'Unpaid Leave (1.0 day)', swatch: '#f472b6' },
   { id: 'WFH', label: 'WFH', hint: 'Work From Home (0 leave deduction)', swatch: '#86efac' },
+  { id: 'TO', label: 'TO', hint: 'Time-Off / Replace (0 leave deduction)', swatch: '#e0e7ff' },
   { id: 'clear', label: 'Clear', hint: 'Drag across cells to remove staff events' },
 ];
 
@@ -103,6 +114,23 @@ export const StaffMatrixView: React.FC<StaffMatrixViewProps> = ({
     currentIso: string;
   } | null>(null);
   const [paintingBusy, setPaintingBusy] = useState(false);
+  const [hoveredCollision, setHoveredCollision] = useState<{
+    rect: DOMRect;
+    dateIso: string;
+    statusKind: 'leave' | 'holiday';
+    staffName?: string;
+    statusLabel: string;
+    statusColor?: string;
+    collisions: DeadlineCollisionItem[];
+  } | null>(null);
+  const [hoveredTimeOff, setHoveredTimeOff] = useState<{
+    rect: DOMRect;
+    dateIso: string;
+    staffName: string;
+    label: string;
+    timeOffNote: string;
+    notes: string;
+  } | null>(null);
 
   const todayIso = useMemo(() => toIsoDate(new Date()), []);
 
@@ -149,6 +177,19 @@ export const StaffMatrixView: React.FC<StaffMatrixViewProps> = ({
     return map;
   }, [days, parsedEvents]);
 
+  // Tax Due Date events indexed by date (kept OUT of staff cells; marked in date header + Monthly Event Notes + collision alerts)
+  const taxDueDatesByDate = useMemo(() => {
+    const map = new Map<string, ParsedCalendarEvent[]>();
+    for (const d of days) {
+      const iso = toIsoDate(d);
+      const list = parsedEvents.filter(
+        (e) => e.canonicalType === 'Tax Due Date' && eventCoversDate(e.raw, iso)
+      );
+      if (list.length > 0) map.set(iso, list);
+    }
+    return map;
+  }, [days, parsedEvents]);
+
   // All events indexed by staffLower -> isoDate -> ParsedCalendarEvent[]
   const staffDayEventsMap = useMemo(() => {
     const outer = new Map<string, Map<string, ParsedCalendarEvent[]>>();
@@ -159,7 +200,13 @@ export const StaffMatrixView: React.FC<StaffMatrixViewProps> = ({
     for (const d of days) {
       const iso = toIsoDate(d);
       for (const ev of parsedEvents) {
-        if (ev.canonicalType === 'Company Holiday' || ev.isFirmWide) continue;
+        if (
+          ev.canonicalType === 'Company Holiday' ||
+          ev.canonicalType === 'Tax Due Date' ||
+          ev.isFirmWide
+        ) {
+          continue;
+        }
         if (!eventCoversDate(ev.raw, iso)) continue;
         const staffKey = ev.staffName.trim().toLowerCase();
         if (!staffKey || !outer.has(staffKey)) continue;
@@ -172,54 +219,29 @@ export const StaffMatrixView: React.FC<StaffMatrixViewProps> = ({
     return outer;
   }, [activeStaff, days, parsedEvents]);
 
-  // Compute Work Days, Leave, and Open Jobs for each staff row
+  // Compute Work Days, Leave, and Open Jobs for each staff row (pro-rated by Join/Leave Date; TO & WFH = 0 leave)
   const rowSummaries = useMemo<StaffMatrixRowSummary[]>(() => {
-    // Count weekday holidays (Johor/Federal PH or Company Holiday events)
-    let weekdayHolidayCount = 0;
-    const weekdayHolidaySet = new Set<string>();
-    for (const wd of monthWeekdays) {
-      const iso = toIsoDate(wd);
-      const isPh = holidaysByDate.has(iso);
-      const isCompHol = parsedEvents.some(
-        (e) => e.canonicalType === 'Company Holiday' && eventCoversDate(e.raw, iso)
-      );
-      if (isPh || isCompHol) {
-        weekdayHolidayCount += 1;
-        weekdayHolidaySet.add(iso);
-      }
-    }
-
-    const baseWorkingDays = Math.max(0, monthWeekdays.length - weekdayHolidayCount);
-
-    return activeStaff.map((s) => {
-      const staffKey = s.staffName.trim().toLowerCase();
-      let leaveDays = 0;
-      for (const wd of monthWeekdays) {
-        const iso = toIsoDate(wd);
-        if (weekdayHolidaySet.has(iso)) continue;
-        // Find max leave weight on this weekday for this staff
-        let dayWeight = 0;
-        for (const ev of parsedEvents) {
-          if (ev.canonicalType !== 'Staff Availability') continue;
-          if (ev.staffName.trim().toLowerCase() !== staffKey) continue;
-          if (!eventCoversDate(ev.raw, iso)) continue;
-          if (ev.leaveWeight > dayWeight) dayWeight = ev.leaveWeight;
-        }
-        leaveDays += dayWeight;
-      }
-
-      const workDays = Math.max(0, Math.round((baseWorkingDays - leaveDays) * 10) / 10);
-      const openJobs = openJobsByStaff.get(staffKey) ?? 0;
-      return {
-        staff: s,
-        workDays,
-        leaveDays: Math.round(leaveDays * 10) / 10,
-        openJobs,
-      };
-    });
+    return computeStaffRowSummaries({
+      staffList: activeStaff,
+      monthWeekdays,
+      holidaysByDate,
+      parsedEvents,
+      openJobsByStaff,
+    }).rowSummaries;
   }, [activeStaff, monthWeekdays, holidaysByDate, parsedEvents, openJobsByStaff]);
 
-  // Tax Deadline Collision map: `${staffLower}|${iso}` -> DeadlineCollisionItem[]
+  // Statutory Malaysian LHDN deadlines per visible date
+  const statutoryByDate = useMemo(() => {
+    const map = new Map<string, StatutoryDeadlineRef[]>();
+    for (const d of days) {
+      const iso = toIsoDate(d);
+      const list = getMalaysianStatutoryDeadlinesForDate(iso);
+      if (list.length > 0) map.set(iso, list);
+    }
+    return map;
+  }, [days]);
+
+  // Tax Deadline Collision map for staff leave cells: `${staffLower}|${iso}` -> DeadlineCollisionItem[]
   const collisionMap = useMemo(() => {
     const map = new Map<string, DeadlineCollisionItem[]>();
     for (const s of activeStaff) {
@@ -233,27 +255,50 @@ export const StaffMatrixView: React.FC<StaffMatrixViewProps> = ({
         );
         if (!hasDeductibleLeave) continue;
 
-        const collisions = computeStaffDeadlineCollisions(s.staffName, iso, jobs, cp204Records);
+        const collisions = computeStaffDeadlineCollisions(
+          s.staffName,
+          iso,
+          jobs,
+          cp204Records,
+          parsedEvents
+        );
         if (collisions.length > 0) {
           map.set(`${staffKey}|${iso}`, collisions);
         }
       }
     }
     return map;
-  }, [activeStaff, staffDayEventsMap, jobs, cp204Records]);
+  }, [activeStaff, staffDayEventsMap, jobs, cp204Records, parsedEvents]);
 
-  // Peak-Day Coverage Alerts (>30% of active staff away on the same day)
+  // Tax Deadline Collision map for Public Holidays & Company Holidays: `iso` -> DeadlineCollisionItem[]
+  const holidayCollisionMap = useMemo(() => {
+    const map = new Map<string, DeadlineCollisionItem[]>();
+    for (const d of days) {
+      const iso = toIsoDate(d);
+      if (!holidaysByDate.has(iso) && !companyHolidayByDate.has(iso)) continue;
+      const collisions = computeHolidayDeadlineCollisions(iso, jobs, cp204Records, parsedEvents);
+      if (collisions.length > 0) {
+        map.set(iso, collisions);
+      }
+    }
+    return map;
+  }, [days, holidaysByDate, companyHolidayByDate, jobs, cp204Records, parsedEvents]);
+
+  // Peak-Day Coverage Alerts (>30% of employed staff away on the same day; TO & WFH excluded)
   const peakCoverageAlerts = useMemo<PeakCoverageAlert[]>(() => {
-    const total = activeStaff.length;
-    if (total === 0) return [];
+    if (activeStaff.length === 0) return [];
     const alerts: PeakCoverageAlert[] = [];
 
     for (const d of monthWeekdays) {
       const iso = toIsoDate(d);
       if (holidaysByDate.has(iso) || companyHolidayByDate.has(iso)) continue;
 
+      const employedOnDay = activeStaff.filter((s) => isDateWithinStaffEmployment(s, iso));
+      const total = employedOnDay.length;
+      if (total === 0) continue;
+
       const awayNames: string[] = [];
-      for (const s of activeStaff) {
+      for (const s of employedOnDay) {
         const staffKey = s.staffName.trim().toLowerCase();
         const evList = staffDayEventsMap.get(staffKey)?.get(iso) ?? [];
         const isAway = evList.some(
@@ -278,13 +323,23 @@ export const StaffMatrixView: React.FC<StaffMatrixViewProps> = ({
     return alerts;
   }, [activeStaff, monthWeekdays, holidaysByDate, companyHolidayByDate, staffDayEventsMap]);
 
-  // Monthly Event Notes for the footer bar (Firm-wide Internal Events + Company Holidays + PH)
+  // Monthly Event Notes for the footer bar (Tax Due Dates + Firm-wide Internal Events + Company Holidays + PH)
   const monthlyNotes = useMemo(() => {
     const monthStart = toIsoDate(new Date(year, monthIndex, 1));
     const monthEnd = toIsoDate(new Date(year, monthIndex + 1, 0));
 
+    const taxDueEvents = parsedEvents
+      .filter(
+        (e) =>
+          e.canonicalType === 'Tax Due Date' &&
+          e.raw.startDate <= monthEnd &&
+          (e.raw.endDate || e.raw.startDate) >= monthStart
+      )
+      .sort((a, b) => a.raw.startDate.localeCompare(b.raw.startDate));
+
     const firmEvents = parsedEvents.filter(
       (e) =>
+        e.canonicalType !== 'Tax Due Date' &&
         (e.isFirmWide || e.canonicalType === 'Company Holiday') &&
         e.raw.startDate <= monthEnd &&
         (e.raw.endDate || e.raw.startDate) >= monthStart
@@ -294,7 +349,7 @@ export const StaffMatrixView: React.FC<StaffMatrixViewProps> = ({
       .filter((h) => h.date >= monthStart && h.date <= monthEnd)
       .sort((a, b) => a.date.localeCompare(b.date));
 
-    return { firmEvents, phs };
+    return { taxDueEvents, firmEvents, phs };
   }, [year, monthIndex, parsedEvents, holidaysByDate]);
 
   // Global mouseup to finalize drag-to-paint
@@ -448,20 +503,41 @@ export const StaffMatrixView: React.FC<StaffMatrixViewProps> = ({
             No active staff members found in Staff Directory.
           </div>
         ) : (
-          <div className="overflow-x-auto max-h-[68vh]">
-            <table className="border-collapse w-max min-w-full text-xs">
-              {/* Two-Row Green Header (#16a34a) */}
+          <div
+            className="overflow-x-auto"
+            onScroll={() => {
+              if (hoveredCollision) setHoveredCollision(null);
+              if (hoveredTimeOff) setHoveredTimeOff(null);
+            }}
+          >
+            <table
+              className="table-fixed border-collapse w-full text-xs"
+              style={includeWeekends ? { minWidth: 281 + days.length * 38 } : undefined}
+            >
+              <colgroup>
+                <col className="w-[155px]" />
+                <col className="w-[42px]" />
+                <col className="w-[42px]" />
+                <col className="w-[42px]" />
+                {days.map((d) => (
+                  <col
+                    key={`col-${toIsoDate(d)}`}
+                    className={includeWeekends ? 'w-[38px]' : 'w-auto'}
+                  />
+                ))}
+              </colgroup>
+
+              {/* Two-Row Green Header (#16a34a) — Fixed Uniform Grid */}
               <thead className="sticky top-0 z-30">
                 <tr className="bg-[#16a34a] text-white">
                   <th
                     colSpan={4}
-                    className="sticky left-0 z-40 bg-[#15803d] px-3 py-1.5 text-left font-bold text-xs tracking-wide border-b border-r-2 border-slate-800 whitespace-nowrap"
-                    style={{ width: 340, minWidth: 340 }}
+                    className="sticky left-0 z-40 bg-[#15803d] w-[281px] px-2.5 py-1.5 text-left font-bold text-xs tracking-wide border-b border-r-2 border-slate-800 whitespace-nowrap overflow-hidden"
                   >
-                    <div className="flex items-center justify-between">
-                      <span>{monthHeaderLabel}</span>
-                      <span className="text-[10px] font-normal text-emerald-100">
-                        Johor / MY Matrix
+                    <div className="flex items-center justify-between gap-1">
+                      <span className="truncate">{monthHeaderLabel}</span>
+                      <span className="text-[10px] font-normal text-emerald-100 shrink-0">
+                        Johor / MY
                       </span>
                     </div>
                   </th>
@@ -474,7 +550,7 @@ export const StaffMatrixView: React.FC<StaffMatrixViewProps> = ({
                     return (
                       <th
                         key={`dow-${iso}`}
-                        className={`px-1 py-1 text-center text-[10px] font-semibold border-b border-emerald-700/70 ${
+                        className={`px-0.5 py-1 text-center text-[9px] font-semibold border-b border-emerald-700/70 overflow-hidden ${
                           weekEndDivider ? 'border-r-2 border-r-slate-800' : 'border-r border-r-emerald-700/60'
                         } ${
                           isToday
@@ -483,7 +559,6 @@ export const StaffMatrixView: React.FC<StaffMatrixViewProps> = ({
                             ? 'bg-[#15803d]/90 text-emerald-100'
                             : 'bg-[#16a34a] text-white'
                         }`}
-                        style={{ minWidth: 58, width: 58 }}
                       >
                         {WEEKDAY_SHORT[dow]}
                       </th>
@@ -492,29 +567,23 @@ export const StaffMatrixView: React.FC<StaffMatrixViewProps> = ({
                 </tr>
 
                 <tr className="bg-[#16a34a] text-white">
-                  <th
-                    className="sticky left-0 z-40 bg-[#16a34a] px-3 py-1.5 text-left text-[11px] font-bold border-b-2 border-b-slate-800 border-r border-r-emerald-700/70 whitespace-nowrap"
-                    style={{ width: 172, minWidth: 172, maxWidth: 172 }}
-                  >
+                  <th className="sticky left-0 z-40 bg-[#16a34a] w-[155px] px-2.5 py-1.5 text-left text-[11px] font-bold border-b-2 border-b-slate-800 border-r border-r-emerald-700/70 whitespace-nowrap overflow-hidden">
                     Staff
                   </th>
                   <th
-                    className="sticky z-40 bg-[#16a34a] px-1.5 py-1.5 text-right text-[10px] font-bold border-b-2 border-b-slate-800 border-r border-r-emerald-700/70 whitespace-nowrap"
-                    style={{ left: 172, width: 56, minWidth: 56, maxWidth: 56 }}
-                    title="Net working weekdays in month (weekdays minus holidays & leave)"
+                    className="sticky left-[155px] z-40 bg-[#16a34a] w-[42px] px-1 py-1.5 text-right text-[10px] font-bold border-b-2 border-b-slate-800 border-r border-r-emerald-700/70 whitespace-nowrap overflow-hidden"
+                    title="Net working weekdays in month (pro-rated by Join/Leave Date, minus holidays & deductible leave; TO & WFH = 0 deduction)"
                   >
                     Work
                   </th>
                   <th
-                    className="sticky z-40 bg-[#16a34a] px-1.5 py-1.5 text-right text-[10px] font-bold border-b-2 border-b-slate-800 border-r border-r-emerald-700/70 whitespace-nowrap"
-                    style={{ left: 228, width: 56, minWidth: 56, maxWidth: 56 }}
-                    title="Leave days in month (1.0 per leave day, 0.5 if title starts with 1/2 or Half, 0 for WFH)"
+                    className="sticky left-[197px] z-40 bg-[#16a34a] w-[42px] px-1 py-1.5 text-right text-[10px] font-bold border-b-2 border-b-slate-800 border-r border-r-emerald-700/70 whitespace-nowrap overflow-hidden"
+                    title="Leave days in month (1.0 per leave day, 0.5 for half-day, 0 for WFH & TO)"
                   >
                     Leave
                   </th>
                   <th
-                    className="sticky z-40 bg-[#16a34a] px-1.5 py-1.5 text-right text-[10px] font-bold border-b-2 border-b-slate-800 border-r-2 border-r-slate-800 whitespace-nowrap"
-                    style={{ left: 284, width: 56, minWidth: 56, maxWidth: 56 }}
+                    className="sticky left-[239px] z-40 bg-[#16a34a] w-[42px] px-1 py-1.5 text-right text-[10px] font-bold border-b-2 border-b-slate-800 border-r-2 border-r-slate-800 whitespace-nowrap overflow-hidden"
                     title="Live count of active open jobs assigned to this PIC"
                   >
                     Jobs
@@ -526,10 +595,26 @@ export const StaffMatrixView: React.FC<StaffMatrixViewProps> = ({
                     const isToday = iso === todayIso;
                     const weekEndDivider = isEndOfWeek(d, idx);
                     const isPeak = isPeakFilingDate(iso);
+                    const statList = statutoryByDate.get(iso) ?? [];
+                    const dueList = taxDueDatesByDate.get(iso) ?? [];
+                    const headerParts = [formatDateDDMMYYYY(iso)];
+                    if (dueList.length > 0) {
+                      headerParts.push(
+                        `Tax Due Date: ${dueList.map((ev) => ev.cleanLabel).join(', ')}`
+                      );
+                    }
+                    if (statList.length > 0) {
+                      headerParts.push(
+                        `LHDN Statutory: ${statList.map((st) => st.name).join(', ')}`
+                      );
+                    } else if (isPeak && dueList.length === 0) {
+                      headerParts.push('Peak LHDN filing date');
+                    }
+                    const headerTitle = headerParts.join(' — ');
                     return (
                       <th
                         key={`dt-${iso}`}
-                        className={`px-1 py-1 text-center text-[10px] font-mono tabular-nums font-semibold border-b-2 border-b-slate-800 whitespace-nowrap ${
+                        className={`px-0.5 py-1 text-center text-[10px] font-mono tabular-nums font-semibold border-b-2 border-b-slate-800 whitespace-nowrap overflow-hidden ${
                           weekEndDivider ? 'border-r-2 border-r-slate-800' : 'border-r border-r-emerald-700/60'
                         } ${
                           isToday
@@ -538,13 +623,23 @@ export const StaffMatrixView: React.FC<StaffMatrixViewProps> = ({
                             ? 'bg-[#15803d]/90 text-emerald-100'
                             : 'bg-[#16a34a] text-white'
                         }`}
-                        title={
-                          isPeak
-                            ? `${formatDateDDMMYYYY(iso)} — Peak LHDN filing date`
-                            : formatDateDDMMYYYY(iso)
-                        }
+                        title={headerTitle}
                       >
-                        {formatShortDayMonth(d)}
+                        <span className="inline-flex items-center justify-center gap-0.5">
+                          {d.getDate()}
+                          {dueList.length > 0 && (
+                            <span
+                              className="inline-block w-1.5 h-1.5 rounded-full bg-[#ef4444] ring-1 ring-white/90 shrink-0"
+                              aria-label="Tax Due Date"
+                            />
+                          )}
+                          {statList.length > 0 && dueList.length === 0 && (
+                            <span
+                              className="inline-block w-1.5 h-1.5 rounded-full bg-amber-300 shrink-0"
+                              aria-label="LHDN Statutory Deadline"
+                            />
+                          )}
+                        </span>
                       </th>
                     );
                   })}
@@ -556,41 +651,71 @@ export const StaffMatrixView: React.FC<StaffMatrixViewProps> = ({
                   const s = summary.staff;
                   const staffKey = s.staffName.trim().toLowerCase();
                   const rowBg = rowIdx % 2 === 0 ? 'bg-white' : 'bg-slate-50/60';
+                  const monthPrefix = `${year}-${String(monthIndex + 1).padStart(2, '0')}`;
+                  const joinedThisMonth = Boolean(s.joinDate && s.joinDate.startsWith(monthPrefix));
+                  const leftThisMonth = Boolean(s.leaveDate && s.leaveDate.startsWith(monthPrefix));
+                  const staffTenureNote = [
+                    joinedThisMonth && s.joinDate
+                      ? `Join ${s.joinDate.slice(8, 10)}/${s.joinDate.slice(5, 7)}`
+                      : '',
+                    leftThisMonth && s.leaveDate
+                      ? `Left ${s.leaveDate.slice(8, 10)}/${s.leaveDate.slice(5, 7)}`
+                      : !s.active && s.leaveDate
+                      ? `Resigned`
+                      : '',
+                  ]
+                    .filter(Boolean)
+                    .join(' · ');
 
                   return (
-                    <tr key={s.id} className={`${rowBg} hover:bg-teal-50/30`}>
+                    <tr key={s.id} className={`${rowBg} hover:bg-teal-50/30 h-10 max-h-10`}>
                       {/* Sticky Left Columns */}
                       <td
-                        className={`sticky left-0 z-20 ${rowBg} px-3 py-2 border-r border-slate-200 whitespace-nowrap`}
-                        style={{ width: 172, minWidth: 172, maxWidth: 172 }}
+                        className={`sticky left-0 z-20 ${rowBg} w-[155px] h-10 max-h-10 px-2.5 py-1 border-r border-slate-200 whitespace-nowrap overflow-hidden align-middle`}
                       >
-                        <div className="font-semibold text-slate-900 truncate" title={s.staffName}>
+                        <div
+                          className="font-semibold text-slate-900 truncate text-[11px] leading-tight"
+                          title={`${s.staffName}${
+                            s.joinDate ? ` · Joined ${formatDateDDMMYYYY(s.joinDate)}` : ''
+                          }${s.leaveDate ? ` · Left ${formatDateDDMMYYYY(s.leaveDate)}` : ''}`}
+                        >
                           {s.staffName}
                         </div>
-                        <div className="text-[10px] font-mono text-slate-400 truncate">
+                        <div className="text-[9px] font-mono text-slate-400 truncate leading-tight mt-0.5">
                           {s.staffId}
-                          {s.role ? ` · ${s.role}` : ''}
+                          {staffTenureNote ? (
+                            <span className="text-amber-700 font-sans font-medium">
+                              {' '}
+                              · {staffTenureNote}
+                            </span>
+                          ) : s.role ? (
+                            ` · ${s.role}`
+                          ) : (
+                            ''
+                          )}
                         </div>
                       </td>
                       <td
-                        className={`sticky z-20 ${rowBg} px-1.5 py-2 text-right font-mono tabular-nums font-semibold text-emerald-800 border-r border-slate-200 whitespace-nowrap`}
-                        style={{ left: 172, width: 56, minWidth: 56, maxWidth: 56 }}
+                        className={`sticky left-[155px] z-20 ${rowBg} w-[42px] h-10 max-h-10 px-1 py-1 text-right font-mono tabular-nums text-[11px] font-semibold text-emerald-800 border-r border-slate-200 whitespace-nowrap overflow-hidden align-middle`}
+                        title={
+                          summary.isPartialMonth
+                            ? `Pro-rated: ${summary.employedWorkingDays ?? summary.workDays} employed working day(s) minus ${summary.leaveDays} leave`
+                            : undefined
+                        }
                       >
                         {summary.workDays}
                       </td>
                       <td
-                        className={`sticky z-20 ${rowBg} px-1.5 py-2 text-right font-mono tabular-nums border-r border-slate-200 whitespace-nowrap ${
+                        className={`sticky left-[197px] z-20 ${rowBg} w-[42px] h-10 max-h-10 px-1 py-1 text-right font-mono tabular-nums text-[11px] border-r border-slate-200 whitespace-nowrap overflow-hidden align-middle ${
                           summary.leaveDays > 0 ? 'font-semibold text-cyan-800' : 'text-slate-400'
                         }`}
-                        style={{ left: 228, width: 56, minWidth: 56, maxWidth: 56 }}
                       >
                         {summary.leaveDays}
                       </td>
                       <td
-                        className={`sticky z-20 ${rowBg} px-1.5 py-2 text-right font-mono tabular-nums border-r-2 border-r-slate-800 whitespace-nowrap ${
+                        className={`sticky left-[239px] z-20 ${rowBg} w-[42px] h-10 max-h-10 px-1 py-1 text-right font-mono tabular-nums text-[11px] border-r-2 border-r-slate-800 whitespace-nowrap overflow-hidden align-middle ${
                           summary.openJobs > 0 ? 'font-semibold text-slate-800' : 'text-slate-400'
                         }`}
-                        style={{ left: 284, width: 56, minWidth: 56, maxWidth: 56 }}
                       >
                         {summary.openJobs}
                       </td>
@@ -612,6 +737,10 @@ export const StaffMatrixView: React.FC<StaffMatrixViewProps> = ({
                           if (rowIdx > 0) return null; // Covered by rowSpan from row 0
                           const bannerLabel = compHol ? compHol.cleanLabel : ph!.name;
                           const bannerColor = compHol?.color || EVENT_TYPE_DEFAULT_COLORS['Company Holiday'];
+                          const holCollisions = holidayCollisionMap.get(iso) ?? [];
+                          const holidayStatusLabel = `${bannerLabel} (${
+                            compHol ? 'Company Holiday' : `${ph!.scope} Holiday`
+                          })`;
                           return (
                             <td
                               key={`hol-${iso}`}
@@ -623,18 +752,55 @@ export const StaffMatrixView: React.FC<StaffMatrixViewProps> = ({
                                   onCellSelectModal('', iso);
                                 }
                               }}
-                              title={`${bannerLabel} (${formatDateDDMMYYYY(iso)})${
-                                ph?.scope ? ` — ${ph.scope}` : ' — Company Holiday'
-                              }`}
-                              className={`p-1 text-center align-middle cursor-pointer transition-opacity hover:opacity-90 ${rightBorderCls}`}
+                              onMouseEnter={(e) => {
+                                if (holCollisions.length > 0) {
+                                  const rawRect = e.currentTarget.getBoundingClientRect();
+                                  const anchorY = Math.max(
+                                    rawRect.top + 8,
+                                    Math.min(e.clientY, rawRect.bottom - 8)
+                                  );
+                                  setHoveredCollision({
+                                    rect: new DOMRect(rawRect.left, anchorY - 14, rawRect.width, 28),
+                                    dateIso: iso,
+                                    statusKind: 'holiday',
+                                    statusLabel: holidayStatusLabel,
+                                    statusColor: bannerColor,
+                                    collisions: holCollisions,
+                                  });
+                                }
+                              }}
+                              onMouseLeave={() => {
+                                if (holCollisions.length > 0) setHoveredCollision(null);
+                              }}
+                              title={
+                                holCollisions.length === 0
+                                  ? `${bannerLabel} (${formatDateDDMMYYYY(iso)})${
+                                      ph?.scope ? ` — ${ph.scope}` : ' — Company Holiday'
+                                    }`
+                                  : undefined
+                              }
+                              className={`relative p-0.5 text-center align-middle cursor-pointer overflow-hidden transition-opacity hover:opacity-90 ${rightBorderCls}`}
                               style={{
                                 backgroundColor: bannerColor,
                                 color: getContrastingTextColor(bannerColor),
+                                height: rowSummaries.length * 40,
+                                maxHeight: rowSummaries.length * 40,
                               }}
                             >
-                              <div className="flex items-center justify-center h-full min-h-[120px]">
+                              {holCollisions.length > 0 && (
                                 <span
-                                  className="font-bold text-[11px] tracking-wide whitespace-nowrap"
+                                  className="absolute top-1 right-1 z-10 w-4 h-4 rounded-full text-[10px] font-bold text-white bg-rose-600 ring-1 ring-white flex items-center justify-center shadow-xs"
+                                  aria-label={`Tax Deadline Collision (${holCollisions.length})`}
+                                >
+                                  !
+                                </span>
+                              )}
+                              <div
+                                className="flex items-center justify-center overflow-hidden mx-auto"
+                                style={{ maxHeight: Math.max(32, rowSummaries.length * 40 - 8) }}
+                              >
+                                <span
+                                  className="font-bold text-[10px] tracking-wide whitespace-nowrap truncate"
                                   style={{
                                     writingMode: 'vertical-rl',
                                     transform: 'rotate(180deg)',
@@ -647,16 +813,43 @@ export const StaffMatrixView: React.FC<StaffMatrixViewProps> = ({
                           );
                         }
 
-                        // 2. Normal Day Cell (may have Firm-Wide Magenta Seminar + Individual Leave / Client Appointments)
+                        // 1b. Out-of-employment date (before Join Date or after Leave Date)
+                        const isEmployed = isDateWithinStaffEmployment(s, iso);
+                        if (!isEmployed) {
+                          const outReason =
+                            s.joinDate && iso < s.joinDate.slice(0, 10)
+                              ? `${s.staffName} joined on ${formatDateDDMMYYYY(s.joinDate)}`
+                              : s.leaveDate
+                              ? `${s.staffName} left on ${formatDateDDMMYYYY(s.leaveDate)}`
+                              : 'Outside employment dates';
+                          return (
+                            <td
+                              key={`${s.id}-${iso}`}
+                              title={outReason}
+                              className={`p-0.5 align-middle text-center h-10 max-h-10 overflow-hidden bg-slate-100/80 text-slate-300 text-[10px] cursor-not-allowed ${rightBorderCls}`}
+                            >
+                              ·
+                            </td>
+                          );
+                        }
+
+                        // 2. Normal Day Cell (may have Firm-Wide Magenta Seminar + Individual Leave / TO / Client Appointments)
                         const firmEvents = firmWideEventsByDate.get(iso) ?? [];
                         const cellEvents = staffDayEventsMap.get(staffKey)?.get(iso) ?? [];
                         const collisions = collisionMap.get(`${staffKey}|${iso}`) ?? [];
                         const inDrag = isCellInDragRange(s.staffName, iso);
 
                         // Determine cell fill priority:
-                        // Individual Staff Availability / Event color > Firm-Wide Magenta > Weekend tint > Default
+                        // Individual Staff Availability / Time-Off / Event color > Firm-Wide Magenta > Weekend tint > Default
                         const primaryLeave = cellEvents.find(
-                          (e) => e.canonicalType === 'Staff Availability'
+                          (e) =>
+                            e.canonicalType === 'Staff Availability' ||
+                            e.canonicalType === 'Time-Off / Replace'
+                        );
+                        const isTimeOffCell = Boolean(
+                          primaryLeave &&
+                            (primaryLeave.canonicalType === 'Time-Off / Replace' ||
+                              primaryLeave.leaveCode === 'TO')
                         );
                         const clientAppointments = cellEvents.filter(
                           (e) =>
@@ -670,27 +863,53 @@ export const StaffMatrixView: React.FC<StaffMatrixViewProps> = ({
 
                         let cellBg: string | undefined;
                         if (primaryLeave) {
-                          cellBg =
-                            primaryLeave.leaveCode === 'WFH' && primaryLeave.raw.color === '#22d3ee'
-                              ? '#86efac'
-                              : primaryLeave.color;
+                          cellBg = isTimeOffCell
+                            ? '#e0e7ff'
+                            : primaryLeave.leaveCode === 'WFH' && primaryLeave.raw.color === '#22d3ee'
+                            ? '#86efac'
+                            : primaryLeave.color;
                         } else if (firmEvents.length > 0) {
                           cellBg = firmEvents[0].color || EVENT_TYPE_DEFAULT_COLORS['Internal Event'];
                         } else if (isWeekend) {
                           cellBg = '#f1f5f9';
                         }
 
-                        const cellTextColor = cellBg ? getContrastingTextColor(cellBg) : undefined;
+                        const cellTextColor = isTimeOffCell
+                          ? '#3730a3'
+                          : cellBg
+                          ? getContrastingTextColor(cellBg)
+                          : undefined;
                         const hasCriticalCollision = collisions.some((c) => c.severity === 'critical');
 
-                        const collisionTooltip = collisions
-                          .map(
-                            (c) =>
-                              `${c.deadlineType}: ${c.clientName} (${c.refCode}) due ${formatDateDDMMYYYY(
-                                c.dueDate
-                              )}${c.daysAfterLeave === 0 ? ' [SAME DAY]' : ` (+${c.daysAfterLeave}d)`}`
+                        const leaveStatusLabel = primaryLeave
+                          ? `${primaryLeave.leaveCode || primaryLeave.cleanLabel}${
+                              primaryLeave.cleanLabel &&
+                              primaryLeave.leaveCode &&
+                              primaryLeave.cleanLabel.toUpperCase() !== primaryLeave.leaveCode.toUpperCase()
+                                ? ` (${primaryLeave.cleanLabel})`
+                                : ''
+                            }`
+                          : 'On Leave';
+
+                        const collisionTitleFallback = collisions
+                          .map((c) =>
+                            c.source === 'statutory'
+                              ? `LHDN Statutory: ${c.formName}`
+                              : c.source === 'calendar'
+                              ? `${c.deadlineType}: ${c.formName} (${c.refCode})${
+                                  c.clientId !== 'RECURRING' && c.clientId !== 'TAX DUE'
+                                    ? ` — [${c.clientId}] ${c.clientName}`
+                                    : ''
+                                }`
+                              : `[${c.clientId}] ${c.clientName} — ${c.formName} (${formatDateDDMMYYYY(
+                                  c.dueDate
+                                )}${c.daysAfterLeave === 0 ? ', SAME DAY' : `, +${c.daysAfterLeave}d`})`
                           )
                           .join('\n');
+
+                        const toNoteText = (primaryLeave?.raw.timeOffNote || '').trim();
+                        const toExtraNotes = (primaryLeave?.raw.notes || '').trim();
+                        const hasToTooltip = Boolean(isTimeOffCell && primaryLeave);
 
                         return (
                           <td
@@ -706,18 +925,47 @@ export const StaffMatrixView: React.FC<StaffMatrixViewProps> = ({
                                 currentIso: iso,
                               });
                             }}
-                            onMouseEnter={() => {
+                            onMouseEnter={(e) => {
                               if (dragState && dragState.staffName === s.staffName) {
                                 setDragState((prev) =>
                                   prev ? { ...prev, currentIso: iso } : null
                                 );
                               }
+                              if (collisions.length > 0 && !dragState) {
+                                setHoveredTimeOff(null);
+                                setHoveredCollision({
+                                  rect: e.currentTarget.getBoundingClientRect(),
+                                  dateIso: iso,
+                                  statusKind: 'leave',
+                                  staffName: s.staffName,
+                                  statusLabel: leaveStatusLabel,
+                                  statusColor: cellBg,
+                                  collisions,
+                                });
+                              } else if (hasToTooltip && primaryLeave && !dragState) {
+                                setHoveredTimeOff({
+                                  rect: e.currentTarget.getBoundingClientRect(),
+                                  dateIso: iso,
+                                  staffName: s.staffName,
+                                  label: primaryLeave.cleanLabel || 'TO',
+                                  timeOffNote: toNoteText,
+                                  notes: toExtraNotes,
+                                });
+                              }
+                            }}
+                            onMouseLeave={() => {
+                              if (collisions.length > 0) setHoveredCollision(null);
+                              if (hasToTooltip) setHoveredTimeOff(null);
                             }}
                             onClick={() => {
                               if (activeTool !== 'select') return;
-                              onCellSelectModal(s.staffName, iso, primaryLeave || otherPersonalEvents[0] || clientAppointments[0]);
+                              onCellSelectModal(
+                                s.staffName,
+                                iso,
+                                primaryLeave || otherPersonalEvents[0] || clientAppointments[0]
+                              );
                             }}
-                            className={`relative p-1 align-top h-[46px] transition-shadow ${rightBorderCls} ${
+                            className={`relative p-0.5 align-middle h-10 max-h-10 overflow-hidden transition-shadow ${rightBorderCls} ${
                               activeTool === 'select' ? 'cursor-pointer' : 'cursor-crosshair'
                             } ${
                               inDrag
@@ -729,15 +977,13 @@ export const StaffMatrixView: React.FC<StaffMatrixViewProps> = ({
                             style={{
                               backgroundColor: inDrag ? undefined : cellBg,
                               color: inDrag ? undefined : cellTextColor,
-                              minWidth: 58,
-                              maxWidth: 112,
                             }}
                           >
                             {/* Tax Deadline Collision Badge (!) */}
                             {collisions.length > 0 && (
                               <span
-                                title={`Tax Deadline Collision:\n${collisionTooltip}`}
-                                className={`absolute top-0.5 right-0.5 z-10 w-4 h-4 rounded-full text-[10px] font-bold text-white flex items-center justify-center shadow-xs ${
+                                title={`Tax Deadline Collision (${s.staffName} · ${leaveStatusLabel}):\n${collisionTitleFallback}`}
+                                className={`absolute top-0.5 right-0.5 z-10 w-3.5 h-3.5 rounded-full text-[9px] font-bold text-white ring-1 ring-white flex items-center justify-center shadow-xs ${
                                   hasCriticalCollision ? 'bg-rose-600' : 'bg-amber-600'
                                 }`}
                               >
@@ -745,17 +991,27 @@ export const StaffMatrixView: React.FC<StaffMatrixViewProps> = ({
                               </span>
                             )}
 
-                            <div className="flex flex-col gap-0.5 min-h-[34px] justify-center">
-                              {/* Primary Leave Label (AL, 1/2 AL, SL, MC, WFH) */}
+                            <div className="flex flex-col gap-0.5 h-9 max-h-9 overflow-hidden justify-center w-full">
+                              {/* Primary Leave / TO Label (AL, 1/2 AL, SL, MC, RL, UPL, WFH, TO) */}
                               {primaryLeave && (
-                                <div
-                                  className="text-[11px] font-bold text-center leading-tight truncate px-0.5"
-                                  title={`${primaryLeave.displayTitle}${
-                                    primaryLeave.raw.notes ? `\n${primaryLeave.raw.notes}` : ''
+                                <span
+                                  className={`w-full truncate text-[10px] leading-tight px-1 py-0.5 block text-center font-bold ${
+                                    isTimeOffCell
+                                      ? 'rounded bg-indigo-100 text-indigo-800 border border-indigo-300'
+                                      : ''
                                   }`}
+                                  title={
+                                    collisions.length === 0 && !hasToTooltip
+                                      ? `${primaryLeave.displayTitle}${
+                                          primaryLeave.raw.notes ? `\n${primaryLeave.raw.notes}` : ''
+                                        }`
+                                      : undefined
+                                  }
                                 >
-                                  {primaryLeave.leaveCode || primaryLeave.cleanLabel}
-                                </div>
+                                  {isTimeOffCell
+                                    ? 'TO'
+                                    : primaryLeave.leaveCode || primaryLeave.cleanLabel}
+                                </span>
                               )}
 
                               {/* Firm-Wide Internal Event / Seminar Tag */}
@@ -766,8 +1022,8 @@ export const StaffMatrixView: React.FC<StaffMatrixViewProps> = ({
                                     e.stopPropagation();
                                     onCellSelectModal('', iso, firmEvents[0]);
                                   }}
-                                  title={`Firm Event: ${firmEvents.map((f) => f.cleanLabel).join(', ')}`}
-                                  className="text-[10px] font-semibold text-center leading-tight truncate px-0.5 rounded hover:underline"
+                                  title={`Firm Event: ${firmEvents.map((f) => f.displayTitle).join(', ')}`}
+                                  className="w-full truncate text-[10px] leading-tight px-1 py-0.5 block text-center font-semibold rounded hover:underline"
                                   style={{
                                     backgroundColor: primaryLeave
                                       ? firmEvents[0].color || '#f0abfc'
@@ -777,7 +1033,7 @@ export const StaffMatrixView: React.FC<StaffMatrixViewProps> = ({
                                     ),
                                   }}
                                 >
-                                  {firmEvents[0].cleanLabel.slice(0, 12)}
+                                  {firmEvents[0].cleanLabel}
                                 </button>
                               )}
 
@@ -818,19 +1074,18 @@ export const StaffMatrixView: React.FC<StaffMatrixViewProps> = ({
                                       });
                                     }}
                                     title={hoverInfo}
-                                    className="w-full text-left px-1 py-0.5 rounded border border-sky-900/20 text-[10px] font-medium leading-tight truncate inline-flex items-center justify-between gap-0.5 hover:brightness-95 transition"
+                                    className="w-full truncate text-[10px] leading-tight px-1 py-0.5 block text-center rounded border border-sky-900/20 font-medium hover:brightness-95 transition"
                                     style={{
                                       backgroundColor: chipColor,
                                       color: getContrastingTextColor(chipColor),
                                     }}
                                   >
-                                    <span className="truncate">{formatClientChipLabel(appt)}</span>
-                                    <ExternalLink className="w-2.5 h-2.5 shrink-0 opacity-70" />
+                                    {formatClientChipLabel(appt)}
                                   </button>
                                 );
                               })}
 
-                              {/* Other Personal Events */}
+                              {/* Other Personal Events (e.g. [TRAINING], Internal Events) */}
                               {otherPersonalEvents.map((ev) => (
                                 <button
                                   key={ev.raw.id}
@@ -840,7 +1095,7 @@ export const StaffMatrixView: React.FC<StaffMatrixViewProps> = ({
                                     onCellSelectModal(s.staffName, iso, ev);
                                   }}
                                   title={`${ev.displayTitle}${ev.raw.notes ? `\n${ev.raw.notes}` : ''}`}
-                                  className="w-full text-left px-1 py-0.5 rounded text-[10px] font-medium leading-tight truncate border border-slate-900/15"
+                                  className="w-full truncate text-[10px] leading-tight px-1 py-0.5 block text-center rounded font-medium border border-slate-900/15"
                                   style={{
                                     backgroundColor: ev.color,
                                     color: getContrastingTextColor(ev.color),
@@ -887,6 +1142,14 @@ export const StaffMatrixView: React.FC<StaffMatrixViewProps> = ({
               WFH
             </span>
             <span className="inline-flex items-center gap-1">
+              <span className="w-2.5 h-2.5 rounded-xs bg-indigo-100 border border-indigo-300" />
+              TO (Time-Off / Replace)
+            </span>
+            <span className="inline-flex items-center gap-1">
+              <span className="w-2.5 h-2.5 rounded-xs bg-[#ef4444] border border-rose-700/30" />
+              Tax Due Date
+            </span>
+            <span className="inline-flex items-center gap-1">
               <span className="w-2.5 h-2.5 rounded-xs bg-[#facc15] border border-slate-300" />
               Johor / MY Holiday
             </span>
@@ -907,12 +1170,62 @@ export const StaffMatrixView: React.FC<StaffMatrixViewProps> = ({
           </div>
         </div>
 
-        {monthlyNotes.firmEvents.length === 0 && monthlyNotes.phs.length === 0 ? (
+        {monthlyNotes.taxDueEvents.length === 0 &&
+        monthlyNotes.firmEvents.length === 0 &&
+        monthlyNotes.phs.length === 0 ? (
           <div className="text-xs text-slate-400">
-            No public holidays or firm-wide internal events recorded for {monthHeaderLabel}.
+            No tax due dates, public holidays, or firm-wide internal events recorded for{' '}
+            {monthHeaderLabel}.
           </div>
         ) : (
           <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-2">
+            {monthlyNotes.taxDueEvents.map((ev) => (
+              <button
+                key={ev.raw.id}
+                type="button"
+                onClick={() => onCellSelectModal('', ev.raw.startDate, ev)}
+                className="text-left p-2 rounded-md border border-rose-300 bg-rose-50/50 hover:border-rose-500 transition-colors flex items-start gap-2"
+              >
+                <span
+                  className="w-2.5 h-2.5 rounded-xs mt-1 shrink-0 border border-rose-700/30"
+                  style={{ backgroundColor: ev.color || '#ef4444' }}
+                />
+                <div className="min-w-0 flex-1 space-y-0.5">
+                  <div className="flex items-center justify-between gap-1.5">
+                    <div className="text-xs font-semibold text-rose-950 truncate">
+                      {ev.cleanLabel}
+                    </div>
+                    <span className="px-1.5 py-0.5 rounded bg-rose-100 text-rose-800 border border-rose-300 text-[9px] font-semibold whitespace-nowrap shrink-0">
+                      Tax Due Date
+                    </span>
+                  </div>
+                  <div className="text-[11px] font-mono tabular-nums text-rose-800/80 flex items-center gap-1.5 flex-wrap">
+                    <span>
+                      {formatDateDDMMYYYY(ev.raw.startDate)}
+                      {ev.raw.endDate && ev.raw.endDate !== ev.raw.startDate
+                        ? ` – ${formatDateDDMMYYYY(ev.raw.endDate)}`
+                        : ''}
+                    </span>
+                    {ev.raw.recurrenceGroupId && (
+                      <span className="inline-flex items-center gap-0.5 font-sans text-[10px] text-rose-700">
+                        · <Repeat2 className="w-2.5 h-2.5" />
+                        {formatRecurrenceRuleLabel(
+                          ev.raw.recurrenceRule,
+                          ev.raw.startDate,
+                          ev.raw.recurrenceLabel
+                        )}
+                      </span>
+                    )}
+                  </div>
+                  {ev.raw.notes && (
+                    <div className="text-[11px] text-slate-600 mt-0.5 line-clamp-2">
+                      {ev.raw.notes}
+                    </div>
+                  )}
+                </div>
+              </button>
+            ))}
+
             {monthlyNotes.firmEvents.map((ev) => (
               <button
                 key={ev.raw.id}
@@ -961,6 +1274,231 @@ export const StaffMatrixView: React.FC<StaffMatrixViewProps> = ({
           </div>
         )}
       </div>
+
+      {/* Portal-Rendered Tax Deadline Collision Hover Tooltip (Never Clipped by Table Scroll) */}
+      {hoveredCollision &&
+        typeof document !== 'undefined' &&
+        createPortal(
+          (() => {
+            const tooltipWidth = 340;
+            const margin = 12;
+            const vw = window.innerWidth;
+            const vh = window.innerHeight;
+            const estimatedHeight = Math.min(340, 108 + hoveredCollision.collisions.length * 48);
+            const spaceBelow = vh - hoveredCollision.rect.bottom;
+            const openAbove =
+              spaceBelow < estimatedHeight + 16 && hoveredCollision.rect.top > spaceBelow;
+            const left = Math.max(
+              margin,
+              Math.min(
+                hoveredCollision.rect.left + hoveredCollision.rect.width / 2 - tooltipWidth / 2,
+                vw - tooltipWidth - margin
+              )
+            );
+            const top = openAbove
+              ? Math.max(margin, hoveredCollision.rect.top - estimatedHeight - 8)
+              : Math.min(vh - estimatedHeight - margin, hoveredCollision.rect.bottom + 8);
+            const hasCritical = hoveredCollision.collisions.some((c) => c.severity === 'critical');
+
+            return (
+              <div
+                className="fixed z-[9999] pointer-events-none bg-white border border-slate-300 rounded-lg shadow-2xl overflow-hidden text-xs"
+                style={{
+                  left,
+                  top,
+                  width: tooltipWidth,
+                }}
+              >
+                <div
+                  className={`px-3 py-2 flex items-center justify-between gap-2 text-white ${
+                    hasCritical ? 'bg-rose-600' : 'bg-amber-600'
+                  }`}
+                >
+                  <div className="flex items-center gap-1.5 font-semibold">
+                    <AlertTriangle className="w-3.5 h-3.5 shrink-0" />
+                    <span>Tax Deadline Collision ({hoveredCollision.collisions.length})</span>
+                  </div>
+                  <span className="font-mono text-[11px] opacity-95">
+                    {formatDateDDMMYYYY(hoveredCollision.dateIso)}
+                  </span>
+                </div>
+
+                <div className="px-3 py-2 bg-slate-50 border-b border-slate-200 flex items-center gap-2">
+                  {hoveredCollision.statusColor && (
+                    <span
+                      className="w-2.5 h-2.5 rounded-xs border border-slate-900/20 shrink-0"
+                      style={{ backgroundColor: hoveredCollision.statusColor }}
+                    />
+                  )}
+                  <div className="min-w-0 text-[11px] text-slate-800">
+                    {hoveredCollision.statusKind === 'holiday' ? (
+                      <>
+                        <span className="font-semibold">Holiday Status: </span>
+                        <span>{hoveredCollision.statusLabel}</span>
+                      </>
+                    ) : (
+                      <>
+                        <span className="font-semibold">{hoveredCollision.staffName}</span>
+                        <span className="text-slate-500"> · Leave Status: </span>
+                        <span className="font-semibold text-slate-900">
+                          {hoveredCollision.statusLabel}
+                        </span>
+                      </>
+                    )}
+                  </div>
+                </div>
+
+                <div className="p-2.5 space-y-1.5 max-h-[220px] overflow-y-auto">
+                  {hoveredCollision.collisions.map((c, idx) => (
+                    <div
+                      key={`${c.source}-${c.refCode}-${c.deadlineType}-${idx}`}
+                      className={`p-2 rounded-md border space-y-0.5 ${
+                        c.deadlineType === 'Tax Due Date'
+                          ? 'border-rose-300 bg-rose-50/40'
+                          : 'border-slate-200 bg-white'
+                      }`}
+                    >
+                      <div className="flex items-center justify-between gap-1.5">
+                        <span className="inline-flex items-center gap-1 font-semibold text-slate-900 truncate">
+                          {c.source === 'calendar' && c.deadlineType !== 'Tax Due Date' ? (
+                            <Repeat2 className="w-3 h-3 text-teal-700 shrink-0" />
+                          ) : (
+                            <CalendarClock className="w-3 h-3 text-rose-600 shrink-0" />
+                          )}
+                          <span className="truncate">{c.formName}</span>
+                        </span>
+                        <span
+                          className={`px-1.5 py-0.5 rounded text-[9px] font-bold shrink-0 ${
+                            c.deadlineType === 'Tax Due Date'
+                              ? 'bg-rose-100 text-rose-800 border border-rose-300'
+                              : c.source === 'statutory'
+                              ? 'bg-rose-100 text-rose-800'
+                              : c.source === 'calendar'
+                              ? 'bg-teal-100 text-teal-900'
+                              : c.daysAfterLeave === 0
+                              ? 'bg-rose-600 text-white'
+                              : 'bg-amber-100 text-amber-900'
+                          }`}
+                        >
+                          {c.deadlineType === 'Tax Due Date'
+                            ? 'TAX DUE DATE'
+                            : c.source === 'statutory'
+                            ? 'LHDN STATUTORY'
+                            : c.source === 'calendar'
+                            ? 'RECURRING DUE'
+                            : c.daysAfterLeave === 0
+                            ? 'SAME DAY'
+                            : `+${c.daysAfterLeave}d`}
+                        </span>
+                      </div>
+
+                      {c.source === 'statutory' ? (
+                        <div className="text-[11px] text-slate-600">
+                          Malaysian LHDN Statutory Deadline ({formatDateDDMMYYYY(c.dueDate)})
+                        </div>
+                      ) : c.source === 'calendar' ? (
+                        <div className="text-[11px] text-slate-700 leading-snug">
+                          {c.clientId !== 'RECURRING' && c.clientId !== 'TAX DUE' ? (
+                            <>
+                              <span className="font-mono font-semibold text-teal-800">
+                                {c.clientId}
+                              </span>{' '}
+                              — <span className="font-medium">{c.clientName}</span>
+                            </>
+                          ) : (
+                            <span className="font-medium text-slate-700">{c.clientName}</span>
+                          )}
+                          <div className="text-[10px] text-slate-500">
+                            {c.refCode} · Due {formatDateDDMMYYYY(c.dueDate)}
+                            {c.picName ? ` · PIC: ${c.picName}` : ''}
+                          </div>
+                        </div>
+                      ) : (
+                        <div className="text-[11px] text-slate-700 leading-snug">
+                          <span className="font-mono font-semibold text-teal-800">
+                            {c.clientId}
+                          </span>{' '}
+                          — <span className="font-medium">{c.clientName}</span>
+                          <div className="text-[10px] text-slate-500 font-mono">
+                            {c.refCode} · Due {formatDateDDMMYYYY(c.dueDate)}
+                            {c.picName ? ` · PIC: ${c.picName}` : ''}
+                          </div>
+                        </div>
+                      )}
+                    </div>
+                  ))}
+                </div>
+              </div>
+            );
+          })(),
+          document.body
+        )}
+
+      {/* Portal-Rendered Time-Off / Replace (TO) Hover Tooltip */}
+      {hoveredTimeOff &&
+        typeof document !== 'undefined' &&
+        createPortal(
+          (() => {
+            const tooltipWidth = 280;
+            const margin = 12;
+            const vw = window.innerWidth;
+            const vh = window.innerHeight;
+            const estimatedHeight = 120;
+            const spaceBelow = vh - hoveredTimeOff.rect.bottom;
+            const openAbove =
+              spaceBelow < estimatedHeight + 16 && hoveredTimeOff.rect.top > spaceBelow;
+            const left = Math.max(
+              margin,
+              Math.min(
+                hoveredTimeOff.rect.left + hoveredTimeOff.rect.width / 2 - tooltipWidth / 2,
+                vw - tooltipWidth - margin
+              )
+            );
+            const top = openAbove
+              ? Math.max(margin, hoveredTimeOff.rect.top - estimatedHeight - 8)
+              : Math.min(vh - estimatedHeight - margin, hoveredTimeOff.rect.bottom + 8);
+
+            return (
+              <div
+                className="fixed z-[9999] pointer-events-none bg-white border border-indigo-300 rounded-lg shadow-xl overflow-hidden text-xs"
+                style={{ left, top, width: tooltipWidth }}
+              >
+                <div className="px-3 py-1.5 bg-indigo-600 text-white flex items-center justify-between gap-2">
+                  <span className="inline-flex items-center gap-1.5 font-semibold">
+                    <Clock className="w-3.5 h-3.5 shrink-0" />
+                    Time-Off / Replace (TO)
+                  </span>
+                  <span className="font-mono text-[10px] opacity-90">
+                    {formatDateDDMMYYYY(hoveredTimeOff.dateIso)}
+                  </span>
+                </div>
+                <div className="p-2.5 space-y-1.5">
+                  <div className="flex items-center justify-between gap-2 text-[11px]">
+                    <span className="font-semibold text-slate-900">{hoveredTimeOff.staffName}</span>
+                    <span className="px-1.5 py-0.5 rounded bg-indigo-50 text-indigo-800 border border-indigo-200 text-[10px] font-medium">
+                      0 leave deduction
+                    </span>
+                  </div>
+                  {hoveredTimeOff.timeOffNote ? (
+                    <div className="p-2 rounded bg-indigo-50/70 border border-indigo-200/80 text-[11px] text-indigo-950 font-medium">
+                      {hoveredTimeOff.timeOffNote}
+                    </div>
+                  ) : (
+                    <div className="text-[11px] text-slate-500 italic">
+                      Click cell to add Hours / Time Note (e.g. Leave early 0.5 hr).
+                    </div>
+                  )}
+                  {hoveredTimeOff.notes && (
+                    <div className="text-[11px] text-slate-600 whitespace-pre-wrap">
+                      {hoveredTimeOff.notes}
+                    </div>
+                  )}
+                </div>
+              </div>
+            );
+          })(),
+          document.body
+        )}
     </div>
   );
 };

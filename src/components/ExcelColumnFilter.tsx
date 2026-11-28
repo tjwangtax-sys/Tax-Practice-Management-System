@@ -232,11 +232,11 @@ export const ExcelColumnFilter: React.FC<ExcelColumnFilterProps> = ({
 
   return (
     <div
-      className={`inline-flex items-center gap-1 max-w-full ${
+      className={`inline-flex items-center gap-1 whitespace-nowrap max-w-full ${
         align === 'right' ? 'justify-end' : align === 'center' ? 'justify-center' : 'justify-start'
       }`}
     >
-      <span className="truncate">{title}</span>
+      <span className="whitespace-nowrap">{title}</span>
       <button
         ref={triggerRef}
         type="button"

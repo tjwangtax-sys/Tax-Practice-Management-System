@@ -85,8 +85,35 @@ export function extractYaYear(ya?: string | null): number | null {
   return yr >= 1990 && yr <= 2100 ? yr : null;
 }
 
+const MONTH_NAME_MAP: Record<string, number> = {
+  jan: 1,
+  january: 1,
+  feb: 2,
+  february: 2,
+  mar: 3,
+  march: 3,
+  apr: 4,
+  april: 4,
+  may: 5,
+  jun: 6,
+  june: 6,
+  jul: 7,
+  july: 7,
+  aug: 8,
+  august: 8,
+  sep: 9,
+  sept: 9,
+  september: 9,
+  oct: 10,
+  october: 10,
+  nov: 11,
+  november: 11,
+  dec: 12,
+  december: 12,
+};
+
 /**
- * Extracts a 1..12 month from FYE string ("01".."12" or "YYYY-MM-DD").
+ * Extracts a 1..12 month from FYE string ("01".."12", "YYYY-MM-DD", "DD/MM/YYYY", or "31 Dec" / "Dec").
  */
 export function extractFyeMonth(fye?: string | null): number | null {
   if (!fye) return null;
@@ -97,6 +124,17 @@ export function extractFyeMonth(fye?: string | null): number | null {
   }
   const iso = parseIsoDate(trimmed);
   if (iso) return iso.getUTCMonth() + 1;
+  const dmyMatch = /^(\d{1,2})[/-](\d{1,2})(?:[/-](\d{2,4}))?$/.exec(trimmed);
+  if (dmyMatch) {
+    const m = Number(dmyMatch[2]);
+    if (m >= 1 && m <= 12) return m;
+  }
+  const lower = trimmed.toLowerCase();
+  for (const [name, num] of Object.entries(MONTH_NAME_MAP)) {
+    if (new RegExp(`\\b${name}\\b`).test(lower)) {
+      return num;
+    }
+  }
   return null;
 }
 
@@ -248,9 +286,16 @@ export interface ApplyJobRulesOptions {
    * When true, recalculates Original Statutory Deadline (+7m / statutory default)
    * and Normal e-Filing Deadline (+8m) from YA + FYE + Job Type, overriding any
    * manual edits. Leave false to preserve manual overrides while still updating
-   * Final Applicable Deadline, MITRS Due Date, and completion status.
+   * Final Applicable Deadline and MITRS Due Date.
    */
   forceRecomputeBaseDeadlines?: boolean;
+  /**
+   * When true, applies Form C / MITRS automatic status transitions
+   * ('Pending MITRS' when Form C is Submitted and MITRS is not Submitted / Self-Submit;
+   * 'Completed' when Form C is Submitted and MITRS is Submitted or Self-Submit).
+   * When false, preserves the job's existing or manually chosen Overall Status.
+   */
+  applySubmissionAutoStatus?: boolean;
 }
 
 export type DeadlineRuleSource =
@@ -321,6 +366,25 @@ export function getShortDeadlineRule(
 
 export function isFormCJob(job: { module?: JobModule; jobType?: JobType }): boolean {
   return job.jobType === 'Form C' || (job.module === 'Corporate' && !job.jobType);
+}
+
+/**
+ * Returns true when Form C submission status represents Submitted.
+ */
+export function isFormCSubmittedStatus(status?: string | null): boolean {
+  return (status ?? '').trim().toLowerCase() === 'submitted';
+}
+
+/**
+ * Returns true when MITRS submission status represents a completed MITRS filing
+ * (either "Submitted" or "Self-Submit" / "Self Submit").
+ */
+export function isMitrsCompletedStatus(status?: string | null): boolean {
+  const norm = (status ?? '')
+    .trim()
+    .toLowerCase()
+    .replace(/[\s_]+/g, '-');
+  return norm === 'submitted' || norm === 'self-submit';
 }
 
 /**
@@ -423,14 +487,14 @@ export function applyMalaysianJobRules(
   input: JobRuleInput,
   options: ApplyJobRulesOptions = {}
 ): JobRuleInput {
-  const { forceRecomputeBaseDeadlines = false } = options;
+  const { forceRecomputeBaseDeadlines = false, applySubmissionAutoStatus = false } = options;
 
   const next: JobRuleInput = {
     ...input,
     complianceChecklist: normalizeComplianceChecklist(input.complianceChecklist),
   };
 
-  const yaYear = extractYaYear(next.ya);
+  const yaYear = extractYaYear(next.ya) ?? extractYaYear(next.fye);
   const fyeMonth = extractFyeMonth(next.fye);
   const formC = isFormCJob(next);
 
@@ -448,35 +512,31 @@ export function applyMalaysianJobRules(
     next.finalApplicableDeadline = analysis.finalApplicableDeadline;
     next.mitrsDueDate = analysis.mitrsApplicableDeadline;
 
-    const formCSubmitted = (next.formCStatus || '').trim().toLowerCase() === 'submitted';
-    const mitrsSubmitted = (next.mitrsStatus || '').trim().toLowerCase() === 'submitted';
+    if (applySubmissionAutoStatus) {
+      const formCSubmitted = isFormCSubmittedStatus(next.formCStatus);
+      const mitrsCompleted = isMitrsCompletedStatus(next.mitrsStatus);
 
-    if (formCSubmitted && mitrsSubmitted) {
-      next.status = 'Completed';
-      if (!next.completedDate) {
-        next.completedDate =
-          latestIsoDate([next.mitrsSubmissionDate, next.formCSubmissionDate]) ||
-          new Date().toISOString().slice(0, 10);
-      }
-    } else if (formCSubmitted && !mitrsSubmitted) {
-      next.status = 'Pending MITRS';
-      // Record status transition date for Pending MITRS (uses Form C submission date or today)
-      if (!next.submissionDate) {
-        next.submissionDate =
+      if (formCSubmitted && mitrsCompleted) {
+        next.status = 'Completed';
+        const effectiveCompletionDate =
+          (isIsoDateString(next.mitrsSubmissionDate) ? next.mitrsSubmissionDate : '') ||
           (isIsoDateString(next.formCSubmissionDate) ? next.formCSubmissionDate : '') ||
           new Date().toISOString().slice(0, 10);
+        next.completedDate = effectiveCompletionDate;
+        next.statusDate = effectiveCompletionDate;
+      } else if (formCSubmitted && !mitrsCompleted) {
+        next.status = 'Pending MITRS';
+        const pendingDate =
+          (isIsoDateString(next.formCSubmissionDate) ? next.formCSubmissionDate : '') ||
+          new Date().toISOString().slice(0, 10);
+        if (!next.submissionDate) {
+          next.submissionDate = pendingDate;
+        }
+        next.statusDate = pendingDate;
+        if (next.completedDate) {
+          next.completedDate = '';
+        }
       }
-      if (next.completedDate) {
-        next.completedDate = '';
-      }
-    } else if (next.status === 'Completed') {
-      // Prevent premature Completed status when Form C and MITRS are not both Submitted
-      next.status = 'In Progress';
-      if (next.completedDate) {
-        next.completedDate = '';
-      }
-    } else if (next.status === 'Pending MITRS' && !next.submissionDate) {
-      next.submissionDate = new Date().toISOString().slice(0, 10);
     }
   } else if (next.module === 'Individual' || next.module === 'Form E') {
     if (forceRecomputeBaseDeadlines || !isIsoDateString(next.originalStatutoryDeadline)) {

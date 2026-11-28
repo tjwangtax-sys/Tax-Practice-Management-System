@@ -109,13 +109,30 @@ interface DataContextValue {
   // Jobs CRUD + Batch Add + Audit History
   saveJob: (job: JobSavePayload, existingId?: string, auditRemarks?: string) => Promise<string>;
   batchCreateJobs: (items: JobSavePayload[]) => Promise<{ createdCount: number; skippedCount: number }>;
+  batchUpdateJobs: (
+    items: Array<{ id: string; data: JobSavePayload; auditRemark?: string }>
+  ) => Promise<{ updatedCount: number }>;
   deleteJob: (jobId: string) => Promise<void>;
   // Calendar Events CRUD
   saveCalendarEvent: (
     event: Omit<CalendarEvent, 'id' | 'createdBy' | 'updatedBy' | 'createdAt' | 'updatedAt'>,
     existingId?: string
   ) => Promise<string>;
+  batchSaveCalendarEvents: (
+    events: Array<
+      Omit<CalendarEvent, 'id' | 'createdBy' | 'updatedBy' | 'createdAt' | 'updatedAt'>
+    >
+  ) => Promise<string[]>;
+  batchUpdateCalendarEvents: (
+    updates: Array<{
+      id: string;
+      data: Partial<
+        Omit<CalendarEvent, 'id' | 'createdBy' | 'updatedBy' | 'createdAt' | 'updatedAt'>
+      >;
+    }>
+  ) => Promise<void>;
   deleteCalendarEvent: (eventId: string) => Promise<void>;
+  batchDeleteCalendarEvents: (eventIds: string[]) => Promise<void>;
   // CP204 Monitoring CRUD
   saveCp204: (record: Cp204SavePayload, existingId?: string) => Promise<string>;
   batchCreateCp204: (
@@ -203,6 +220,7 @@ function compactOptionalPayload(
 }
 
 function hydrateClientRecord(id: string, raw: Partial<ClientRecord>): ClientRecord {
+  const resolvedFirstYa = raw.firstYA || raw.firstYa || '';
   return {
     id,
     clientId: raw.clientId ?? '',
@@ -238,13 +256,32 @@ function hydrateClientRecord(id: string, raw: Partial<ClientRecord>): ClientReco
     businessENumber: raw.businessENumber ?? '',
     businessStartDate: raw.businessStartDate ?? '',
     businessStatus: raw.businessStatus ?? '',
-    firstYa: raw.firstYa ?? '',
+    firstYa: resolvedFirstYa,
+    firstYA: resolvedFirstYa,
     firstYaStatus: raw.firstYaStatus ?? '',
     secondYa: raw.secondYa ?? '',
     secondYaStatus: raw.secondYaStatus ?? '',
     groupId: raw.groupId ?? '',
     companySecretary: raw.companySecretary ?? '',
     registeredAddress: raw.registeredAddress ?? '',
+    oldRegNo: raw.oldRegNo ?? '',
+    principalActivity: raw.principalActivity1 || raw.principalActivity || '',
+    principalActivity1: raw.principalActivity1 || raw.principalActivity || '',
+    msicCode1: raw.msicCode1 ?? '',
+    principalActivity2: raw.principalActivity2 ?? '',
+    msicCode2: raw.msicCode2 ?? '',
+    principalActivity3: raw.principalActivity3 ?? '',
+    msicCode3: raw.msicCode3 ?? '',
+    feeBillingNotes: raw.feeBillingNotes ?? '',
+    eInvoiceImplDate: raw.eInvoiceImplDate ?? '',
+    mitrsStatus: raw.mitrsStatus ?? '',
+    cp204Status: raw.cp204Status ?? '',
+    maritalStatus: raw.maritalStatus ?? '',
+    spouseName: raw.spouseName ?? '',
+    spouseTin: raw.spouseTin ?? '',
+    employerDetails: raw.employerDetails ?? '',
+    contactPerson: raw.contactPerson ?? '',
+    correspondenceAddress: raw.correspondenceAddress ?? '',
     businessHistory: Array.isArray(raw.businessHistory) ? raw.businessHistory : [],
     relatedPersons: Array.isArray(raw.relatedPersons) ? raw.relatedPersons : [],
     partnershipPartners: Array.isArray(raw.partnershipPartners) ? raw.partnershipPartners : [],
@@ -261,7 +298,7 @@ function buildSanitizedJobDocument(
   actorEmail: string,
   isUpdate: boolean
 ) {
-  const computed = applyMalaysianJobRules(rawJob);
+  const computed = applyMalaysianJobRules(rawJob, { applySubmissionAutoStatus: false });
 
   const rawPayload: Record<string, unknown> = {
     jobCode: clampStr(computed.jobCode, 40),
@@ -276,6 +313,7 @@ function buildSanitizedJobDocument(
     taxPic: clampStr(computed.taxPic, 120),
     reviewer: clampStr(computed.reviewer, 120),
     status: clampStr(computed.status || 'Not Started', 60),
+    statusDate: clampStr(computed.statusDate, 20),
     priority: clampStr(computed.priority || 'Normal', 30),
     dueDate: clampStr(computed.dueDate, 20),
     completedDate: clampStr(computed.completedDate, 20),
@@ -290,6 +328,7 @@ function buildSanitizedJobDocument(
     lhdnEot3: clampStr(computed.lhdnEot3, 20),
     finalApplicableDeadline: clampStr(computed.finalApplicableDeadline, 20),
     // Form C & MITRS
+    auditType: clampStr(computed.auditType, 40),
     auditBookInDate: clampStr(computed.auditBookInDate, 20),
     auditReportReceivedDate: clampStr(computed.auditReportReceivedDate, 20),
     formCStatus: clampStr(computed.formCStatus, 60),
@@ -866,6 +905,8 @@ export const DataProvider: React.FC<{ children: React.ReactNode }> = ({ children
             department: clampStr(member.department, 80),
             designation: clampStr(member.designation, 80),
             phone: clampStr(member.phone, 40),
+            joinDate: clampStr(member.joinDate, 20),
+            leaveDate: clampStr(member.leaveDate, 20),
             updatedAt: serverTimestamp(),
           });
         } else {
@@ -878,6 +919,8 @@ export const DataProvider: React.FC<{ children: React.ReactNode }> = ({ children
             department: clampStr(member.department, 80),
             designation: clampStr(member.designation, 80),
             phone: clampStr(member.phone, 40),
+            joinDate: clampStr(member.joinDate, 20),
+            leaveDate: clampStr(member.leaveDate, 20),
             uid: clampStr(member.uid, 128),
             createdAt: serverTimestamp(),
             updatedAt: serverTimestamp(),
@@ -1020,6 +1063,7 @@ export const DataProvider: React.FC<{ children: React.ReactNode }> = ({ children
       const docId = existingId || sanitizeDocId(`CL_${client.clientId}_${Date.now().toString(36)}`);
       const ref = doc(db, 'clients', docId);
 
+      const normalizedFirstYa = clampStr(client.firstYA ?? client.firstYa, 20);
       const basePayload = {
         clientId: clampStr(client.clientId, 40),
         clientName: clampStr(client.clientName, 200),
@@ -1054,13 +1098,32 @@ export const DataProvider: React.FC<{ children: React.ReactNode }> = ({ children
         businessENumber: clampStr(client.businessENumber, 60),
         businessStartDate: clampStr(client.businessStartDate, 20),
         businessStatus: clampStr(client.businessStatus, 60),
-        firstYa: clampStr(client.firstYa, 20),
+        firstYa: normalizedFirstYa,
+        firstYA: normalizedFirstYa,
         firstYaStatus: clampStr(client.firstYaStatus, 60),
         secondYa: clampStr(client.secondYa, 20),
         secondYaStatus: clampStr(client.secondYaStatus, 60),
         groupId: clampStr(client.groupId, 60),
         companySecretary: clampStr(client.companySecretary, 120),
         registeredAddress: clampStr(client.registeredAddress, 500),
+        oldRegNo: clampStr(client.oldRegNo, 60),
+        principalActivity: clampStr(client.principalActivity1 ?? client.principalActivity, 250),
+        principalActivity1: clampStr(client.principalActivity1 ?? client.principalActivity, 250),
+        msicCode1: clampStr(client.msicCode1, 20),
+        principalActivity2: clampStr(client.principalActivity2, 250),
+        msicCode2: clampStr(client.msicCode2, 20),
+        principalActivity3: clampStr(client.principalActivity3, 250),
+        msicCode3: clampStr(client.msicCode3, 20),
+        feeBillingNotes: clampStr(client.feeBillingNotes, 500),
+        eInvoiceImplDate: clampStr(client.eInvoiceImplDate, 20),
+        mitrsStatus: clampStr(client.mitrsStatus, 60),
+        cp204Status: clampStr(client.cp204Status, 60),
+        maritalStatus: clampStr(client.maritalStatus, 40),
+        spouseName: clampStr(client.spouseName, 160),
+        spouseTin: clampStr(client.spouseTin, 60),
+        employerDetails: clampStr(client.employerDetails, 250),
+        contactPerson: clampStr(client.contactPerson, 120),
+        correspondenceAddress: clampStr(client.correspondenceAddress, 500),
         businessHistory: (client.businessHistory || []).slice(0, 50),
         relatedPersons: (client.relatedPersons || []).slice(0, 50),
         partnershipPartners: (client.partnershipPartners || []).slice(0, 50),
@@ -1304,6 +1367,62 @@ export const DataProvider: React.FC<{ children: React.ReactNode }> = ({ children
     [user, staffProfile, jobs]
   );
 
+  const batchUpdateJobs = useCallback(
+    async (
+      items: Array<{ id: string; data: JobSavePayload; auditRemark?: string }>
+    ): Promise<{ updatedCount: number }> => {
+      if (items.length === 0) return { updatedCount: 0 };
+      const actorEmail = clampStr(user?.email || '', 160);
+      const actorLabel = clampStr(
+        staffProfile ? `${staffProfile.staffName} (${actorEmail})` : actorEmail,
+        160
+      );
+      const existingById = new Map(jobs.map((j) => [j.id, j]));
+
+      const CHUNK_SIZE = 200;
+      let updatedCount = 0;
+      try {
+        for (let i = 0; i < items.length; i += CHUNK_SIZE) {
+          const slice = items.slice(i, i + CHUNK_SIZE);
+          const batch = writeBatch(db);
+          for (let idx = 0; idx < slice.length; idx++) {
+            const entry = slice[idx];
+            const prevJob = existingById.get(entry.id);
+            const oldStatus = prevJob?.status ?? '';
+            const { payload, computedStatus } = buildSanitizedJobDocument(
+              entry.data,
+              actorEmail,
+              true
+            );
+            batch.update(doc(db, 'jobs', entry.id), payload);
+
+            const histId = sanitizeDocId(
+              `HIST_${entry.id}_${Date.now().toString(36)}_${(i + idx).toString(36)}`
+            );
+            batch.set(doc(db, 'history', histId), {
+              timestamp: serverTimestamp(),
+              jobId: entry.id,
+              action: oldStatus !== computedStatus ? 'STATUS_CHANGED' : 'RECOMPUTED',
+              oldStatus: clampStr(oldStatus, 60),
+              newStatus: clampStr(computedStatus, 60),
+              user: actorLabel,
+              remarks: clampStr(
+                entry.auditRemark || 'Batch Re-compute Deadlines & Status',
+                1000
+              ),
+            });
+            updatedCount += 1;
+          }
+          await batch.commit();
+        }
+        return { updatedCount };
+      } catch (err) {
+        handleFirestoreError(err, OperationType.UPDATE, 'jobs/batch_update');
+      }
+    },
+    [user, staffProfile, jobs]
+  );
+
   const deleteJob = useCallback(
     async (jobId: string) => {
       try {
@@ -1316,15 +1435,12 @@ export const DataProvider: React.FC<{ children: React.ReactNode }> = ({ children
   );
 
   // ---------------------- CALENDAR EVENTS CRUD ----------------------
-  const saveCalendarEvent = useCallback(
-    async (
+  const buildCalendarEventPayload = useCallback(
+    (
       event: Omit<CalendarEvent, 'id' | 'createdBy' | 'updatedBy' | 'createdAt' | 'updatedAt'>,
-      existingId?: string
-    ): Promise<string> => {
-      const actorEmail = clampStr(user?.email || '', 160);
-      const docId = existingId || sanitizeDocId(`EVT_${Date.now().toString(36)}`);
-      const ref = doc(db, 'calendarEvents', docId);
-      const basePayload = {
+      actorEmail: string
+    ) => {
+      const payload: Record<string, unknown> = {
         title: clampStr(event.title, 160),
         eventType: clampStr(event.eventType, 40),
         startDate: clampStr(event.startDate, 20),
@@ -1334,9 +1450,39 @@ export const DataProvider: React.FC<{ children: React.ReactNode }> = ({ children
         clientName: clampStr(event.clientName, 200),
         color: clampStr(event.color, 16),
         notes: clampStr(event.notes, 1000),
+        timeOffNote: clampStr(event.timeOffNote, 200),
         updatedBy: actorEmail,
         updatedAt: serverTimestamp(),
       };
+      if (event.batchGroupId !== undefined) {
+        payload.batchGroupId = clampStr(event.batchGroupId, 64);
+      }
+      if (event.recurrenceGroupId !== undefined) {
+        payload.recurrenceGroupId = clampStr(event.recurrenceGroupId, 64);
+      }
+      if (event.recurrenceRule !== undefined) {
+        payload.recurrenceRule = clampStr(event.recurrenceRule, 200);
+      }
+      if (event.recurrenceLabel !== undefined) {
+        payload.recurrenceLabel = clampStr(event.recurrenceLabel, 160);
+      }
+      if (event.recurrenceUntil !== undefined) {
+        payload.recurrenceUntil = clampStr(event.recurrenceUntil, 20);
+      }
+      return payload;
+    },
+    []
+  );
+
+  const saveCalendarEvent = useCallback(
+    async (
+      event: Omit<CalendarEvent, 'id' | 'createdBy' | 'updatedBy' | 'createdAt' | 'updatedAt'>,
+      existingId?: string
+    ): Promise<string> => {
+      const actorEmail = clampStr(user?.email || '', 160);
+      const docId = existingId || sanitizeDocId(`EVT_${Date.now().toString(36)}`);
+      const ref = doc(db, 'calendarEvents', docId);
+      const basePayload = buildCalendarEventPayload(event, actorEmail);
       try {
         if (existingId) {
           await updateDoc(ref, basePayload);
@@ -1356,6 +1502,100 @@ export const DataProvider: React.FC<{ children: React.ReactNode }> = ({ children
         );
       }
     },
+    [user, buildCalendarEventPayload]
+  );
+
+  const batchSaveCalendarEvents = useCallback(
+    async (
+      events: Array<
+        Omit<CalendarEvent, 'id' | 'createdBy' | 'updatedBy' | 'createdAt' | 'updatedAt'>
+      >
+    ): Promise<string[]> => {
+      if (events.length === 0) return [];
+      const actorEmail = clampStr(user?.email || '', 160);
+      const createdIds: string[] = [];
+      const CHUNK_SIZE = 400;
+      const baseNonce = `${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 6)}`;
+      try {
+        for (let i = 0; i < events.length; i += CHUNK_SIZE) {
+          const slice = events.slice(i, i + CHUNK_SIZE);
+          const batch = writeBatch(db);
+          for (let idx = 0; idx < slice.length; idx++) {
+            const ev = slice[idx];
+            const docId = sanitizeDocId(`EVT_${baseNonce}_${String(i + idx + 1).padStart(3, '0')}`);
+            const basePayload = buildCalendarEventPayload(ev, actorEmail);
+            batch.set(doc(db, 'calendarEvents', docId), {
+              ...basePayload,
+              createdBy: actorEmail,
+              createdAt: serverTimestamp(),
+            });
+            createdIds.push(docId);
+          }
+          await batch.commit();
+        }
+        return createdIds;
+      } catch (err) {
+        handleFirestoreError(err, OperationType.CREATE, 'calendarEvents/batch_create');
+      }
+    },
+    [user, buildCalendarEventPayload]
+  );
+
+  const batchUpdateCalendarEvents = useCallback(
+    async (
+      updates: Array<{
+        id: string;
+        data: Partial<
+          Omit<CalendarEvent, 'id' | 'createdBy' | 'updatedBy' | 'createdAt' | 'updatedAt'>
+        >;
+      }>
+    ): Promise<void> => {
+      if (updates.length === 0) return;
+      const actorEmail = clampStr(user?.email || '', 160);
+      const CHUNK_SIZE = 400;
+      try {
+        for (let i = 0; i < updates.length; i += CHUNK_SIZE) {
+          const slice = updates.slice(i, i + CHUNK_SIZE);
+          const batch = writeBatch(db);
+          for (const item of slice) {
+            const d = item.data;
+            const patch: Record<string, unknown> = {
+              updatedBy: actorEmail,
+              updatedAt: serverTimestamp(),
+            };
+            if (d.title !== undefined) patch.title = clampStr(d.title, 160);
+            if (d.eventType !== undefined) patch.eventType = clampStr(d.eventType, 40);
+            if (d.startDate !== undefined) patch.startDate = clampStr(d.startDate, 20);
+            if (d.endDate !== undefined) patch.endDate = clampStr(d.endDate, 20);
+            if (d.assignedTo !== undefined) patch.assignedTo = clampStr(d.assignedTo, 120);
+            if (d.clientId !== undefined) patch.clientId = clampStr(d.clientId, 64);
+            if (d.clientName !== undefined) patch.clientName = clampStr(d.clientName, 200);
+            if (d.color !== undefined) patch.color = clampStr(d.color, 16);
+            if (d.notes !== undefined) patch.notes = clampStr(d.notes, 1000);
+            if (d.timeOffNote !== undefined) patch.timeOffNote = clampStr(d.timeOffNote, 200);
+            if (d.batchGroupId !== undefined) {
+              patch.batchGroupId = clampStr(d.batchGroupId, 64);
+            }
+            if (d.recurrenceGroupId !== undefined) {
+              patch.recurrenceGroupId = clampStr(d.recurrenceGroupId, 64);
+            }
+            if (d.recurrenceRule !== undefined) {
+              patch.recurrenceRule = clampStr(d.recurrenceRule, 200);
+            }
+            if (d.recurrenceLabel !== undefined) {
+              patch.recurrenceLabel = clampStr(d.recurrenceLabel, 160);
+            }
+            if (d.recurrenceUntil !== undefined) {
+              patch.recurrenceUntil = clampStr(d.recurrenceUntil, 20);
+            }
+            batch.update(doc(db, 'calendarEvents', item.id), patch);
+          }
+          await batch.commit();
+        }
+      } catch (err) {
+        handleFirestoreError(err, OperationType.UPDATE, 'calendarEvents/batch_update');
+      }
+    },
     [user]
   );
 
@@ -1364,6 +1604,24 @@ export const DataProvider: React.FC<{ children: React.ReactNode }> = ({ children
       await deleteDoc(doc(db, 'calendarEvents', eventId));
     } catch (err) {
       handleFirestoreError(err, OperationType.DELETE, `calendarEvents/${eventId}`);
+    }
+  }, []);
+
+  const batchDeleteCalendarEvents = useCallback(async (eventIds: string[]) => {
+    const uniqueIds = Array.from(new Set(eventIds.filter(Boolean)));
+    if (uniqueIds.length === 0) return;
+    const CHUNK_SIZE = 400;
+    try {
+      for (let i = 0; i < uniqueIds.length; i += CHUNK_SIZE) {
+        const slice = uniqueIds.slice(i, i + CHUNK_SIZE);
+        const batch = writeBatch(db);
+        for (const id of slice) {
+          batch.delete(doc(db, 'calendarEvents', id));
+        }
+        await batch.commit();
+      }
+    } catch (err) {
+      handleFirestoreError(err, OperationType.DELETE, 'calendarEvents/batch_delete');
     }
   }, []);
 
@@ -2105,9 +2363,13 @@ export const DataProvider: React.FC<{ children: React.ReactNode }> = ({ children
         deleteClient,
         saveJob,
         batchCreateJobs,
+        batchUpdateJobs,
         deleteJob,
         saveCalendarEvent,
+        batchSaveCalendarEvents,
+        batchUpdateCalendarEvents,
         deleteCalendarEvent,
+        batchDeleteCalendarEvents,
         saveCp204,
         batchCreateCp204,
         deleteCp204,

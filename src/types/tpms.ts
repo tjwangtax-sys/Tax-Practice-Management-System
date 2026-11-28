@@ -146,6 +146,8 @@ export interface StaffMember {
   department?: string;
   designation?: string;
   phone?: string;
+  joinDate?: string;
+  leaveDate?: string;
   uid?: string;
   createdAt?: Timestamp;
   updatedAt?: Timestamp;
@@ -208,6 +210,14 @@ export interface YaMonitoringItem {
   yaStatus: string;
   taxPayable: string;
   remarks: string;
+  // Extended multi-pillar fields for Manual / Prior Agent historical entries
+  source?: 'Manual / Prior Agent' | 'Linked';
+  yaSequence?: string;
+  mitrsStatus?: string;
+  cp204Estimate?: string;
+  cp204Exempt?: boolean;
+  formEStatus?: string;
+  formESubmissionDate?: string;
 }
 
 export interface ClientRecord {
@@ -247,12 +257,32 @@ export interface ClientRecord {
   businessStartDate: string;
   businessStatus: string;
   firstYa: string;
+  firstYA?: string;
   firstYaStatus: string;
   secondYa: string;
   secondYaStatus: string;
   groupId: string;
   companySecretary: string;
   registeredAddress: string;
+  // Extended organized profile fields
+  oldRegNo?: string;
+  principalActivity?: string;
+  principalActivity1?: string;
+  msicCode1?: string;
+  principalActivity2?: string;
+  msicCode2?: string;
+  principalActivity3?: string;
+  msicCode3?: string;
+  feeBillingNotes?: string;
+  eInvoiceImplDate?: string;
+  mitrsStatus?: string;
+  cp204Status?: string;
+  maritalStatus?: string;
+  spouseName?: string;
+  spouseTin?: string;
+  employerDetails?: string;
+  contactPerson?: string;
+  correspondenceAddress?: string;
   // Relational schedules
   businessHistory: BusinessHistoryItem[];
   relatedPersons: RelatedPersonItem[];
@@ -275,10 +305,12 @@ export interface TaxJob {
   clientName: string;
   groupId?: string;
   fye?: string;
+  companyFye?: string;
   ya?: string;
   taxPic?: string;
   reviewer?: string;
   status: string;
+  statusDate?: string;
   priority?: string;
   dueDate?: string;
   completedDate?: string;
@@ -293,6 +325,7 @@ export interface TaxJob {
   lhdnEot3?: string;
   finalApplicableDeadline?: string;
   // Form C & MITRS
+  auditType?: string;
   auditBookInDate?: string;
   auditReportReceivedDate?: string;
   formCStatus?: string;
@@ -661,6 +694,8 @@ export interface NavigationFilterPreset {
   nonce: number;
 }
 
+export type RecurrenceRule = string;
+
 export interface CalendarEvent {
   id: string;
   title: string;
@@ -672,6 +707,12 @@ export interface CalendarEvent {
   clientName?: string;
   color?: string;
   notes?: string;
+  timeOffNote?: string;
+  batchGroupId?: string;
+  recurrenceGroupId?: string;
+  recurrenceRule?: string;
+  recurrenceLabel?: string;
+  recurrenceUntil?: string;
   createdBy: string;
   updatedBy?: string;
   createdAt?: Timestamp;

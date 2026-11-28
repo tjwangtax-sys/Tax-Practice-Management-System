@@ -26,8 +26,10 @@ import { useAuth } from '../../context/AuthContext';
 import { useData } from '../../context/DataContext';
 import { RegisterToolbar } from '../../components/RegisterToolbar';
 import { StatusPill } from '../../components/StatusPill';
+import { RemarksPreviewCell } from '../../components/RemarksPreviewCell';
 import { ClientSelectorField } from '../../components/ClientSelectorField';
 import { ExcelColumnFilter } from '../../components/ExcelColumnFilter';
+import { useColumnVisibility, usePinnedColumnOffsets } from '../../hooks/useColumnVisibility';
 import { useExcelTableFilters } from '../../hooks/useExcelTableFilters';
 import { exportToExcel, printRegisterHtml } from '../../lib/exportUtils';
 import { formatDateDDMMYYYY } from '../../lib/deadlineUtils';
@@ -66,10 +68,22 @@ const PAYMENT_COL_WIDTHS: Record<string, string> = {
   remarks: 'min-w-[200px]',
 };
 
-const DEFAULT_VISIBLE = PAYMENT_COLUMNS.reduce<Record<string, boolean>>((acc, col) => {
-  acc[col.key] = col.defaultVisible;
-  return acc;
-}, {});
+const PAYMENT_COL_FALLBACK_WIDTHS: Record<string, number> = {
+  paymentId: 130,
+  clientName: 225,
+  paymentType: 155,
+  ya: 75,
+  referenceCaseNo: 175,
+  dueDate: 120,
+  amountDue: 125,
+  amountPaid: 125,
+  outstandingAmount: 125,
+  paymentDate: 120,
+  paymentReference: 150,
+  verificationStatus: 150,
+  followUpStatus: 165,
+  remarks: 200,
+};
 
 const inputCls =
   'w-full px-2.5 py-1.5 text-xs bg-white border border-slate-200 rounded-md focus:outline-none focus:ring-2 focus:ring-teal-600/20 focus:border-teal-700 disabled:bg-slate-50 disabled:text-slate-500';
@@ -468,7 +482,23 @@ export const TaxPaymentMonitorView: React.FC = () => {
   const [verificationFilter, setVerificationFilter] = useState('');
   const [followUpFilter, setFollowUpFilter] = useState('');
   const [yaFilter, setYaFilter] = useState('');
-  const [visibleColumns, setVisibleColumns] = useState<Record<string, boolean>>(DEFAULT_VISIBLE);
+
+  const {
+    visibleColumns,
+    pinnedColumns,
+    orderedColumns,
+    activeColumns,
+    pinnedActiveKeys,
+    toggleColumn,
+    togglePin,
+    moveColumn,
+    reorderColumn,
+    resetColumns,
+  } = useColumnVisibility('tax_payments', PAYMENT_COLUMNS, ['paymentId', 'clientName']);
+  const { headerRowRef, getHeaderStickyProps, getCellStickyProps } = usePinnedColumnOffsets(
+    pinnedActiveKeys,
+    PAYMENT_COL_FALLBACK_WIDTHS
+  );
 
   const [modalOpen, setModalOpen] = useState(false);
   const [editingRecord, setEditingRecord] = useState<TaxPaymentRecord | null>(null);
@@ -557,12 +587,8 @@ export const TaxPaymentMonitorView: React.FC = () => {
     excel.resetColumnFilters();
   };
 
-  const handleToggleColumn = (key: string) => {
-    setVisibleColumns((prev) => ({ ...prev, [key]: !prev[key] }));
-  };
-
   const buildExport = () => {
-    const cols = PAYMENT_COLUMNS.filter((c) => visibleColumns[c.key]).map((c) => ({
+    const cols = activeColumns.map((c) => ({
       key: c.key,
       label: c.label,
     }));
@@ -722,10 +748,14 @@ export const TaxPaymentMonitorView: React.FC = () => {
         searchPlaceholder="Search Payment ID, client, reference/case no., FPX receipt, or remarks..."
         hasActiveFilters={hasActiveFilters}
         onResetFilters={handleResetFilters}
-        columns={PAYMENT_COLUMNS}
+        columns={orderedColumns}
         visibleColumns={visibleColumns}
-        onToggleColumn={handleToggleColumn}
-        onResetColumns={() => setVisibleColumns(DEFAULT_VISIBLE)}
+        onToggleColumn={toggleColumn}
+        onResetColumns={resetColumns}
+        pinnedColumns={pinnedColumns}
+        onTogglePin={togglePin}
+        onMoveColumn={moveColumn}
+        onReorderColumn={reorderColumn}
         onExportExcel={handleExportExcel}
         onPrint={handlePrint}
         onSavePdf={handleSavePdf}
@@ -804,56 +834,45 @@ export const TaxPaymentMonitorView: React.FC = () => {
       />
 
       {/* Register Table */}
-      <div className="bg-white border border-slate-200 rounded-lg overflow-hidden">
-        <div className="overflow-x-auto overflow-y-auto max-h-[66vh]">
-          <table className="w-full text-xs border-collapse">
-            <thead className="bg-slate-100 sticky top-0 z-20 border-b border-slate-200 text-slate-700">
-              <tr>
-                {PAYMENT_COLUMNS.filter((c) => visibleColumns[c.key]).map((col) => {
-                  const isStickyFirst = col.key === 'paymentId';
-                  const isStickySecond = col.key === 'clientName';
-                  const stickyThCls = isStickyFirst
-                    ? `sticky left-0 z-30 bg-slate-100 ${
-                        !visibleColumns.clientName
-                          ? 'shadow-[inset_-1px_0_0_#e2e8f0,2px_0_4px_-2px_rgba(15,23,42,0.12)]'
-                          : 'shadow-[inset_-1px_0_0_#e2e8f0]'
-                      }`
-                    : isStickySecond
-                    ? `sticky ${
-                        visibleColumns.paymentId ? 'left-[130px]' : 'left-0'
-                      } z-30 bg-slate-100 shadow-[inset_-1px_0_0_#e2e8f0,2px_0_4px_-2px_rgba(15,23,42,0.12)]`
-                    : '';
-                  return (
-                    <th
-                      key={col.key}
-                      className={`px-3 py-2.5 font-semibold whitespace-nowrap ${
-                        col.align === 'right' ? 'text-right' : 'text-left'
-                      } ${PAYMENT_COL_WIDTHS[col.key] || 'min-w-[120px]'} ${stickyThCls}`}
-                    >
-                      <ExcelColumnFilter
-                        columnKey={col.key}
-                        title={col.label}
-                        values={excel.getColumnValues(col.key)}
-                        selectedValues={excel.columnFilters[col.key]}
-                        onChangeSelected={(next) => excel.setColumnFilter(col.key, next)}
-                        sortDirection={
-                          excel.sortState?.key === col.key ? excel.sortState.direction : null
-                        }
-                        onSort={(dir) => excel.setColumnSort(col.key, dir)}
-                        align={col.align === 'right' ? 'right' : 'left'}
-                      />
-                    </th>
-                  );
-                })}
-                <th className="px-3 py-2.5 text-right font-semibold whitespace-nowrap min-w-[105px] no-print">
-                  Action
-                </th>
-              </tr>
-            </thead>
-            <tbody className="divide-y divide-slate-100">
+      <div className="max-h-[calc(100vh-64px)] overflow-auto relative bg-white border border-slate-200 rounded-lg">
+        <table className="w-full text-xs border-collapse">
+          <thead className="sticky top-0 z-20 bg-slate-50 shadow-sm border-b border-slate-200 text-slate-700">
+            <tr ref={headerRowRef}>
+              {activeColumns.map((col) => {
+                const stickyTh = getHeaderStickyProps(col.key);
+                return (
+                  <th
+                    key={col.key}
+                    data-pinned-col={stickyTh['data-pinned-col']}
+                    style={stickyTh.style}
+                    className={`px-3 py-2 text-xs font-semibold whitespace-nowrap border-b border-slate-200 ${
+                      col.align === 'right' ? 'text-right' : 'text-left'
+                    } ${PAYMENT_COL_WIDTHS[col.key] || 'min-w-[120px]'} ${stickyTh.className}`}
+                  >
+                    <ExcelColumnFilter
+                      columnKey={col.key}
+                      title={col.label}
+                      values={excel.getColumnValues(col.key)}
+                      selectedValues={excel.columnFilters[col.key]}
+                      onChangeSelected={(next) => excel.setColumnFilter(col.key, next)}
+                      sortDirection={
+                        excel.sortState?.key === col.key ? excel.sortState.direction : null
+                      }
+                      onSort={(dir) => excel.setColumnSort(col.key, dir)}
+                      align={col.align === 'right' ? 'right' : 'left'}
+                    />
+                  </th>
+                );
+              })}
+              <th className="sticky top-0 z-20 bg-slate-50 px-3 py-2 text-right text-xs font-semibold whitespace-nowrap border-b border-slate-200 min-w-[115px] no-print">
+                Action
+              </th>
+            </tr>
+          </thead>
+          <tbody className="divide-y divide-slate-100">
               {displayedPayments.length === 0 ? (
                 <tr>
-                  <td colSpan={15} className="px-4 py-12 text-center text-slate-500">
+                  <td colSpan={activeColumns.length + 1} className="px-4 py-12 text-center text-slate-500">
                     {taxPayments.length === 0
                       ? 'No tax payments recorded yet. Click "+ Record Tax Payment" to log an entry.'
                       : 'No tax payments match the current filters.'}
@@ -864,106 +883,136 @@ export const TaxPaymentMonitorView: React.FC = () => {
                   const isOverdue = p.outstandingAmount > 0 && Boolean(p.dueDate) && p.dueDate < todayStr;
                   return (
                     <tr key={p.id} className="group hover:bg-slate-50 align-top">
-                      {visibleColumns.paymentId && (
-                        <td
-                          className={`sticky left-0 z-10 bg-white group-hover:bg-slate-50 w-[130px] min-w-[130px] px-3 py-2 font-mono font-semibold text-slate-800 whitespace-nowrap ${
-                            !visibleColumns.clientName
-                              ? 'shadow-[inset_-1px_0_0_#e2e8f0,2px_0_4px_-2px_rgba(15,23,42,0.12)]'
-                              : 'shadow-[inset_-1px_0_0_#e2e8f0]'
-                          }`}
-                        >
-                          {p.paymentId}
-                        </td>
-                      )}
-                      {visibleColumns.clientName && (
-                        <td
-                          className={`sticky ${
-                            visibleColumns.paymentId ? 'left-[130px]' : 'left-0'
-                          } z-10 bg-white group-hover:bg-slate-50 min-w-[225px] px-3 py-2 shadow-[inset_-1px_0_0_#e2e8f0,2px_0_4px_-2px_rgba(15,23,42,0.12)]`}
-                        >
-                          <div className="font-semibold text-slate-900 leading-snug">
-                            {p.clientName}
-                          </div>
-                          <div className="text-[11px] font-mono text-slate-400">{p.clientId}</div>
-                        </td>
-                      )}
-                      {visibleColumns.paymentType && (
-                        <td className="px-3 py-2 text-slate-700 whitespace-nowrap">
-                          {p.paymentType}
-                        </td>
-                      )}
-                      {visibleColumns.ya && (
-                        <td className="px-3 py-2 font-mono text-slate-700 whitespace-nowrap">
-                          {p.ya || '—'}
-                        </td>
-                      )}
-                      {visibleColumns.referenceCaseNo && (
-                        <td className="px-3 py-2 text-slate-700 max-w-[180px] truncate" title={p.referenceCaseNo}>
-                          {p.referenceCaseNo || '—'}
-                        </td>
-                      )}
-                      {visibleColumns.dueDate && (
-                        <td className="px-3 py-2 whitespace-nowrap">
-                          <div className="font-mono text-slate-800">
-                            {formatDateDDMMYYYY(p.dueDate)}
-                          </div>
-                          {isOverdue && (
-                            <span className="inline-block mt-0.5 px-1.5 py-0.2 rounded text-[10px] font-semibold bg-rose-100 text-rose-700">
-                              Overdue
-                            </span>
-                          )}
-                        </td>
-                      )}
-                      {visibleColumns.amountDue && (
-                        <td className="px-3 py-2 text-right font-mono tabular-nums text-slate-800 whitespace-nowrap">
-                          {formatCurrencyRM(p.amountDue)}
-                        </td>
-                      )}
-                      {visibleColumns.amountPaid && (
-                        <td className="px-3 py-2 text-right font-mono tabular-nums text-emerald-700 whitespace-nowrap">
-                          {formatCurrencyRM(p.amountPaid)}
-                        </td>
-                      )}
-                      {visibleColumns.outstandingAmount && (
-                        <td className="px-3 py-2 text-right font-mono tabular-nums font-semibold whitespace-nowrap">
-                          <span className={p.outstandingAmount > 0 ? 'text-rose-700' : 'text-emerald-700'}>
-                            {formatCurrencyRM(p.outstandingAmount)}
-                          </span>
-                        </td>
-                      )}
-                      {visibleColumns.paymentDate && (
-                        <td className="px-3 py-2 font-mono text-slate-700 whitespace-nowrap">
-                          {formatDateDDMMYYYY(p.paymentDate)}
-                        </td>
-                      )}
-                      {visibleColumns.paymentReference && (
-                        <td className="px-3 py-2 font-mono text-slate-700 whitespace-nowrap">
-                          {p.paymentReference || '—'}
-                        </td>
-                      )}
-                      {visibleColumns.verificationStatus && (
-                        <td className="px-3 py-2 whitespace-nowrap">
-                          <StatusPill
-                            group="PAYMENT_STATUS"
-                            value={p.verificationStatus}
-                            customColor={getVerificationColor(p.verificationStatus)}
-                          />
-                        </td>
-                      )}
-                      {visibleColumns.followUpStatus && (
-                        <td className="px-3 py-2 whitespace-nowrap">
-                          <StatusPill
-                            group="PAYMENT_STATUS"
-                            value={p.followUpStatus}
-                            customColor={getFollowUpColor(p.followUpStatus)}
-                          />
-                        </td>
-                      )}
-                      {visibleColumns.remarks && (
-                        <td className="px-3 py-2 text-slate-600 max-w-[200px] truncate" title={p.remarks}>
-                          {p.remarks || '—'}
-                        </td>
-                      )}
+                      {activeColumns.map((col) => {
+                        const key = col.key;
+                        const stickyTd = getCellStickyProps(key);
+                        const colWidth = PAYMENT_COL_WIDTHS[key] || 'min-w-[120px]';
+                        const wrapTd = (
+                          cls: string,
+                          content: React.ReactNode,
+                          title?: string
+                        ) => (
+                          <td
+                            key={key}
+                            style={stickyTd.style}
+                            title={title}
+                            className={`${cls} ${colWidth} ${stickyTd.className}`}
+                          >
+                            {content}
+                          </td>
+                        );
+
+                        switch (key) {
+                          case 'paymentId':
+                            return wrapTd(
+                              'px-3 py-2 font-mono font-semibold text-slate-800 whitespace-nowrap',
+                              p.paymentId
+                            );
+                          case 'clientName':
+                            return wrapTd(
+                              'px-3 py-2',
+                              <>
+                                <div className="font-semibold text-slate-900 leading-snug">
+                                  {p.clientName}
+                                </div>
+                                <div className="text-[11px] font-mono text-slate-400">
+                                  {p.clientId}
+                                </div>
+                              </>
+                            );
+                          case 'paymentType':
+                            return wrapTd(
+                              'px-3 py-2 text-slate-700 whitespace-nowrap',
+                              p.paymentType
+                            );
+                          case 'ya':
+                            return wrapTd(
+                              'px-3 py-2 font-mono text-slate-700 whitespace-nowrap',
+                              p.ya || '—'
+                            );
+                          case 'referenceCaseNo':
+                            return wrapTd(
+                              'px-3 py-2 text-slate-700 max-w-[180px] truncate',
+                              p.referenceCaseNo || '—',
+                              p.referenceCaseNo
+                            );
+                          case 'dueDate':
+                            return wrapTd(
+                              'px-3 py-2 whitespace-nowrap',
+                              <>
+                                <div className="font-mono text-slate-800">
+                                  {formatDateDDMMYYYY(p.dueDate)}
+                                </div>
+                                {isOverdue && (
+                                  <span className="inline-block mt-0.5 px-1.5 py-0.2 rounded text-[10px] font-semibold bg-rose-100 text-rose-700">
+                                    Overdue
+                                  </span>
+                                )}
+                              </>
+                            );
+                          case 'amountDue':
+                            return wrapTd(
+                              'px-3 py-2 text-right font-mono tabular-nums text-slate-800 whitespace-nowrap',
+                              formatCurrencyRM(p.amountDue)
+                            );
+                          case 'amountPaid':
+                            return wrapTd(
+                              'px-3 py-2 text-right font-mono tabular-nums text-emerald-700 whitespace-nowrap',
+                              formatCurrencyRM(p.amountPaid)
+                            );
+                          case 'outstandingAmount':
+                            return wrapTd(
+                              'px-3 py-2 text-right font-mono tabular-nums font-semibold whitespace-nowrap',
+                              <span
+                                className={
+                                  p.outstandingAmount > 0 ? 'text-rose-700' : 'text-emerald-700'
+                                }
+                              >
+                                {formatCurrencyRM(p.outstandingAmount)}
+                              </span>
+                            );
+                          case 'paymentDate':
+                            return wrapTd(
+                              'px-3 py-2 font-mono text-slate-700 whitespace-nowrap',
+                              formatDateDDMMYYYY(p.paymentDate)
+                            );
+                          case 'paymentReference':
+                            return wrapTd(
+                              'px-3 py-2 font-mono text-slate-700 whitespace-nowrap',
+                              p.paymentReference || '—'
+                            );
+                          case 'verificationStatus':
+                            return wrapTd(
+                              'px-3 py-2 whitespace-nowrap',
+                              <StatusPill
+                                group="PAYMENT_STATUS"
+                                value={p.verificationStatus}
+                                customColor={getVerificationColor(p.verificationStatus)}
+                              />
+                            );
+                          case 'followUpStatus':
+                            return wrapTd(
+                              'px-3 py-2 whitespace-nowrap',
+                              <StatusPill
+                                group="PAYMENT_STATUS"
+                                value={p.followUpStatus}
+                                customColor={getFollowUpColor(p.followUpStatus)}
+                              />
+                            );
+                          case 'remarks':
+                            return wrapTd(
+                              'px-3 py-2 whitespace-nowrap',
+                              <RemarksPreviewCell
+                                text={p.remarks}
+                                recordTitle={p.clientName}
+                                recordId={p.paymentId || p.clientId}
+                                fieldLabel="Payment Remarks"
+                              />
+                            );
+                          default:
+                            return wrapTd('px-3 py-2 text-slate-600 whitespace-nowrap', '—');
+                        }
+                      })}
                       <td className="px-3 py-2 text-right whitespace-nowrap no-print">
                         {confirmDeleteId === p.id ? (
                           <div className="inline-flex items-center gap-1">
@@ -987,27 +1036,29 @@ export const TaxPaymentMonitorView: React.FC = () => {
                             </button>
                           </div>
                         ) : (
-                          <div className="inline-flex items-center gap-2">
+                          <div className="inline-flex items-center gap-1.5 whitespace-nowrap">
                             <button
                               type="button"
                               onClick={() => {
                                 setEditingRecord(p);
                                 setModalOpen(true);
                               }}
-                              className="inline-flex items-center gap-1 text-[11px] font-medium text-teal-700 hover:underline"
+                              className="text-xs font-medium text-teal-700 hover:underline"
                             >
-                              <Edit3 className="w-3 h-3" />
                               {isReadOnly ? 'View' : 'Edit'}
                             </button>
                             {isManagerOrAdmin && (
-                              <button
-                                type="button"
-                                onClick={() => setConfirmDeleteId(p.id)}
-                                className="p-1 rounded text-slate-400 hover:text-rose-700 hover:bg-rose-50"
-                                title="Delete payment"
-                              >
-                                <Trash2 className="w-3.5 h-3.5" />
-                              </button>
+                              <>
+                                <span className="text-slate-300">·</span>
+                                <button
+                                  type="button"
+                                  onClick={() => setConfirmDeleteId(p.id)}
+                                  className="text-xs font-medium text-rose-600 hover:text-rose-800 hover:underline"
+                                  title="Delete payment"
+                                >
+                                  Delete
+                                </button>
+                              </>
                             )}
                           </div>
                         )}
@@ -1016,9 +1067,8 @@ export const TaxPaymentMonitorView: React.FC = () => {
                   );
                 })
               )}
-            </tbody>
-          </table>
-        </div>
+          </tbody>
+        </table>
       </div>
 
       <TaxPaymentModal

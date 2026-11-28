@@ -25,6 +25,7 @@ import { ExcelColumnFilter } from '../../components/ExcelColumnFilter';
 import { RegisterToolbar } from '../../components/RegisterToolbar';
 import { StatusPill } from '../../components/StatusPill';
 import { exportToExcel, printRegisterHtml } from '../../lib/exportUtils';
+import { formatDateDDMMYYYY } from '../../lib/deadlineUtils';
 import { DataImportTab } from './DataImportTab';
 
 const STAFF_COLUMNS: ColumnDef[] = [
@@ -35,6 +36,8 @@ const STAFF_COLUMNS: ColumnDef[] = [
   { key: 'department', label: 'Department', defaultVisible: true },
   { key: 'designation', label: 'Designation', defaultVisible: false },
   { key: 'phone', label: 'Phone', defaultVisible: false },
+  { key: 'joinDate', label: 'Join Date', defaultVisible: true },
+  { key: 'leaveDate', label: 'Leave Date', defaultVisible: true },
   { key: 'active', label: 'Status', defaultVisible: true },
 ];
 
@@ -79,6 +82,8 @@ export const StaffSettingsView: React.FC = () => {
     department: 'Tax Compliance',
     designation: '',
     phone: '',
+    joinDate: '',
+    leaveDate: '',
   });
 
   // Settings filters & modal
@@ -156,6 +161,8 @@ export const StaffSettingsView: React.FC = () => {
       department: (s: StaffMember) => s.department ?? '',
       designation: (s: StaffMember) => s.designation ?? '',
       phone: (s: StaffMember) => s.phone ?? '',
+      joinDate: (s: StaffMember) => (s.joinDate ? formatDateDDMMYYYY(s.joinDate) : ''),
+      leaveDate: (s: StaffMember) => (s.leaveDate ? formatDateDDMMYYYY(s.leaveDate) : ''),
       active: (s: StaffMember) => (s.active ? 'Active' : 'Inactive'),
     }),
     []
@@ -208,6 +215,8 @@ export const StaffSettingsView: React.FC = () => {
       department: 'Tax Compliance',
       designation: '',
       phone: '',
+      joinDate: '',
+      leaveDate: '',
     });
     setStaffModalOpen(true);
   };
@@ -224,6 +233,8 @@ export const StaffSettingsView: React.FC = () => {
       department: s.department ?? '',
       designation: s.designation ?? '',
       phone: s.phone ?? '',
+      joinDate: s.joinDate ?? '',
+      leaveDate: s.leaveDate ?? '',
     });
     setStaffModalOpen(true);
   };
@@ -546,6 +557,8 @@ export const StaffSettingsView: React.FC = () => {
                 visibleStaffCols,
                 displayedStaff.map((s) => ({
                   ...s,
+                  joinDate: s.joinDate ? formatDateDDMMYYYY(s.joinDate) : '—',
+                  leaveDate: s.leaveDate ? formatDateDDMMYYYY(s.leaveDate) : '—',
                   active: s.active ? 'Active' : 'Inactive',
                 })),
                 false
@@ -558,6 +571,8 @@ export const StaffSettingsView: React.FC = () => {
                 visibleStaffCols,
                 displayedStaff.map((s) => ({
                   ...s,
+                  joinDate: s.joinDate ? formatDateDDMMYYYY(s.joinDate) : '—',
+                  leaveDate: s.leaveDate ? formatDateDDMMYYYY(s.leaveDate) : '—',
                   active: s.active ? 'Active' : 'Inactive',
                 })),
                 true
@@ -598,13 +613,29 @@ export const StaffSettingsView: React.FC = () => {
             }
           />
 
-          <div className="bg-white border border-slate-200 rounded-lg overflow-hidden">
-            <div className="overflow-auto max-h-[calc(100vh-300px)]">
-              <table className="w-full text-xs border-collapse">
-                <thead className="sticky top-0 z-10 bg-slate-100 border-b border-slate-200 text-slate-700">
-                  <tr>
-                    {visibleStaffCols.map((col) => (
-                      <th key={col.key} className="px-3 py-2 text-left font-semibold whitespace-nowrap">
+          <div className="max-h-[calc(100vh-64px)] overflow-auto relative bg-white border border-slate-200 rounded-lg">
+            <table className="w-full text-xs border-collapse">
+              <thead className="sticky top-0 z-20 bg-slate-50 shadow-sm border-b border-slate-200 text-slate-700">
+                <tr>
+                  {visibleStaffCols.map((col) => {
+                    const isStickyFirst = col.key === 'staffId';
+                    const isStickySecond = col.key === 'staffName';
+                    const stickyThCls = isStickyFirst
+                      ? `sticky top-0 left-0 z-30 bg-slate-50 w-[100px] min-w-[100px] ${
+                          !staffColVis.visibleColumns.staffName
+                            ? 'shadow-[inset_-1px_0_0_#e2e8f0,2px_0_4px_-2px_rgba(15,23,42,0.12)]'
+                            : 'shadow-[inset_-1px_0_0_#e2e8f0]'
+                        }`
+                      : isStickySecond
+                      ? `sticky top-0 ${
+                          staffColVis.visibleColumns.staffId ? 'left-[100px]' : 'left-0'
+                        } z-30 bg-slate-50 min-w-[175px] shadow-[inset_-1px_0_0_#e2e8f0,2px_0_4px_-2px_rgba(15,23,42,0.12)]`
+                      : 'sticky top-0 z-20 bg-slate-50';
+                    return (
+                      <th
+                        key={col.key}
+                        className={`px-3 py-2 text-left text-xs font-semibold whitespace-nowrap border-b border-slate-200 ${stickyThCls}`}
+                      >
                         <ExcelColumnFilter
                           columnKey={col.key}
                           title={col.label}
@@ -619,30 +650,41 @@ export const StaffSettingsView: React.FC = () => {
                           onSort={(dir) => staffExcel.setColumnSort(col.key, dir)}
                         />
                       </th>
-                    ))}
-                    <th className="px-3 py-2 text-right font-semibold whitespace-nowrap no-print">
-                      Actions
-                    </th>
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-slate-100">
-                  {displayedStaff.map((s) => {
-                    const isSelf =
-                      Boolean(s.email) &&
-                      s.email.toLowerCase() === (user?.email || '').toLowerCase();
-                    return (
-                      <tr key={s.id} className="hover:bg-slate-50/90">
-                        {staffColVis.visibleColumns.staffId && (
-                          <td className="px-3 py-2 font-mono font-medium text-slate-900 whitespace-nowrap">
-                            {s.staffId}
-                          </td>
-                        )}
-                        {staffColVis.visibleColumns.staffName && (
-                          <td className="px-3 py-2 font-medium text-slate-900 whitespace-nowrap">
-                            {s.staffName}{' '}
-                            {isSelf && <span className="text-[10px] text-teal-700 font-semibold">(You)</span>}
-                          </td>
-                        )}
+                    );
+                  })}
+                  <th className="sticky top-0 z-20 bg-slate-50 px-3 py-2 text-right text-xs font-semibold whitespace-nowrap border-b border-slate-200 min-w-[115px] no-print">
+                    Actions
+                  </th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-slate-100">
+                {displayedStaff.map((s) => {
+                  const isSelf =
+                    Boolean(s.email) &&
+                    s.email.toLowerCase() === (user?.email || '').toLowerCase();
+                  return (
+                    <tr key={s.id} className="group hover:bg-slate-50 transition-colors">
+                      {staffColVis.visibleColumns.staffId && (
+                        <td
+                          className={`sticky left-0 z-10 bg-white group-hover:bg-slate-50 w-[100px] min-w-[100px] px-3 py-2 text-xs font-mono font-medium text-slate-900 whitespace-nowrap ${
+                            !staffColVis.visibleColumns.staffName
+                              ? 'shadow-[inset_-1px_0_0_#e2e8f0,2px_0_4px_-2px_rgba(15,23,42,0.12)]'
+                              : 'shadow-[inset_-1px_0_0_#e2e8f0]'
+                          }`}
+                        >
+                          {s.staffId}
+                        </td>
+                      )}
+                      {staffColVis.visibleColumns.staffName && (
+                        <td
+                          className={`sticky ${
+                            staffColVis.visibleColumns.staffId ? 'left-[100px]' : 'left-0'
+                          } z-10 bg-white group-hover:bg-slate-50 min-w-[175px] px-3 py-2 text-xs font-medium text-slate-900 whitespace-nowrap shadow-[inset_-1px_0_0_#e2e8f0,2px_0_4px_-2px_rgba(15,23,42,0.12)]`}
+                        >
+                          {s.staffName}{' '}
+                          {isSelf && <span className="text-[10px] text-teal-700 font-semibold">(You)</span>}
+                        </td>
+                      )}
                         {staffColVis.visibleColumns.email && (
                           <td className="px-3 py-2 font-mono text-slate-600 whitespace-nowrap">
                             {s.email ? (
@@ -684,6 +726,22 @@ export const StaffSettingsView: React.FC = () => {
                             {s.phone || '—'}
                           </td>
                         )}
+                        {staffColVis.visibleColumns.joinDate && (
+                          <td className="px-3 py-2 font-mono tabular-nums text-slate-600 whitespace-nowrap">
+                            {s.joinDate ? formatDateDDMMYYYY(s.joinDate) : '—'}
+                          </td>
+                        )}
+                        {staffColVis.visibleColumns.leaveDate && (
+                          <td className="px-3 py-2 font-mono tabular-nums text-slate-600 whitespace-nowrap">
+                            {s.leaveDate ? (
+                              <span className="text-rose-700 font-medium">
+                                {formatDateDDMMYYYY(s.leaveDate)}
+                              </span>
+                            ) : (
+                              '—'
+                            )}
+                          </td>
+                        )}
                         {staffColVis.visibleColumns.active && (
                           <td className="px-3 py-2 whitespace-nowrap">
                             <StatusPill
@@ -693,34 +751,36 @@ export const StaffSettingsView: React.FC = () => {
                             />
                           </td>
                         )}
-                        <td className="px-3 py-2 text-right whitespace-nowrap no-print">
-                          <div className="inline-flex items-center gap-1">
+                        <td className="px-3 py-2 text-xs text-right whitespace-nowrap no-print">
+                          <div className="inline-flex items-center gap-1.5 whitespace-nowrap">
                             <button
                               type="button"
                               onClick={() => openEditStaff(s)}
                               title="Edit staff member"
-                              className="p-1.5 rounded text-slate-500 hover:text-teal-700 hover:bg-teal-50"
+                              className="font-medium text-teal-700 hover:underline"
                             >
-                              <Pencil className="w-3.5 h-3.5" />
+                              Edit
                             </button>
                             {!isSelf && (
-                              <button
-                                type="button"
-                                onClick={() => void deleteStaffMember(s.id)}
-                                title="Remove staff member"
-                                className="p-1.5 rounded text-slate-400 hover:text-rose-700 hover:bg-rose-50"
-                              >
-                                <Trash2 className="w-3.5 h-3.5" />
-                              </button>
+                              <>
+                                <span className="text-slate-300">·</span>
+                                <button
+                                  type="button"
+                                  onClick={() => void deleteStaffMember(s.id)}
+                                  title="Remove staff member"
+                                  className="font-medium text-rose-600 hover:text-rose-800 hover:underline"
+                                >
+                                  Delete
+                                </button>
+                              </>
                             )}
                           </div>
                         </td>
                       </tr>
                     );
                   })}
-                </tbody>
-              </table>
-            </div>
+              </tbody>
+            </table>
           </div>
         </div>
       )}
@@ -859,13 +919,29 @@ export const StaffSettingsView: React.FC = () => {
             }
           />
 
-          <div className="bg-white border border-slate-200 rounded-lg overflow-hidden">
-            <div className="overflow-auto max-h-[calc(100vh-300px)]">
-              <table className="w-full text-xs border-collapse">
-                <thead className="sticky top-0 z-10 bg-slate-100 border-b border-slate-200 text-slate-700">
-                  <tr>
-                    {visibleSettingCols.map((col) => (
-                      <th key={col.key} className="px-3 py-2 text-left font-semibold whitespace-nowrap">
+          <div className="max-h-[calc(100vh-64px)] overflow-auto relative bg-white border border-slate-200 rounded-lg">
+            <table className="w-full text-xs border-collapse">
+              <thead className="sticky top-0 z-20 bg-slate-50 shadow-sm border-b border-slate-200 text-slate-700">
+                <tr>
+                  {visibleSettingCols.map((col) => {
+                    const isStickyFirst = col.key === 'group';
+                    const isStickySecond = col.key === 'code';
+                    const stickyThCls = isStickyFirst
+                      ? `sticky top-0 left-0 z-30 bg-slate-50 w-[175px] min-w-[175px] ${
+                          !settingColVis.visibleColumns.code
+                            ? 'shadow-[inset_-1px_0_0_#e2e8f0,2px_0_4px_-2px_rgba(15,23,42,0.12)]'
+                            : 'shadow-[inset_-1px_0_0_#e2e8f0]'
+                        }`
+                      : isStickySecond
+                      ? `sticky top-0 ${
+                          settingColVis.visibleColumns.group ? 'left-[175px]' : 'left-0'
+                        } z-30 bg-slate-50 min-w-[155px] shadow-[inset_-1px_0_0_#e2e8f0,2px_0_4px_-2px_rgba(15,23,42,0.12)]`
+                      : 'sticky top-0 z-20 bg-slate-50';
+                    return (
+                      <th
+                        key={col.key}
+                        className={`px-3 py-2 text-left text-xs font-semibold whitespace-nowrap border-b border-slate-200 ${stickyThCls}`}
+                      >
                         <ExcelColumnFilter
                           columnKey={col.key}
                           title={col.label}
@@ -880,43 +956,54 @@ export const StaffSettingsView: React.FC = () => {
                           onSort={(dir) => settingsExcel.setColumnSort(col.key, dir)}
                         />
                       </th>
-                    ))}
-                    <th className="px-3 py-2 text-right font-semibold whitespace-nowrap no-print">
-                      Actions
-                    </th>
+                    );
+                  })}
+                  <th className="sticky top-0 z-20 bg-slate-50 px-3 py-2 text-right text-xs font-semibold whitespace-nowrap border-b border-slate-200 min-w-[115px] no-print">
+                    Actions
+                  </th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-slate-100">
+                {displayedSettings.length === 0 ? (
+                  <tr>
+                    <td colSpan={visibleSettingCols.length + 1} className="px-6 py-10 text-center">
+                      <p className="text-xs font-semibold text-slate-700">
+                        No controlled settings found
+                      </p>
+                      <p className="text-[11px] text-slate-500 mt-1">
+                        Click &ldquo;Seed Default Malaysian Tax Settings&rdquo; to populate LHDN
+                        statuses, e-Invoice phases, CP204, and job workflow badges.
+                      </p>
+                    </td>
                   </tr>
-                </thead>
-                <tbody className="divide-y divide-slate-100">
-                  {displayedSettings.length === 0 ? (
-                    <tr>
-                      <td colSpan={visibleSettingCols.length + 1} className="px-6 py-10 text-center">
-                        <p className="text-xs font-semibold text-slate-700">
-                          No controlled settings found
-                        </p>
-                        <p className="text-[11px] text-slate-500 mt-1">
-                          Click &ldquo;Seed Default Malaysian Tax Settings&rdquo; to populate LHDN
-                          statuses, e-Invoice phases, CP204, and job workflow badges.
-                        </p>
-                      </td>
-                    </tr>
-                  ) : (
-                    displayedSettings.map((s) => (
-                      <tr key={s.id} className="hover:bg-slate-50/90">
-                        {settingColVis.visibleColumns.group && (
-                          <td className="px-3 py-2 font-mono text-[11px] font-medium text-slate-700 whitespace-nowrap">
-                            {s.group}
-                          </td>
-                        )}
-                        {settingColVis.visibleColumns.code && (
-                          <td className="px-3 py-2 font-mono text-[11px] text-slate-600 whitespace-nowrap">
-                            {s.code}
-                          </td>
-                        )}
-                        {settingColVis.visibleColumns.displayName && (
-                          <td className="px-3 py-2 font-medium text-slate-900 whitespace-nowrap">
-                            {s.displayName}
-                          </td>
-                        )}
+                ) : (
+                  displayedSettings.map((s) => (
+                    <tr key={s.id} className="group hover:bg-slate-50 transition-colors">
+                      {settingColVis.visibleColumns.group && (
+                        <td
+                          className={`sticky left-0 z-10 bg-white group-hover:bg-slate-50 w-[175px] min-w-[175px] px-3 py-2 text-xs font-mono font-medium text-slate-700 whitespace-nowrap ${
+                            !settingColVis.visibleColumns.code
+                              ? 'shadow-[inset_-1px_0_0_#e2e8f0,2px_0_4px_-2px_rgba(15,23,42,0.12)]'
+                              : 'shadow-[inset_-1px_0_0_#e2e8f0]'
+                          }`}
+                        >
+                          {s.group}
+                        </td>
+                      )}
+                      {settingColVis.visibleColumns.code && (
+                        <td
+                          className={`sticky ${
+                            settingColVis.visibleColumns.group ? 'left-[175px]' : 'left-0'
+                          } z-10 bg-white group-hover:bg-slate-50 min-w-[155px] px-3 py-2 text-xs font-mono text-slate-600 whitespace-nowrap shadow-[inset_-1px_0_0_#e2e8f0,2px_0_4px_-2px_rgba(15,23,42,0.12)]`}
+                        >
+                          {s.code}
+                        </td>
+                      )}
+                      {settingColVis.visibleColumns.displayName && (
+                        <td className="px-3 py-2 text-xs font-medium text-slate-900 whitespace-nowrap">
+                          {s.displayName}
+                        </td>
+                      )}
                         {settingColVis.visibleColumns.module && (
                           <td className="px-3 py-2 text-slate-600 whitespace-nowrap">{s.module}</td>
                         )}
@@ -949,24 +1036,27 @@ export const StaffSettingsView: React.FC = () => {
                           </td>
                         )}
                         <td className="px-3 py-2 text-right whitespace-nowrap no-print">
-                          <div className="inline-flex items-center gap-1">
+                          <div className="inline-flex items-center gap-1.5 text-xs">
                             <button
                               type="button"
                               onClick={() => openEditSetting(s)}
                               title="Edit setting"
-                              className="p-1.5 rounded text-slate-500 hover:text-teal-700 hover:bg-teal-50"
+                              className="font-medium text-teal-700 hover:text-teal-900 hover:underline"
                             >
-                              <Pencil className="w-3.5 h-3.5" />
+                              Edit
                             </button>
                             {isAdmin && (
-                              <button
-                                type="button"
-                                onClick={() => void deleteSetting(s.id)}
-                                title="Delete setting"
-                                className="p-1.5 rounded text-slate-400 hover:text-rose-700 hover:bg-rose-50"
-                              >
-                                <Trash2 className="w-3.5 h-3.5" />
-                              </button>
+                              <>
+                                <span className="text-slate-300">·</span>
+                                <button
+                                  type="button"
+                                  onClick={() => void deleteSetting(s.id)}
+                                  title="Delete setting"
+                                  className="font-medium text-rose-600 hover:text-rose-800 hover:underline"
+                                >
+                                  Delete
+                                </button>
+                              </>
                             )}
                           </div>
                         </td>
@@ -975,7 +1065,6 @@ export const StaffSettingsView: React.FC = () => {
                   )}
                 </tbody>
               </table>
-            </div>
           </div>
         </div>
       )}
@@ -1092,6 +1181,34 @@ export const StaffSettingsView: React.FC = () => {
                   />
                 </div>
               </div>
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className="block text-[11px] font-medium text-slate-600 mb-1">
+                    Join Date
+                  </label>
+                  <input
+                    type="date"
+                    value={staffForm.joinDate}
+                    onChange={(e) => setStaffForm({ ...staffForm, joinDate: e.target.value })}
+                    className="w-full px-2.5 py-1.5 text-xs font-mono border border-slate-200 rounded-md"
+                  />
+                </div>
+                <div>
+                  <label className="block text-[11px] font-medium text-slate-600 mb-1">
+                    Leave / Resign Date
+                  </label>
+                  <input
+                    type="date"
+                    min={staffForm.joinDate || undefined}
+                    value={staffForm.leaveDate}
+                    onChange={(e) => setStaffForm({ ...staffForm, leaveDate: e.target.value })}
+                    className="w-full px-2.5 py-1.5 text-xs font-mono border border-slate-200 rounded-md"
+                  />
+                </div>
+              </div>
+              <p className="text-[10px] text-slate-400 -mt-1.5">
+                Used by Staff Matrix to auto-show/hide staff by month and pro-rate monthly Work days.
+              </p>
               <div className="grid grid-cols-2 gap-3 items-center">
                 <div>
                   <label className="block text-[11px] font-medium text-slate-600 mb-1">Phone</label>

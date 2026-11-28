@@ -27,8 +27,10 @@ import { useAuth } from '../../context/AuthContext';
 import { useData } from '../../context/DataContext';
 import { RegisterToolbar } from '../../components/RegisterToolbar';
 import { StatusPill } from '../../components/StatusPill';
+import { RemarksPreviewCell } from '../../components/RemarksPreviewCell';
 import { ClientSelectorField } from '../../components/ClientSelectorField';
 import { ExcelColumnFilter } from '../../components/ExcelColumnFilter';
+import { useColumnVisibility, usePinnedColumnOffsets } from '../../hooks/useColumnVisibility';
 import { useExcelTableFilters } from '../../hooks/useExcelTableFilters';
 import { buildDynamicSelectOptions } from '../../lib/settingsDropdown';
 import { exportToExcel, printRegisterHtml } from '../../lib/exportUtils';
@@ -70,10 +72,22 @@ const CORRESPONDENCE_COL_WIDTHS: Record<string, string> = {
   remarks: 'min-w-[200px]',
 };
 
-const DEFAULT_VISIBLE = CORRESPONDENCE_COLUMNS.reduce<Record<string, boolean>>((acc, col) => {
-  acc[col.key] = col.defaultVisible;
-  return acc;
-}, {});
+const CORRESPONDENCE_COL_FALLBACK_WIDTHS: Record<string, number> = {
+  correspondenceId: 125,
+  clientName: 220,
+  ya: 75,
+  dateReceived: 120,
+  methodReceived: 105,
+  category: 115,
+  letterType: 135,
+  letterSubject: 260,
+  dueDate: 120,
+  pic: 125,
+  actionStatus: 140,
+  actionDate: 120,
+  jobId: 130,
+  remarks: 200,
+};
 
 const CLOSED_STATUSES = new Set<CorrespondenceActionStatus>([
   'Completed',
@@ -573,7 +587,26 @@ export const CorrespondenceView: React.FC = () => {
   const [statusFilter, setStatusFilter] = useState('');
   const [categoryFilter, setCategoryFilter] = useState('');
   const [dueDateFilter, setDueDateFilter] = useState<DueDateFilter>('');
-  const [visibleColumns, setVisibleColumns] = useState<Record<string, boolean>>(DEFAULT_VISIBLE);
+
+  const {
+    visibleColumns,
+    pinnedColumns,
+    orderedColumns,
+    activeColumns,
+    pinnedActiveKeys,
+    toggleColumn,
+    togglePin,
+    moveColumn,
+    reorderColumn,
+    resetColumns,
+  } = useColumnVisibility('correspondence', CORRESPONDENCE_COLUMNS, [
+    'correspondenceId',
+    'clientName',
+  ]);
+  const { headerRowRef, getHeaderStickyProps, getCellStickyProps } = usePinnedColumnOffsets(
+    pinnedActiveKeys,
+    CORRESPONDENCE_COL_FALLBACK_WIDTHS
+  );
 
   const [modalOpen, setModalOpen] = useState(false);
   const [editingRecord, setEditingRecord] = useState<CorrespondenceRecord | null>(null);
@@ -683,12 +716,8 @@ export const CorrespondenceView: React.FC = () => {
     excel.resetColumnFilters();
   };
 
-  const handleToggleColumn = (key: string) => {
-    setVisibleColumns((prev) => ({ ...prev, [key]: !prev[key] }));
-  };
-
   const buildExport = () => {
-    const cols = CORRESPONDENCE_COLUMNS.filter((c) => visibleColumns[c.key]).map((c) => ({
+    const cols = activeColumns.map((c) => ({
       key: c.key,
       label: c.label,
     }));
@@ -862,10 +891,14 @@ export const CorrespondenceView: React.FC = () => {
         searchPlaceholder="Search ID, client, subject, letter ref, PIC, linked job, or remarks..."
         hasActiveFilters={hasActiveFilters}
         onResetFilters={handleResetFilters}
-        columns={CORRESPONDENCE_COLUMNS}
+        columns={orderedColumns}
         visibleColumns={visibleColumns}
-        onToggleColumn={handleToggleColumn}
-        onResetColumns={() => setVisibleColumns(DEFAULT_VISIBLE)}
+        onToggleColumn={toggleColumn}
+        onResetColumns={resetColumns}
+        pinnedColumns={pinnedColumns}
+        onTogglePin={togglePin}
+        onMoveColumn={moveColumn}
+        onReorderColumn={reorderColumn}
         onExportExcel={handleExportExcel}
         onPrint={handlePrint}
         onSavePdf={handleSavePdf}
@@ -929,55 +962,44 @@ export const CorrespondenceView: React.FC = () => {
       />
 
       {/* Register Table */}
-      <div className="bg-white border border-slate-200 rounded-lg overflow-hidden">
-        <div className="overflow-x-auto overflow-y-auto max-h-[65vh]">
-          <table className="w-full text-xs border-collapse">
-            <thead className="bg-slate-100 sticky top-0 z-20 border-b border-slate-200 text-slate-700">
-              <tr>
-                {CORRESPONDENCE_COLUMNS.filter((c) => visibleColumns[c.key]).map((col) => {
-                  const isStickyFirst = col.key === 'correspondenceId';
-                  const isStickySecond = col.key === 'clientName';
-                  const stickyThCls = isStickyFirst
-                    ? `sticky left-0 z-30 bg-slate-100 ${
-                        !visibleColumns.clientName
-                          ? 'shadow-[inset_-1px_0_0_#e2e8f0,2px_0_4px_-2px_rgba(15,23,42,0.12)]'
-                          : 'shadow-[inset_-1px_0_0_#e2e8f0]'
-                      }`
-                    : isStickySecond
-                    ? `sticky ${
-                        visibleColumns.correspondenceId ? 'left-[125px]' : 'left-0'
-                      } z-30 bg-slate-100 shadow-[inset_-1px_0_0_#e2e8f0,2px_0_4px_-2px_rgba(15,23,42,0.12)]`
-                    : '';
-                  return (
-                    <th
-                      key={col.key}
-                      className={`px-3 py-2.5 text-left font-semibold whitespace-nowrap ${
-                        CORRESPONDENCE_COL_WIDTHS[col.key] || 'min-w-[120px]'
-                      } ${stickyThCls}`}
-                    >
-                      <ExcelColumnFilter
-                        columnKey={col.key}
-                        title={col.label}
-                        values={excel.getColumnValues(col.key)}
-                        selectedValues={excel.columnFilters[col.key]}
-                        onChangeSelected={(next) => excel.setColumnFilter(col.key, next)}
-                        sortDirection={
-                          excel.sortState?.key === col.key ? excel.sortState.direction : null
-                        }
-                        onSort={(dir) => excel.setColumnSort(col.key, dir)}
-                      />
-                    </th>
-                  );
-                })}
-                <th className="px-3 py-2.5 text-right font-semibold whitespace-nowrap min-w-[105px] no-print">
-                  Action
-                </th>
-              </tr>
-            </thead>
-            <tbody className="divide-y divide-slate-100">
+      <div className="max-h-[calc(100vh-64px)] overflow-auto relative bg-white border border-slate-200 rounded-lg">
+        <table className="w-full text-xs border-collapse">
+          <thead className="sticky top-0 z-20 bg-slate-50 shadow-sm border-b border-slate-200 text-slate-700">
+            <tr ref={headerRowRef}>
+              {activeColumns.map((col) => {
+                const stickyTh = getHeaderStickyProps(col.key);
+                return (
+                  <th
+                    key={col.key}
+                    data-pinned-col={stickyTh['data-pinned-col']}
+                    style={stickyTh.style}
+                    className={`px-3 py-2 text-left text-xs font-semibold whitespace-nowrap border-b border-slate-200 ${
+                      CORRESPONDENCE_COL_WIDTHS[col.key] || 'min-w-[120px]'
+                    } ${stickyTh.className}`}
+                  >
+                    <ExcelColumnFilter
+                      columnKey={col.key}
+                      title={col.label}
+                      values={excel.getColumnValues(col.key)}
+                      selectedValues={excel.columnFilters[col.key]}
+                      onChangeSelected={(next) => excel.setColumnFilter(col.key, next)}
+                      sortDirection={
+                        excel.sortState?.key === col.key ? excel.sortState.direction : null
+                      }
+                      onSort={(dir) => excel.setColumnSort(col.key, dir)}
+                    />
+                  </th>
+                );
+              })}
+              <th className="sticky top-0 z-20 bg-slate-50 px-3 py-2 text-right text-xs font-semibold whitespace-nowrap border-b border-slate-200 min-w-[115px] no-print">
+                Action
+              </th>
+            </tr>
+          </thead>
+          <tbody className="divide-y divide-slate-100">
               {displayedRecords.length === 0 ? (
                 <tr>
-                  <td colSpan={15} className="px-4 py-12 text-center text-slate-500">
+                  <td colSpan={activeColumns.length + 1} className="px-4 py-12 text-center text-slate-500">
                     {correspondenceRecords.length === 0
                       ? 'No correspondence logged yet. Click "+ Add Correspondence" to record a letter or notice.'
                       : 'No correspondence records match the current filters.'}
@@ -992,130 +1014,164 @@ export const CorrespondenceView: React.FC = () => {
 
                   return (
                     <tr key={r.id} className="group hover:bg-slate-50 align-top">
-                      {visibleColumns.correspondenceId && (
-                        <td
-                          className={`sticky left-0 z-10 bg-white group-hover:bg-slate-50 w-[125px] min-w-[125px] px-3 py-2 font-mono font-semibold text-slate-800 whitespace-nowrap ${
-                            !visibleColumns.clientName
-                              ? 'shadow-[inset_-1px_0_0_#e2e8f0,2px_0_4px_-2px_rgba(15,23,42,0.12)]'
-                              : 'shadow-[inset_-1px_0_0_#e2e8f0]'
-                          }`}
-                        >
-                          {r.correspondenceId}
-                        </td>
-                      )}
-                      {visibleColumns.clientName && (
-                        <td
-                          className={`sticky ${
-                            visibleColumns.correspondenceId ? 'left-[125px]' : 'left-0'
-                          } z-10 bg-white group-hover:bg-slate-50 min-w-[220px] px-3 py-2 shadow-[inset_-1px_0_0_#e2e8f0,2px_0_4px_-2px_rgba(15,23,42,0.12)]`}
-                        >
-                          <div className="font-semibold text-slate-900 leading-snug">
-                            {r.clientName}
-                          </div>
-                          <div className="text-[11px] font-mono text-slate-400">{r.clientId}</div>
-                        </td>
-                      )}
-                      {visibleColumns.ya && (
-                        <td className="px-3 py-2 font-mono text-slate-700 whitespace-nowrap">
-                          {r.ya || '—'}
-                        </td>
-                      )}
-                      {visibleColumns.dateReceived && (
-                        <td className="px-3 py-2 font-mono text-slate-700 whitespace-nowrap">
-                          {formatDateDDMMYYYY(r.dateReceived)}
-                        </td>
-                      )}
-                      {visibleColumns.methodReceived && (
-                        <td className="px-3 py-2 text-slate-700 whitespace-nowrap">
-                          {r.methodReceived}
-                        </td>
-                      )}
-                      {visibleColumns.category && (
-                        <td className="px-3 py-2 whitespace-nowrap">
-                          <span className="inline-flex items-center px-2 py-0.5 rounded bg-slate-100 text-slate-700 text-[11px] font-medium">
-                            {r.category}
-                          </span>
-                        </td>
-                      )}
-                      {visibleColumns.letterType && (
-                        <td className="px-3 py-2 text-slate-700 whitespace-nowrap">
-                          {r.letterType}
-                        </td>
-                      )}
-                      {visibleColumns.letterSubject && (
-                        <td className="px-3 py-2 min-w-[220px] max-w-[300px]">
-                          <div className="font-medium text-slate-900 leading-snug flex items-start gap-1.5">
-                            <span className="break-words">{r.letterSubject}</span>
-                            {r.attachmentUrl && (
-                              <a
-                                href={r.attachmentUrl}
-                                target="_blank"
-                                rel="noreferrer"
-                                className="text-teal-700 hover:text-teal-900 shrink-0 mt-0.5"
-                                title="Open attachment"
-                              >
-                                <ExternalLink className="w-3.5 h-3.5" />
-                              </a>
-                            )}
-                          </div>
-                          {r.letterReferenceNo && (
-                            <div className="text-[11px] font-mono text-slate-500 mt-0.5">
-                              Ref: {r.letterReferenceNo}
-                            </div>
-                          )}
-                          {r.actionRequired && (
-                            <div className="text-[11px] text-slate-500 mt-0.5 line-clamp-1">
-                              Action: {r.actionRequired}
-                            </div>
-                          )}
-                        </td>
-                      )}
-                      {visibleColumns.dueDate && (
-                        <td className="px-3 py-2 whitespace-nowrap">
-                          <div className="font-mono text-slate-800">
-                            {formatDateDDMMYYYY(r.dueDate)}
-                          </div>
-                          {isOverdue && (
-                            <span className="inline-block mt-0.5 px-1.5 py-0.2 rounded text-[10px] font-semibold bg-rose-100 text-rose-700">
-                              Overdue
-                            </span>
-                          )}
-                          {!isOverdue && isDueSoon && (
-                            <span className="inline-block mt-0.5 px-1.5 py-0.2 rounded text-[10px] font-semibold bg-amber-100 text-amber-800">
-                              Due &le; 7d
-                            </span>
-                          )}
-                        </td>
-                      )}
-                      {visibleColumns.pic && (
-                        <td className="px-3 py-2 text-slate-700 whitespace-nowrap">
-                          {r.pic || '—'}
-                        </td>
-                      )}
-                      {visibleColumns.actionStatus && (
-                        <td className="px-3 py-2 whitespace-nowrap">
-                          <StatusPill
-                            group="CORRESPONDENCE_STATUS"
-                            value={r.actionStatus}
-                            customColor={getStatusColor(r.actionStatus)}
-                          />
-                        </td>
-                      )}
-                      {visibleColumns.actionDate && (
-                        <td className="px-3 py-2 font-mono text-slate-700 whitespace-nowrap">
-                          {formatDateDDMMYYYY(r.actionDate)}
-                        </td>
-                      )}
-                      {visibleColumns.jobId && (
-                        <td className="px-3 py-2 font-mono text-[11px] text-slate-700 whitespace-nowrap">
-                          {r.jobId || '—'}
-                        </td>
-                      )}
-                      {visibleColumns.remarks && (
-                        <td className="px-3 py-2 text-slate-600 max-w-[200px] truncate" title={r.remarks}>
-                          {r.remarks || '—'}
-                        </td>
-                      )}
+                      {activeColumns.map((col) => {
+                        const key = col.key;
+                        const stickyTd = getCellStickyProps(key);
+                        const colWidth = CORRESPONDENCE_COL_WIDTHS[key] || 'min-w-[120px]';
+                        const wrapTd = (cls: string, content: React.ReactNode) => (
+                          <td
+                            key={key}
+                            style={stickyTd.style}
+                            className={`${cls} ${colWidth} ${stickyTd.className}`}
+                          >
+                            {content}
+                          </td>
+                        );
+
+                        switch (key) {
+                          case 'correspondenceId':
+                            return wrapTd(
+                              'px-3 py-2 font-mono font-semibold text-slate-800 whitespace-nowrap',
+                              r.correspondenceId
+                            );
+                          case 'clientName':
+                            return wrapTd(
+                              'px-3 py-2',
+                              <>
+                                <div className="font-semibold text-slate-900 leading-snug">
+                                  {r.clientName}
+                                </div>
+                                <div className="text-[11px] font-mono text-slate-400">
+                                  {r.clientId}
+                                </div>
+                              </>
+                            );
+                          case 'ya':
+                            return wrapTd(
+                              'px-3 py-2 font-mono text-slate-700 whitespace-nowrap',
+                              r.ya || '—'
+                            );
+                          case 'dateReceived':
+                            return wrapTd(
+                              'px-3 py-2 font-mono text-slate-700 whitespace-nowrap',
+                              formatDateDDMMYYYY(r.dateReceived)
+                            );
+                          case 'methodReceived':
+                            return wrapTd(
+                              'px-3 py-2 text-slate-700 whitespace-nowrap',
+                              r.methodReceived
+                            );
+                          case 'category':
+                            return wrapTd(
+                              'px-3 py-2 whitespace-nowrap',
+                              <span className="inline-flex items-center px-2 py-0.5 rounded bg-slate-100 text-slate-700 text-[11px] font-medium">
+                                {r.category}
+                              </span>
+                            );
+                          case 'letterType':
+                            return wrapTd(
+                              'px-3 py-2 text-slate-700 whitespace-nowrap',
+                              r.letterType
+                            );
+                          case 'letterSubject':
+                            return wrapTd(
+                              'px-3 py-2 max-w-[300px]',
+                              <>
+                                <div className="flex items-center gap-1.5 min-w-0">
+                                  <RemarksPreviewCell
+                                    text={r.letterSubject}
+                                    recordTitle={r.clientName}
+                                    recordId={r.correspondenceId || r.clientId}
+                                    fieldLabel="Correspondence Subject & Details"
+                                    textClassName="font-medium text-slate-900"
+                                    extraSections={[
+                                      {
+                                        label: 'Letter Reference No.',
+                                        content: r.letterReferenceNo,
+                                      },
+                                      {
+                                        label: 'Detailed Information',
+                                        content: r.detailedInformation,
+                                      },
+                                      { label: 'Action Required', content: r.actionRequired },
+                                    ]}
+                                  />
+                                  {r.attachmentUrl && (
+                                    <a
+                                      href={r.attachmentUrl}
+                                      target="_blank"
+                                      rel="noreferrer"
+                                      className="text-teal-700 hover:text-teal-900 shrink-0"
+                                      title="Open attachment"
+                                    >
+                                      <ExternalLink className="w-3.5 h-3.5" />
+                                    </a>
+                                  )}
+                                </div>
+                                {r.letterReferenceNo && (
+                                  <div className="text-[11px] font-mono text-slate-500 mt-0.5 truncate">
+                                    Ref: {r.letterReferenceNo}
+                                  </div>
+                                )}
+                              </>
+                            );
+                          case 'dueDate':
+                            return wrapTd(
+                              'px-3 py-2 whitespace-nowrap',
+                              <>
+                                <div className="font-mono text-slate-800">
+                                  {formatDateDDMMYYYY(r.dueDate)}
+                                </div>
+                                {isOverdue && (
+                                  <span className="inline-block mt-0.5 px-1.5 py-0.2 rounded text-[10px] font-semibold bg-rose-100 text-rose-700">
+                                    Overdue
+                                  </span>
+                                )}
+                                {!isOverdue && isDueSoon && (
+                                  <span className="inline-block mt-0.5 px-1.5 py-0.2 rounded text-[10px] font-semibold bg-amber-100 text-amber-800">
+                                    Due &le; 7d
+                                  </span>
+                                )}
+                              </>
+                            );
+                          case 'pic':
+                            return wrapTd(
+                              'px-3 py-2 text-slate-700 whitespace-nowrap',
+                              r.pic || '—'
+                            );
+                          case 'actionStatus':
+                            return wrapTd(
+                              'px-3 py-2 whitespace-nowrap',
+                              <StatusPill
+                                group="CORRESPONDENCE_STATUS"
+                                value={r.actionStatus}
+                                customColor={getStatusColor(r.actionStatus)}
+                              />
+                            );
+                          case 'actionDate':
+                            return wrapTd(
+                              'px-3 py-2 font-mono text-slate-700 whitespace-nowrap',
+                              formatDateDDMMYYYY(r.actionDate)
+                            );
+                          case 'jobId':
+                            return wrapTd(
+                              'px-3 py-2 font-mono text-[11px] text-slate-700 whitespace-nowrap',
+                              r.jobId || '—'
+                            );
+                          case 'remarks':
+                            return wrapTd(
+                              'px-3 py-2 whitespace-nowrap',
+                              <RemarksPreviewCell
+                                text={r.remarks}
+                                recordTitle={r.clientName}
+                                recordId={r.correspondenceId || r.clientId}
+                                fieldLabel="Correspondence Remarks"
+                              />
+                            );
+                          default:
+                            return wrapTd('px-3 py-2 text-slate-600 whitespace-nowrap', '—');
+                        }
+                      })}
                       <td className="px-3 py-2 text-right whitespace-nowrap no-print">
                         {confirmDeleteId === r.id ? (
                           <div className="inline-flex items-center gap-1">
@@ -1139,27 +1195,29 @@ export const CorrespondenceView: React.FC = () => {
                             </button>
                           </div>
                         ) : (
-                          <div className="inline-flex items-center gap-2">
+                          <div className="inline-flex items-center gap-1.5 whitespace-nowrap">
                             <button
                               type="button"
                               onClick={() => {
                                 setEditingRecord(r);
                                 setModalOpen(true);
                               }}
-                              className="inline-flex items-center gap-1 text-[11px] font-medium text-teal-700 hover:underline"
+                              className="text-xs font-medium text-teal-700 hover:underline"
                             >
-                              <Edit3 className="w-3 h-3" />
                               {isReadOnly ? 'View' : 'Edit'}
                             </button>
                             {isManagerOrAdmin && (
-                              <button
-                                type="button"
-                                onClick={() => setConfirmDeleteId(r.id)}
-                                className="p-1 rounded text-slate-400 hover:text-rose-700 hover:bg-rose-50"
-                                title="Delete correspondence"
-                              >
-                                <Trash2 className="w-3.5 h-3.5" />
-                              </button>
+                              <>
+                                <span className="text-slate-300">·</span>
+                                <button
+                                  type="button"
+                                  onClick={() => setConfirmDeleteId(r.id)}
+                                  className="text-xs font-medium text-rose-600 hover:text-rose-800 hover:underline"
+                                  title="Delete correspondence"
+                                >
+                                  Delete
+                                </button>
+                              </>
                             )}
                           </div>
                         )}
@@ -1168,9 +1226,8 @@ export const CorrespondenceView: React.FC = () => {
                   );
                 })
               )}
-            </tbody>
-          </table>
-        </div>
+          </tbody>
+        </table>
       </div>
 
       <CorrespondenceModal

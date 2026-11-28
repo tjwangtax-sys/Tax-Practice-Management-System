@@ -2,14 +2,13 @@ import React, { useState, useRef, useEffect } from 'react';
 import {
   Search,
   RotateCcw,
-  Columns3,
   Download,
   FileSpreadsheet,
   Printer,
   FileText,
-  Check,
 } from 'lucide-react';
 import { ColumnDef } from '../types/tpms';
+import { ColumnManagerPopover } from './ColumnManagerPopover';
 
 interface RegisterToolbarProps {
   searchValue: string;
@@ -22,6 +21,10 @@ interface RegisterToolbarProps {
   visibleColumns: Record<string, boolean>;
   onToggleColumn: (key: string) => void;
   onResetColumns: () => void;
+  pinnedColumns?: string[];
+  onTogglePin?: (key: string) => void;
+  onMoveColumn?: (key: string, direction: 'up' | 'down') => void;
+  onReorderColumn?: (fromKey: string, toKey: string) => void;
   onExportExcel: () => void;
   onPrint: () => void;
   onSavePdf: () => void;
@@ -42,6 +45,10 @@ export const RegisterToolbar: React.FC<RegisterToolbarProps> = ({
   visibleColumns,
   onToggleColumn,
   onResetColumns,
+  pinnedColumns,
+  onTogglePin,
+  onMoveColumn,
+  onReorderColumn,
   onExportExcel,
   onPrint,
   onSavePdf,
@@ -50,16 +57,11 @@ export const RegisterToolbar: React.FC<RegisterToolbarProps> = ({
   totalCount,
   summaryText,
 }) => {
-  const [colMenuOpen, setColMenuOpen] = useState(false);
   const [exportMenuOpen, setExportMenuOpen] = useState(false);
-  const colRef = useRef<HTMLDivElement>(null);
   const expRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     const onDocClick = (e: MouseEvent) => {
-      if (colRef.current && !colRef.current.contains(e.target as Node)) {
-        setColMenuOpen(false);
-      }
       if (expRef.current && !expRef.current.contains(e.target as Node)) {
         setExportMenuOpen(false);
       }
@@ -67,8 +69,6 @@ export const RegisterToolbar: React.FC<RegisterToolbarProps> = ({
     document.addEventListener('mousedown', onDocClick);
     return () => document.removeEventListener('mousedown', onDocClick);
   }, []);
-
-  const visibleCount = columns.filter((c) => visibleColumns[c.key]).length;
 
   return (
     <div className="bg-white border border-slate-200 rounded-lg p-3 space-y-2.5 no-print">
@@ -100,67 +100,26 @@ export const RegisterToolbar: React.FC<RegisterToolbarProps> = ({
             Reset Filters
           </button>
 
-          {/* Column Visibility Toggle */}
-          <div className="relative" ref={colRef}>
-            <button
-              type="button"
-              onClick={() => {
-                setColMenuOpen((o) => !o);
-                setExportMenuOpen(false);
-              }}
-              className="inline-flex items-center gap-1.5 px-2.5 py-1.5 text-xs font-medium text-slate-700 bg-white border border-slate-200 rounded-md hover:bg-slate-50 transition-colors whitespace-nowrap shrink-0"
-            >
-              <Columns3 className="w-3.5 h-3.5 text-slate-500" />
-              Columns ({visibleCount}/{columns.length})
-            </button>
-            {colMenuOpen && (
-              <div className="absolute right-0 mt-1.5 w-64 bg-white border border-slate-200 rounded-lg shadow-lg z-40 py-2">
-                <div className="px-3 pb-2 mb-1 border-b border-slate-100 flex items-center justify-between">
-                  <span className="text-xs font-semibold text-slate-800">Visible Columns</span>
-                  <button
-                    type="button"
-                    onClick={onResetColumns}
-                    className="text-[11px] font-medium text-teal-700 hover:text-teal-800"
-                  >
-                    Reset Default
-                  </button>
-                </div>
-                <div className="max-h-72 overflow-y-auto px-1.5 space-y-0.5">
-                  {columns.map((col) => {
-                    const checked = Boolean(visibleColumns[col.key]);
-                    return (
-                      <button
-                        key={col.key}
-                        type="button"
-                        onClick={() => onToggleColumn(col.key)}
-                        className="w-full flex items-center justify-between px-2 py-1.5 text-xs text-slate-700 hover:bg-slate-50 rounded transition-colors text-left"
-                      >
-                        <span className="truncate pr-2">{col.label}</span>
-                        <span
-                          className={`w-4 h-4 rounded border flex items-center justify-center shrink-0 ${
-                            checked
-                              ? 'bg-teal-700 border-teal-700 text-white'
-                              : 'border-slate-300 bg-white'
-                          }`}
-                        >
-                          {checked && <Check className="w-3 h-3" />}
-                        </span>
-                      </button>
-                    );
-                  })}
-                </div>
-              </div>
-            )}
-          </div>
+          {/* Column Visibility, Pinning & Reorder Popover */}
+          <ColumnManagerPopover
+            columns={columns}
+            visibleColumns={visibleColumns}
+            onToggleColumn={onToggleColumn}
+            onResetColumns={onResetColumns}
+            pinnedColumns={pinnedColumns}
+            onTogglePin={onTogglePin}
+            onMoveColumn={onMoveColumn}
+            onReorderColumn={onReorderColumn}
+            onOpenChange={(isOpen) => {
+              if (isOpen) setExportMenuOpen(false);
+            }}
+          />
 
           {/* Export Menu: Excel, Print, Save as PDF */}
           <div className="relative" ref={expRef}>
             <button
               type="button"
-              onClick={() => {
-                setExportMenuOpen((o) => !o);
-                setColMenuOpen(false);
-              }}
+              onClick={() => setExportMenuOpen((o) => !o)}
               className="inline-flex items-center gap-1.5 px-2.5 py-1.5 text-xs font-medium text-slate-700 bg-white border border-slate-200 rounded-md hover:bg-slate-50 transition-colors whitespace-nowrap shrink-0"
             >
               <Download className="w-3.5 h-3.5 text-slate-500" />

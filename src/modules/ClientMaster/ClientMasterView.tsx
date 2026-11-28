@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useState } from 'react';
-import { Plus, Pencil, Eye, UserX, UserCheck, Trash2, Building2 } from 'lucide-react';
+import { Plus, Building2 } from 'lucide-react';
 import {
   CLIENT_STATUS_OPTIONS,
   ClientCategory,
@@ -10,11 +10,12 @@ import {
 } from '../../types/tpms';
 import { useAuth } from '../../context/AuthContext';
 import { useData } from '../../context/DataContext';
-import { useColumnVisibility } from '../../hooks/useColumnVisibility';
+import { useColumnVisibility, usePinnedColumnOffsets } from '../../hooks/useColumnVisibility';
 import { useExcelTableFilters } from '../../hooks/useExcelTableFilters';
 import { ExcelColumnFilter } from '../../components/ExcelColumnFilter';
 import { RegisterToolbar } from '../../components/RegisterToolbar';
 import { StatusPill } from '../../components/StatusPill';
+import { RemarksPreviewCell } from '../../components/RemarksPreviewCell';
 import { exportToExcel, printRegisterHtml } from '../../lib/exportUtils';
 import { ClientModal } from './ClientModal';
 
@@ -24,6 +25,7 @@ const CLIENT_COLUMNS: ColumnDef[] = [
   { key: 'category', label: 'Category', defaultVisible: true, optional: true },
   { key: 'groupId', label: 'Group ID', defaultVisible: true, optional: true },
   { key: 'fye', label: 'FYE', defaultVisible: true },
+  { key: 'firstYA', label: '1st YA', defaultVisible: true },
   { key: 'taxPic', label: 'TAX PIC', defaultVisible: true },
   { key: 'clientStatus', label: 'Client Status', defaultVisible: true },
   { key: 'taxAgent', label: 'Tax Agent', defaultVisible: false, optional: true },
@@ -44,6 +46,8 @@ const CLIENT_COLUMNS: ColumnDef[] = [
     optional: true,
   },
   { key: 'companySecretary', label: 'Company Secretary', defaultVisible: false, optional: true },
+  { key: 'principalActivity', label: 'Principal Activity', defaultVisible: false, optional: true },
+  { key: 'msicCode', label: 'MSIC Code', defaultVisible: false, optional: true },
   { key: 'specialRemarks', label: 'Special Remarks', defaultVisible: false, optional: true },
 ];
 
@@ -53,6 +57,7 @@ const CLIENT_COL_WIDTHS: Record<string, string> = {
   category: 'min-w-[105px]',
   groupId: 'min-w-[115px]',
   fye: 'min-w-[75px]',
+  firstYA: 'min-w-[85px]',
   taxPic: 'min-w-[130px]',
   clientStatus: 'min-w-[130px]',
   taxAgent: 'min-w-[160px]',
@@ -63,8 +68,44 @@ const CLIENT_COL_WIDTHS: Record<string, string> = {
   dateOfIncorporation: 'min-w-[145px]',
   dateOfCommencementBusiness: 'min-w-[160px]',
   companySecretary: 'min-w-[175px]',
-  specialRemarks: 'min-w-[220px]',
+  principalActivity: 'min-w-[240px]',
+  msicCode: 'min-w-[145px]',
+  specialRemarks: 'min-w-[230px]',
 };
+
+const CLIENT_COL_FALLBACK_WIDTHS: Record<string, number> = {
+  clientId: 110,
+  clientName: 230,
+  category: 105,
+  groupId: 115,
+  fye: 75,
+  firstYA: 85,
+  taxPic: 130,
+  clientStatus: 130,
+  taxAgent: 160,
+  companyNo: 165,
+  tin: 145,
+  eNumber: 135,
+  myTaxAppointment: 160,
+  dateOfIncorporation: 145,
+  dateOfCommencementBusiness: 160,
+  companySecretary: 175,
+  principalActivity: 240,
+  msicCode: 145,
+  specialRemarks: 230,
+};
+
+function getClientActivities(c: ClientRecord): string[] {
+  return [c.principalActivity1 || c.principalActivity || '', c.principalActivity2 || '', c.principalActivity3 || '']
+    .map((s) => s.trim())
+    .filter(Boolean);
+}
+
+function getClientMsicCodes(c: ClientRecord): string[] {
+  return [c.msicCode1 || '', c.msicCode2 || '', c.msicCode3 || '']
+    .map((s) => s.trim())
+    .filter(Boolean);
+}
 
 type ClientTab = 'Corporate' | 'Individual' | 'All';
 
@@ -106,9 +147,21 @@ export const ClientMasterView: React.FC<ClientMasterViewProps> = ({ initialFilte
   // Delete confirmation dialog state
   const [deletingClient, setDeletingClient] = useState<ClientRecord | null>(null);
 
-  const { visibleColumns, toggleColumn, resetColumns } = useColumnVisibility(
-    'client_master',
-    CLIENT_COLUMNS
+  const {
+    visibleColumns,
+    pinnedColumns,
+    orderedColumns,
+    activeColumns,
+    pinnedActiveKeys,
+    toggleColumn,
+    togglePin,
+    moveColumn,
+    reorderColumn,
+    resetColumns,
+  } = useColumnVisibility('client_master', CLIENT_COLUMNS, ['clientId', 'clientName']);
+  const { headerRowRef, getHeaderStickyProps, getCellStickyProps } = usePinnedColumnOffsets(
+    pinnedActiveKeys,
+    CLIENT_COL_FALLBACK_WIDTHS
   );
 
   const groupIds = useMemo(() => {
@@ -145,7 +198,16 @@ export const ClientMasterView: React.FC<ClientMasterViewProps> = ({ initialFilte
       if (statusFilter && c.clientStatus.toLowerCase() !== statusFilter.toLowerCase()) return false;
 
       if (q) {
-        const haystack = [c.clientId, c.clientName, c.companyNo, c.tin, c.eNumber]
+        const haystack = [
+          c.clientId,
+          c.clientName,
+          c.companyNo,
+          c.tin,
+          c.eNumber,
+          c.firstYA || c.firstYa,
+          ...getClientActivities(c),
+          ...getClientMsicCodes(c),
+        ]
           .join(' ')
           .toLowerCase();
         if (!haystack.includes(q)) return false;
@@ -161,6 +223,7 @@ export const ClientMasterView: React.FC<ClientMasterViewProps> = ({ initialFilte
       category: (c: ClientRecord) => c.category,
       groupId: (c: ClientRecord) => c.groupId,
       fye: (c: ClientRecord) => c.fye,
+      firstYA: (c: ClientRecord) => c.firstYA || c.firstYa || '',
       taxPic: (c: ClientRecord) => c.taxPic,
       clientStatus: (c: ClientRecord) => c.clientStatus,
       taxAgent: (c: ClientRecord) => c.taxAgent,
@@ -171,6 +234,8 @@ export const ClientMasterView: React.FC<ClientMasterViewProps> = ({ initialFilte
       dateOfIncorporation: (c: ClientRecord) => c.dateOfIncorporation,
       dateOfCommencementBusiness: (c: ClientRecord) => c.dateOfCommencementBusiness,
       companySecretary: (c: ClientRecord) => c.companySecretary,
+      principalActivity: (c: ClientRecord) => getClientActivities(c).join(' | '),
+      msicCode: (c: ClientRecord) => getClientMsicCodes(c).join(', '),
       specialRemarks: (c: ClientRecord) => c.specialRemarks,
     }),
     []
@@ -197,7 +262,7 @@ export const ClientMasterView: React.FC<ClientMasterViewProps> = ({ initialFilte
     excel.resetColumnFilters();
   };
 
-  const activeExportCols = CLIENT_COLUMNS.filter((c) => visibleColumns[c.key]);
+  const activeExportCols = activeColumns;
 
   const buildExportRows = () =>
     displayedClients.map((c) => ({
@@ -206,6 +271,7 @@ export const ClientMasterView: React.FC<ClientMasterViewProps> = ({ initialFilte
       category: c.category,
       groupId: c.groupId,
       fye: c.fye,
+      firstYA: c.firstYA || c.firstYa || '',
       taxPic: c.taxPic,
       clientStatus: c.clientStatus,
       taxAgent: c.taxAgent,
@@ -216,6 +282,8 @@ export const ClientMasterView: React.FC<ClientMasterViewProps> = ({ initialFilte
       dateOfIncorporation: c.dateOfIncorporation,
       dateOfCommencementBusiness: c.dateOfCommencementBusiness,
       companySecretary: c.companySecretary,
+      principalActivity: getClientActivities(c).join(' | '),
+      msicCode: getClientMsicCodes(c).join(', '),
       specialRemarks: c.specialRemarks,
     }));
 
@@ -299,10 +367,14 @@ export const ClientMasterView: React.FC<ClientMasterViewProps> = ({ initialFilte
         searchPlaceholder="Search Client ID, Name, Company No., TIN, E Number..."
         hasActiveFilters={hasActiveFilters}
         onResetFilters={handleResetFilters}
-        columns={CLIENT_COLUMNS}
+        columns={orderedColumns}
         visibleColumns={visibleColumns}
         onToggleColumn={toggleColumn}
         onResetColumns={resetColumns}
+        pinnedColumns={pinnedColumns}
+        onTogglePin={togglePin}
+        onMoveColumn={moveColumn}
+        onReorderColumn={reorderColumn}
         recordCount={displayedClients.length}
         totalCount={clients.length}
         onExportExcel={() =>
@@ -402,52 +474,41 @@ export const ClientMasterView: React.FC<ClientMasterViewProps> = ({ initialFilte
       />
 
       {/* High-Density Sticky Header Table */}
-      <div className="bg-white border border-slate-200 rounded-lg overflow-hidden">
-        <div className="overflow-x-auto overflow-y-auto max-h-[calc(100vh-290px)]">
-          <table className="w-full text-xs border-collapse">
-            <thead className="sticky top-0 z-20 bg-slate-100 border-b border-slate-200 text-slate-700">
-              <tr>
-                {activeExportCols.map((col) => {
-                  const isStickyId = col.key === 'clientId';
-                  const isStickyName = col.key === 'clientName';
-                  const stickyThCls = isStickyId
-                    ? `sticky left-0 z-30 bg-slate-100 ${
-                        !visibleColumns.clientName
-                          ? 'shadow-[inset_-1px_0_0_#e2e8f0,2px_0_4px_-2px_rgba(15,23,42,0.12)]'
-                          : 'shadow-[inset_-1px_0_0_#e2e8f0]'
-                      }`
-                    : isStickyName
-                    ? `sticky ${
-                        visibleColumns.clientId ? 'left-[110px]' : 'left-0'
-                      } z-30 bg-slate-100 shadow-[inset_-1px_0_0_#e2e8f0,2px_0_4px_-2px_rgba(15,23,42,0.12)]`
-                    : '';
-                  return (
-                    <th
-                      key={col.key}
-                      className={`px-3 py-2 text-left font-semibold whitespace-nowrap border-b border-slate-200 ${
-                        CLIENT_COL_WIDTHS[col.key] || 'min-w-[120px]'
-                      } ${stickyThCls}`}
-                    >
-                      <ExcelColumnFilter
-                        columnKey={col.key}
-                        title={col.label}
-                        values={excel.getColumnValues(col.key)}
-                        selectedValues={excel.columnFilters[col.key]}
-                        onChangeSelected={(next) => excel.setColumnFilter(col.key, next)}
-                        sortDirection={
-                          excel.sortState?.key === col.key ? excel.sortState.direction : null
-                        }
-                        onSort={(dir) => excel.setColumnSort(col.key, dir)}
-                      />
-                    </th>
-                  );
-                })}
-                <th className="px-3 py-2 text-right font-semibold whitespace-nowrap border-b border-slate-200 min-w-[115px] no-print">
-                  Actions
-                </th>
-              </tr>
-            </thead>
-            <tbody className="divide-y divide-slate-100">
+      <div className="max-h-[calc(100vh-64px)] overflow-auto relative bg-white border border-slate-200 rounded-lg">
+        <table className="w-full text-xs border-collapse">
+          <thead className="sticky top-0 z-20 bg-slate-50 shadow-sm border-b border-slate-200 text-slate-700">
+            <tr ref={headerRowRef}>
+              {activeExportCols.map((col) => {
+                const stickyTh = getHeaderStickyProps(col.key);
+                return (
+                  <th
+                    key={col.key}
+                    data-pinned-col={stickyTh['data-pinned-col']}
+                    style={stickyTh.style}
+                    className={`px-3 py-2 text-left text-xs font-semibold whitespace-nowrap border-b border-slate-200 ${
+                      CLIENT_COL_WIDTHS[col.key] || 'min-w-[120px]'
+                    } ${stickyTh.className}`}
+                  >
+                    <ExcelColumnFilter
+                      columnKey={col.key}
+                      title={col.label}
+                      values={excel.getColumnValues(col.key)}
+                      selectedValues={excel.columnFilters[col.key]}
+                      onChangeSelected={(next) => excel.setColumnFilter(col.key, next)}
+                      sortDirection={
+                        excel.sortState?.key === col.key ? excel.sortState.direction : null
+                      }
+                      onSort={(dir) => excel.setColumnSort(col.key, dir)}
+                    />
+                  </th>
+                );
+              })}
+              <th className="sticky top-0 z-20 bg-slate-50 px-3 py-2 text-right text-xs font-semibold whitespace-nowrap border-b border-slate-200 min-w-[155px] no-print">
+                Actions
+              </th>
+            </tr>
+          </thead>
+          <tbody className="divide-y divide-slate-100">
               {loading ? (
                 Array.from({ length: 6 }).map((_, i) => (
                   <tr key={i}>
@@ -485,108 +546,159 @@ export const ClientMasterView: React.FC<ClientMasterViewProps> = ({ initialFilte
                   const isResigned = c.clientStatus.toLowerCase() === 'resigned';
                   return (
                     <tr key={c.id} className="group hover:bg-slate-50 transition-colors">
-                      {visibleColumns.clientId && (
-                        <td
-                          className={`sticky left-0 z-10 bg-white group-hover:bg-slate-50 w-[110px] min-w-[110px] px-3 py-2 font-mono font-medium text-slate-900 whitespace-nowrap ${
-                            !visibleColumns.clientName
-                              ? 'shadow-[inset_-1px_0_0_#e2e8f0,2px_0_4px_-2px_rgba(15,23,42,0.12)]'
-                              : 'shadow-[inset_-1px_0_0_#e2e8f0]'
-                          }`}
-                        >
-                          {c.clientId}
-                        </td>
-                      )}
-                      {visibleColumns.clientName && (
-                        <td
-                          className={`sticky ${
-                            visibleColumns.clientId ? 'left-[110px]' : 'left-0'
-                          } z-10 bg-white group-hover:bg-slate-50 min-w-[230px] px-3 py-2 font-medium text-slate-900 shadow-[inset_-1px_0_0_#e2e8f0,2px_0_4px_-2px_rgba(15,23,42,0.12)]`}
-                        >
-                          <button
-                            type="button"
-                            onClick={() => {
-                              setEditingClient(c);
-                              setModalOpen(true);
-                            }}
-                            className="text-left hover:text-teal-700 hover:underline"
+                      {activeExportCols.map((col) => {
+                        const key = col.key;
+                        const stickyTd = getCellStickyProps(key);
+                        const colWidth = CLIENT_COL_WIDTHS[key] || 'min-w-[120px]';
+                        const wrapTd = (
+                          cls: string,
+                          content: React.ReactNode,
+                          title?: string
+                        ) => (
+                          <td
+                            key={key}
+                            style={stickyTd.style}
+                            title={title}
+                            className={`${cls} ${colWidth} ${stickyTd.className}`}
                           >
-                            {c.clientName}
-                          </button>
-                        </td>
-                      )}
-                      {visibleColumns.category && (
-                        <td className="px-3 py-2 text-slate-600 whitespace-nowrap">{c.category}</td>
-                      )}
-                      {visibleColumns.groupId && (
-                        <td className="px-3 py-2 font-mono text-slate-600 whitespace-nowrap">
-                          {c.groupId || '—'}
-                        </td>
-                      )}
-                      {visibleColumns.fye && (
-                        <td className="px-3 py-2 font-mono text-slate-700 whitespace-nowrap">
-                          {c.fye || '—'}
-                        </td>
-                      )}
-                      {visibleColumns.taxPic && (
-                        <td className="px-3 py-2 text-slate-700 whitespace-nowrap">
-                          {c.taxPic || '—'}
-                        </td>
-                      )}
-                      {visibleColumns.clientStatus && (
-                        <td className="px-3 py-2 whitespace-nowrap">
-                          <StatusPill group="CLIENT_STATUS" value={c.clientStatus} />
-                        </td>
-                      )}
-                      {visibleColumns.taxAgent && (
-                        <td className="px-3 py-2 text-slate-600 whitespace-nowrap">
-                          {c.taxAgent || '—'}
-                        </td>
-                      )}
-                      {visibleColumns.companyNo && (
-                        <td className="px-3 py-2 font-mono text-slate-600 whitespace-nowrap">
-                          {c.companyNo || '—'}
-                        </td>
-                      )}
-                      {visibleColumns.tin && (
-                        <td className="px-3 py-2 font-mono text-slate-700 whitespace-nowrap">
-                          {c.tin || '—'}
-                        </td>
-                      )}
-                      {visibleColumns.eNumber && (
-                        <td className="px-3 py-2 font-mono text-slate-600 whitespace-nowrap">
-                          {c.eNumber || '—'}
-                        </td>
-                      )}
-                      {visibleColumns.myTaxAppointment && (
-                        <td className="px-3 py-2 whitespace-nowrap">
-                          <StatusPill group="MYTAX_APPOINTMENT" value={c.myTaxAppointment} />
-                        </td>
-                      )}
-                      {visibleColumns.dateOfIncorporation && (
-                        <td className="px-3 py-2 font-mono text-slate-600 whitespace-nowrap">
-                          {c.dateOfIncorporation || '—'}
-                        </td>
-                      )}
-                      {visibleColumns.dateOfCommencementBusiness && (
-                        <td className="px-3 py-2 font-mono text-slate-600 whitespace-nowrap">
-                          {c.dateOfCommencementBusiness || '—'}
-                        </td>
-                      )}
-                      {visibleColumns.companySecretary && (
-                        <td className="px-3 py-2 text-slate-600 whitespace-nowrap">
-                          {c.companySecretary || '—'}
-                        </td>
-                      )}
-                      {visibleColumns.specialRemarks && (
-                        <td
-                          className="px-3 py-2 text-slate-600 max-w-[240px] truncate"
-                          title={c.specialRemarks}
-                        >
-                          {c.specialRemarks || '—'}
-                        </td>
-                      )}
-                      <td className="px-3 py-2 text-right whitespace-nowrap no-print">
-                        <div className="inline-flex items-center gap-1">
+                            {content}
+                          </td>
+                        );
+
+                        switch (key) {
+                          case 'clientId':
+                            return wrapTd(
+                              'px-3 py-2 font-mono font-medium text-slate-900 whitespace-nowrap',
+                              c.clientId
+                            );
+                          case 'clientName':
+                            return wrapTd(
+                              'px-3 py-2 font-medium text-slate-900',
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  setEditingClient(c);
+                                  setModalOpen(true);
+                                }}
+                                className="text-left hover:text-teal-700 hover:underline"
+                              >
+                                {c.clientName}
+                              </button>
+                            );
+                          case 'category':
+                            return wrapTd(
+                              'px-3 py-2 text-slate-600 whitespace-nowrap',
+                              c.category
+                            );
+                          case 'groupId':
+                            return wrapTd(
+                              'px-3 py-2 font-mono text-slate-600 whitespace-nowrap',
+                              c.groupId || '—'
+                            );
+                          case 'fye':
+                            return wrapTd(
+                              'px-3 py-2 font-mono text-slate-700 whitespace-nowrap',
+                              c.fye || '—'
+                            );
+                          case 'firstYA':
+                            return wrapTd(
+                              'px-3 py-2 font-mono text-slate-700 whitespace-nowrap',
+                              c.firstYA || c.firstYa || '—'
+                            );
+                          case 'taxPic':
+                            return wrapTd(
+                              'px-3 py-2 text-slate-700 whitespace-nowrap',
+                              c.taxPic || '—'
+                            );
+                          case 'clientStatus':
+                            return wrapTd(
+                              'px-3 py-2 whitespace-nowrap',
+                              <StatusPill group="CLIENT_STATUS" value={c.clientStatus} />
+                            );
+                          case 'taxAgent':
+                            return wrapTd(
+                              'px-3 py-2 text-slate-600 whitespace-nowrap',
+                              c.taxAgent || '—'
+                            );
+                          case 'companyNo':
+                            return wrapTd(
+                              'px-3 py-2 font-mono text-slate-600 whitespace-nowrap',
+                              c.companyNo || '—'
+                            );
+                          case 'tin':
+                            return wrapTd(
+                              'px-3 py-2 font-mono text-slate-700 whitespace-nowrap',
+                              c.tin || '—'
+                            );
+                          case 'eNumber':
+                            return wrapTd(
+                              'px-3 py-2 font-mono text-slate-600 whitespace-nowrap',
+                              c.eNumber || '—'
+                            );
+                          case 'myTaxAppointment':
+                            return wrapTd(
+                              'px-3 py-2 whitespace-nowrap',
+                              <StatusPill group="MYTAX_APPOINTMENT" value={c.myTaxAppointment} />
+                            );
+                          case 'dateOfIncorporation':
+                            return wrapTd(
+                              'px-3 py-2 font-mono text-slate-600 whitespace-nowrap',
+                              c.dateOfIncorporation || '—'
+                            );
+                          case 'dateOfCommencementBusiness':
+                            return wrapTd(
+                              'px-3 py-2 font-mono text-slate-600 whitespace-nowrap',
+                              c.dateOfCommencementBusiness || '—'
+                            );
+                          case 'companySecretary':
+                            return wrapTd(
+                              'px-3 py-2 text-slate-600 whitespace-nowrap',
+                              c.companySecretary || '—'
+                            );
+                          case 'principalActivity': {
+                            const activities = getClientActivities(c);
+                            const primaryAct = activities[0] || '';
+                            const extraCount = Math.max(0, activities.length - 1);
+                            return wrapTd(
+                              'px-3 py-2 text-slate-700 whitespace-nowrap',
+                              primaryAct ? (
+                                <div className="inline-flex items-center gap-1.5 max-w-[230px]">
+                                  <span className="truncate">{primaryAct}</span>
+                                  {extraCount > 0 && (
+                                    <span className="shrink-0 inline-flex items-center px-1.5 py-0.5 rounded bg-teal-50 text-teal-700 border border-teal-200 text-[10px] font-semibold leading-none">
+                                      +{extraCount}
+                                    </span>
+                                  )}
+                                </div>
+                              ) : (
+                                '—'
+                              ),
+                              activities.length > 0 ? activities.join('\n') : undefined
+                            );
+                          }
+                          case 'msicCode': {
+                            const codes = getClientMsicCodes(c);
+                            return wrapTd(
+                              'px-3 py-2 font-mono text-slate-700 whitespace-nowrap',
+                              codes.length > 0 ? codes.join(', ') : '—'
+                            );
+                          }
+                          case 'specialRemarks':
+                            return wrapTd(
+                              'px-3 py-2 whitespace-nowrap',
+                              <RemarksPreviewCell
+                                text={c.specialRemarks}
+                                recordTitle={c.clientName}
+                                recordId={c.clientId}
+                                fieldLabel="Special Remarks"
+                              />
+                            );
+                          default:
+                            return wrapTd('px-3 py-2 text-slate-600 whitespace-nowrap', '—');
+                        }
+                      })}
+                      <td className="px-3 py-2 text-xs text-right whitespace-nowrap no-print">
+                        <div className="inline-flex items-center gap-1.5 whitespace-nowrap">
                           <button
                             type="button"
                             onClick={() => {
@@ -594,49 +706,54 @@ export const ClientMasterView: React.FC<ClientMasterViewProps> = ({ initialFilte
                               setModalOpen(true);
                             }}
                             title={isReadOnly ? 'View client details' : 'Edit client'}
-                            className="p-1.5 rounded text-slate-500 hover:text-teal-700 hover:bg-teal-50 transition-colors"
+                            className="font-medium text-teal-700 hover:text-teal-900 hover:underline"
                           >
-                            {isReadOnly ? (
-                              <Eye className="w-3.5 h-3.5" />
-                            ) : (
-                              <Pencil className="w-3.5 h-3.5" />
-                            )}
+                            {isReadOnly ? 'View' : 'Edit'}
                           </button>
 
                           {isManagerOrAdmin && !isResigned && (
-                            <button
-                              type="button"
-                              onClick={() => {
-                                setResignDate(new Date().toISOString().slice(0, 10));
-                                setInactivatingClient(c);
-                              }}
-                              title="Inactivate (Resigned)"
-                              className="p-1.5 rounded text-slate-500 hover:text-rose-700 hover:bg-rose-50 transition-colors"
-                            >
-                              <UserX className="w-3.5 h-3.5" />
-                            </button>
+                            <>
+                              <span className="text-slate-300">·</span>
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  setResignDate(new Date().toISOString().slice(0, 10));
+                                  setInactivatingClient(c);
+                                }}
+                                title="Inactivate (Resigned)"
+                                className="font-medium text-amber-700 hover:text-amber-900 hover:underline"
+                              >
+                                Inactivate
+                              </button>
+                            </>
                           )}
 
                           {isManagerOrAdmin && isResigned && (
-                            <button
-                              type="button"
-                              onClick={() => void handleReactivate(c)}
-                              title="Reactivate client"
-                              className="p-1.5 rounded text-slate-500 hover:text-emerald-700 hover:bg-emerald-50 transition-colors"
-                            >
-                              <UserCheck className="w-3.5 h-3.5" />
-                            </button>
+                            <>
+                              <span className="text-slate-300">·</span>
+                              <button
+                                type="button"
+                                onClick={() => void handleReactivate(c)}
+                                title="Reactivate client"
+                                className="font-medium text-emerald-700 hover:text-emerald-900 hover:underline"
+                              >
+                                Reactivate
+                              </button>
+                            </>
                           )}
 
                           {isAdmin && (
-                            <button
-                              type="button"
-                              onClick={() => setDeletingClient(c)}
-                              title="Delete client permanently"
-                              className="p-1.5 rounded text-slate-400 hover:text-rose-700 hover:bg-rose-50 transition-colors"
-                            >
-                              <Trash2 className="w-3.5 h-3.5" />
-                            </button>
+                            <>
+                              <span className="text-slate-300">·</span>
+                              <button
+                                type="button"
+                                onClick={() => setDeletingClient(c)}
+                                title="Delete client permanently"
+                                className="font-medium text-rose-600 hover:text-rose-800 hover:underline"
+                              >
+                                Delete
+                              </button>
+                            </>
                           )}
                         </div>
                       </td>
@@ -644,9 +761,8 @@ export const ClientMasterView: React.FC<ClientMasterViewProps> = ({ initialFilte
                   );
                 })
               )}
-            </tbody>
-          </table>
-        </div>
+          </tbody>
+        </table>
       </div>
 
       {/* Add / Edit Client Modal */}

@@ -115,6 +115,8 @@ export const IMPORT_TARGETS: ImportTargetDefinition[] = [
       'Engagement Status', 'Business Name', 'Business Type', 'Business SSM No', 'Business E Number',
       'Business Start Date', 'Business Status', '1st YA', '1st YA Status', '2nd YA', '2nd YA Status',
       'Group ID', 'Company Secretary', 'Registered Address',
+      'Principal Activity 1', 'MSIC Code 1', 'Principal Activity 2', 'MSIC Code 2',
+      'Principal Activity 3', 'MSIC Code 3',
     ],
     previewColumns: [
       { key: 'clientId', label: 'Client ID' },
@@ -136,7 +138,7 @@ export const IMPORT_TARGETS: ImportTargetDefinition[] = [
       'Job ID', 'Module', 'Job Type', 'Client ID', 'Client Name', 'Group ID', 'FYE', 'YA',
       'Tax PIC', 'Reviewer', 'Status', 'Priority', 'Internal Deadline', 'Original Statutory Deadline',
       'SSM EOT 1', 'SSM EOT 2', 'SSM EOT 3', 'LHDN EOT 1', 'LHDN EOT 2', 'LHDN EOT 3',
-      'Final Applicable Deadline', 'Audit Book-In Date', 'Audit Report Received Date',
+      'Final Applicable Deadline', 'Audit Type', 'Audit Book-In Date', 'Audit Report Received Date',
       'Form C Status', 'Form C Due Date', 'Form C Submission Date', 'Form C Submission Reference',
       'MITRS Status', 'MITRS Due Date', 'MITRS Submission Date', 'MITRS Submission Reference',
       'Date Documents Requested', 'Date Documents Received', 'Draft Date', 'Review Date',
@@ -305,7 +307,7 @@ export const IMPORT_TARGETS: ImportTargetDefinition[] = [
     sampleFilenames: ['calendar_events.json', 'calendar_events.xlsx'],
     templateHeaders: [
       'Event ID', 'Event Type', 'Title', 'Start Date', 'End Date', 'Assigned To',
-      'Client ID', 'Client Name', 'Color', 'Notes',
+      'Client ID', 'Client Name', 'Color', 'Time-Off Note', 'Notes',
     ],
     previewColumns: [
       { key: 'eventType', label: 'Type' },
@@ -322,7 +324,7 @@ export const IMPORT_TARGETS: ImportTargetDefinition[] = [
     description: 'Imports Staff RBAC profiles safely — automatically strips Password Hash & Password Salt.',
     sampleFilenames: ['staff.json', 'staff.xlsx'],
     templateHeaders: [
-      'Staff ID', 'Staff Name', 'Email', 'Role', 'Active', 'Department', 'Designation', 'Phone',
+      'Staff ID', 'Staff Name', 'Email', 'Role', 'Active', 'Department', 'Designation', 'Phone', 'Join Date', 'Leave Date',
     ],
     previewColumns: [
       { key: 'staffId', label: 'Staff ID' },
@@ -759,7 +761,8 @@ export function parseAndValidateRow(
         businessENumber: pickStr(m, ['Business E Number', 'businessENumber'], 60),
         businessStartDate: normalizeImportDate(pickRaw(m, ['Business Start Date', 'businessStartDate'])),
         businessStatus: pickStr(m, ['Business Status', 'businessStatus'], 60),
-        firstYa: pickStr(m, ['1st YA', 'First YA', 'firstYa'], 20),
+        firstYa: pickStr(m, ['1st YA', 'First YA', 'firstYA', 'firstYa', '1st_ya', 'first_ya'], 20),
+        firstYA: pickStr(m, ['1st YA', 'First YA', 'firstYA', 'firstYa', '1st_ya', 'first_ya'], 20),
         firstYaStatus: pickStr(m, ['1st YA Status', 'First YA Status', 'firstYaStatus'], 60),
         secondYa: pickStr(m, ['2nd YA', 'Second YA', 'secondYa'], 20),
         secondYaStatus: pickStr(m, ['2nd YA Status', 'Second YA Status', 'secondYaStatus'], 60),
@@ -767,6 +770,33 @@ export function parseAndValidateRow(
         companySecretary: pickStr(m, ['Company Secretary', 'companySecretary', 'Co Sec'], 120),
         registeredAddress: pickStr(m, ['Registered Address', 'registeredAddress', 'Address'], 500),
       };
+
+      const resolvedPrincipalActivity1 = pickStr(
+        m,
+        ['Principal Activity 1', 'Activity 1', 'principalActivity1', 'Principal Activity', 'principalActivity'],
+        250
+      );
+      const optionalClientExtras: Array<[string, string]> = [
+        ['oldRegNo', pickStr(m, ['Old Reg No', 'Old Reg. No.', 'oldRegNo'], 60)],
+        ['principalActivity', resolvedPrincipalActivity1],
+        ['principalActivity1', resolvedPrincipalActivity1],
+        ['msicCode1', pickStr(m, ['MSIC Code 1', 'MSIC 1', 'msicCode1', 'MSIC Code', 'MSIC', 'msicCode'], 20)],
+        ['principalActivity2', pickStr(m, ['Principal Activity 2', 'Activity 2', 'principalActivity2'], 250)],
+        ['msicCode2', pickStr(m, ['MSIC Code 2', 'MSIC 2', 'msicCode2'], 20)],
+        ['principalActivity3', pickStr(m, ['Principal Activity 3', 'Activity 3', 'principalActivity3'], 250)],
+        ['msicCode3', pickStr(m, ['MSIC Code 3', 'MSIC 3', 'msicCode3'], 20)],
+        ['feeBillingNotes', pickStr(m, ['Fee / Billing Notes', 'Fee Notes', 'Billing Notes', 'feeBillingNotes'], 500)],
+        ['eInvoiceImplDate', normalizeImportDate(pickRaw(m, ['e-Invoice Implementation Date', 'eInvoiceImplDate']))],
+        ['maritalStatus', pickStr(m, ['Marital Status', 'maritalStatus'], 40)],
+        ['spouseName', pickStr(m, ['Spouse Name', 'spouseName'], 160)],
+        ['spouseTin', pickStr(m, ['Spouse TIN', 'spouseTin'], 60)],
+        ['employerDetails', pickStr(m, ['Employer Details', 'employerDetails'], 250)],
+        ['contactPerson', pickStr(m, ['Contact Person', 'contactPerson'], 120)],
+        ['correspondenceAddress', pickStr(m, ['Correspondence Address', 'correspondenceAddress'], 500)],
+      ];
+      for (const [k, v] of optionalClientExtras) {
+        if (v) payload[k] = v;
+      }
 
       const postcode = pickStr(m, ['Postcode', 'Postal Code', 'Zip', 'postcode'], 20);
       if (postcode) payload.postcode = postcode;
@@ -856,6 +886,7 @@ export function parseAndValidateRow(
         lhdnEot2: normalizeImportDate(pickRaw(m, ['LHDN EOT 2', 'lhdnEot2'])),
         lhdnEot3: normalizeImportDate(pickRaw(m, ['LHDN EOT 3', 'lhdnEot3'])),
         finalApplicableDeadline,
+        auditType: pickStr(m, ['Audit Type', 'auditType', 'Audit Status'], 40),
         auditBookInDate: normalizeImportDate(pickRaw(m, ['Audit Book-In Date', 'Audit Book In Date', 'auditBookInDate'])),
         auditReportReceivedDate: normalizeImportDate(
           pickRaw(m, ['Audit Report Received Date', 'auditReportReceivedDate'])
@@ -1428,6 +1459,7 @@ export function parseAndValidateRow(
         assignedTo,
         clientId: pickStr(m, ['Client ID', 'clientId'], 64),
         clientName: pickStr(m, ['Client Name', 'clientName'], 200),
+        timeOffNote: pickStr(m, ['Time-Off Note', 'Hours / Time Note', 'timeOffNote'], 200),
         notes: pickStr(m, ['Notes', 'Remarks', 'Description'], 1000),
       };
       if (color) payload.color = color;
@@ -1526,6 +1558,12 @@ export function parseAndValidateRow(
         department: pickStr(m, ['Department'], 80),
         designation: pickStr(m, ['Designation', 'Title'], 80),
         phone: pickStr(m, ['Phone', 'Contact No'], 40),
+        joinDate: normalizeImportDate(
+          pickRaw(m, ['Join Date', 'joinDate', 'Date Joined', 'Start Date', 'Employment Start'])
+        ),
+        leaveDate: normalizeImportDate(
+          pickRaw(m, ['Leave Date', 'leaveDate', 'Resign Date', 'Date Left', 'Date Resigned', 'Last Day'])
+        ),
       };
 
       const docId = `STF_${sanitizeDocId(staffId, 'STAFF')}`;

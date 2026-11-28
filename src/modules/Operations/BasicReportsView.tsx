@@ -730,17 +730,45 @@ export const BasicReportsView: React.FC = () => {
       />
 
       {/* High-Density Report Table */}
-      <div className="bg-white border border-slate-200 rounded-lg overflow-hidden">
-        <div className="overflow-x-auto max-h-[65vh]">
-          <table className="w-full text-left border-collapse">
-            <thead className="sticky top-0 z-10 bg-slate-50 border-b border-slate-200">
-              <tr className="text-[11px] font-semibold uppercase tracking-wider text-slate-600">
-                {visibleCols.map((col) => (
+      <div className="max-h-[calc(100vh-64px)] overflow-auto relative bg-white border border-slate-200 rounded-lg">
+        <table className="w-full text-xs text-left border-collapse">
+          <thead className="sticky top-0 z-20 bg-slate-50 shadow-sm border-b border-slate-200 text-slate-700">
+            <tr>
+              {visibleCols.map((col, colIdx) => {
+                const firstKey = visibleCols[0]?.key;
+                const isFirstId =
+                  colIdx === 0 &&
+                  (col.key === 'jobCode' ||
+                    col.key === 'clientId' ||
+                    col.key === 'correspondenceId' ||
+                    col.key === 'pic');
+                const isSecondClient =
+                  col.key === 'clientName' &&
+                  (firstKey === 'jobCode' ||
+                    firstKey === 'clientId' ||
+                    firstKey === 'correspondenceId');
+                const hasSecondClient = visibleCols.some((c) => c.key === 'clientName');
+
+                const stickyThCls = isFirstId
+                  ? `sticky top-0 left-0 z-30 bg-slate-50 ${
+                      col.key === 'pic' ? 'w-[165px] min-w-[165px]' : 'w-[125px] min-w-[125px]'
+                    } ${
+                      !hasSecondClient || col.key === 'pic'
+                        ? 'shadow-[inset_-1px_0_0_#e2e8f0,2px_0_4px_-2px_rgba(15,23,42,0.12)]'
+                        : 'shadow-[inset_-1px_0_0_#e2e8f0]'
+                    }`
+                  : isSecondClient
+                  ? 'sticky top-0 left-[125px] z-30 bg-slate-50 min-w-[205px] shadow-[inset_-1px_0_0_#e2e8f0,2px_0_4px_-2px_rgba(15,23,42,0.12)]'
+                  : colIdx === 0 && col.key === 'clientName'
+                  ? 'sticky top-0 left-0 z-30 bg-slate-50 min-w-[205px] shadow-[inset_-1px_0_0_#e2e8f0,2px_0_4px_-2px_rgba(15,23,42,0.12)]'
+                  : 'sticky top-0 z-20 bg-slate-50';
+
+                return (
                   <th
                     key={col.key}
-                    className={`py-2.5 px-3 whitespace-nowrap ${
-                      col.align === 'right' ? 'text-right' : ''
-                    }`}
+                    className={`py-2 px-3 text-xs font-semibold whitespace-nowrap border-b border-slate-200 ${
+                      col.align === 'right' ? 'text-right' : 'text-left'
+                    } ${stickyThCls}`}
                   >
                     <ExcelColumnFilter
                       columnKey={col.key}
@@ -755,93 +783,123 @@ export const BasicReportsView: React.FC = () => {
                       align={col.align === 'right' ? 'right' : 'left'}
                     />
                   </th>
-                ))}
+                );
+              })}
+            </tr>
+          </thead>
+          <tbody className="divide-y divide-slate-100 text-xs">
+            {excel.rows.length === 0 ? (
+              <tr>
+                <td
+                  colSpan={Math.max(visibleCols.length, 1)}
+                  className="py-12 text-center text-slate-400"
+                >
+                  No matching records for the selected report and filters.
+                </td>
               </tr>
-            </thead>
-            <tbody className="divide-y divide-slate-100 text-xs">
-              {excel.rows.length === 0 ? (
-                <tr>
-                  <td
-                    colSpan={Math.max(visibleCols.length, 1)}
-                    className="py-12 text-center text-slate-400"
-                  >
-                    No matching records for the selected report and filters.
-                  </td>
-                </tr>
-              ) : (
-                excel.rows.map((row) => (
-                  <tr key={String(row._id)} className="hover:bg-slate-50/70">
-                    {visibleCols.map((col) => {
-                      const val = row[col.key];
-                      const strVal = val === undefined || val === null ? '—' : String(val);
+            ) : (
+              excel.rows.map((row) => (
+                <tr key={String(row._id)} className="group hover:bg-slate-50 transition-colors">
+                  {visibleCols.map((col, colIdx) => {
+                    const val = row[col.key];
+                    const strVal = val === undefined || val === null ? '—' : String(val);
 
-                      if (col.key === 'auditFlag') {
-                        const isFlagged = strVal === 'Submission marked complete — date missing';
-                        return (
-                          <td key={col.key} className="py-2 px-3 whitespace-nowrap">
-                            {isFlagged ? (
-                              <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded border border-rose-200 bg-rose-50 text-rose-800 text-[11px] font-medium">
-                                <AlertTriangle className="w-3 h-3 shrink-0" />
-                                {strVal}
-                              </span>
-                            ) : (
-                              <span className="inline-flex items-center px-2 py-0.5 rounded bg-emerald-50 text-emerald-800 border border-emerald-200 text-[11px] font-medium">
-                                OK
-                              </span>
-                            )}
-                          </td>
-                        );
-                      }
+                    const firstKey = visibleCols[0]?.key;
+                    const isFirstId =
+                      colIdx === 0 &&
+                      (col.key === 'jobCode' ||
+                        col.key === 'clientId' ||
+                        col.key === 'correspondenceId' ||
+                        col.key === 'pic');
+                    const isSecondClient =
+                      col.key === 'clientName' &&
+                      (firstKey === 'jobCode' ||
+                        firstKey === 'clientId' ||
+                        firstKey === 'correspondenceId');
+                    const hasSecondClient = visibleCols.some((c) => c.key === 'clientName');
 
-                      if (col.key === 'daysOverdue') {
-                        return (
-                          <td
-                            key={col.key}
-                            className="py-2 px-3 text-right font-mono tabular-nums font-semibold text-rose-700 whitespace-nowrap"
-                          >
-                            {strVal}d
-                          </td>
-                        );
-                      }
+                    const stickyTdCls = isFirstId
+                      ? `sticky left-0 z-10 bg-white group-hover:bg-slate-50 ${
+                          col.key === 'pic' ? 'w-[165px] min-w-[165px]' : 'w-[125px] min-w-[125px]'
+                        } ${
+                          !hasSecondClient || col.key === 'pic'
+                            ? 'shadow-[inset_-1px_0_0_#e2e8f0,2px_0_4px_-2px_rgba(15,23,42,0.12)]'
+                            : 'shadow-[inset_-1px_0_0_#e2e8f0]'
+                        }`
+                      : isSecondClient
+                      ? 'sticky left-[125px] z-10 bg-white group-hover:bg-slate-50 min-w-[205px] shadow-[inset_-1px_0_0_#e2e8f0,2px_0_4px_-2px_rgba(15,23,42,0.12)]'
+                      : colIdx === 0 && col.key === 'clientName'
+                      ? 'sticky left-0 z-10 bg-white group-hover:bg-slate-50 min-w-[205px] shadow-[inset_-1px_0_0_#e2e8f0,2px_0_4px_-2px_rgba(15,23,42,0.12)]'
+                      : '';
 
-                      if (col.key === 'overdueFlag') {
-                        const isOverdue = strVal.includes('Overdue');
-                        return (
-                          <td key={col.key} className="py-2 px-3 whitespace-nowrap">
-                            <span
-                              className={`inline-flex items-center px-2 py-0.5 rounded border text-[11px] font-medium ${
-                                isOverdue
-                                  ? 'bg-rose-50 text-rose-700 border-rose-200'
-                                  : 'bg-emerald-50 text-emerald-700 border-emerald-200'
-                              }`}
-                            >
+                    if (col.key === 'auditFlag') {
+                      const isFlagged = strVal === 'Submission marked complete — date missing';
+                      return (
+                        <td key={col.key} className="py-2 px-3 whitespace-nowrap">
+                          {isFlagged ? (
+                            <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded border border-rose-200 bg-rose-50 text-rose-800 text-[11px] font-medium">
+                              <AlertTriangle className="w-3 h-3 shrink-0" />
                               {strVal}
                             </span>
-                          </td>
-                        );
-                      }
+                          ) : (
+                            <span className="inline-flex items-center px-2 py-0.5 rounded bg-emerald-50 text-emerald-800 border border-emerald-200 text-[11px] font-medium">
+                              OK
+                            </span>
+                          )}
+                        </td>
+                      );
+                    }
 
+                    if (col.key === 'daysOverdue') {
                       return (
                         <td
                           key={col.key}
-                          className={`py-2 px-3 whitespace-nowrap ${
-                            col.align === 'right'
-                              ? 'text-right font-mono tabular-nums text-slate-800'
-                              : col.key === 'clientName' || col.key === 'pic'
-                              ? 'font-medium text-slate-900'
-                              : 'text-slate-700'
-                          }`}
+                          className="py-2 px-3 text-right font-mono tabular-nums font-semibold text-rose-700 whitespace-nowrap"
                         >
-                          {strVal}
+                          {strVal}d
                         </td>
                       );
-                    })}
-                  </tr>
-                ))
-              )}
-            </tbody>
-          </table>
-        </div>
+                    }
+
+                    if (col.key === 'overdueFlag') {
+                      const isOverdue = strVal.includes('Overdue');
+                      return (
+                        <td key={col.key} className="py-2 px-3 whitespace-nowrap">
+                          <span
+                            className={`inline-flex items-center px-2 py-0.5 rounded border text-[11px] font-medium ${
+                              isOverdue
+                                ? 'bg-rose-50 text-rose-700 border-rose-200'
+                                : 'bg-emerald-50 text-emerald-700 border-emerald-200'
+                            }`}
+                          >
+                            {strVal}
+                          </span>
+                        </td>
+                      );
+                    }
+
+                    return (
+                      <td
+                        key={col.key}
+                        className={`py-2 px-3 whitespace-nowrap ${
+                          col.align === 'right'
+                            ? 'text-right font-mono tabular-nums text-slate-800'
+                            : col.key === 'clientName' || col.key === 'pic'
+                            ? 'font-medium text-slate-900'
+                            : isFirstId
+                            ? 'font-mono text-slate-700'
+                            : 'text-slate-700'
+                        } ${stickyTdCls}`}
+                      >
+                        {strVal}
+                      </td>
+                    );
+                  })}
+                </tr>
+              ))
+            )}
+          </tbody>
+        </table>
       </div>
     </div>
   );

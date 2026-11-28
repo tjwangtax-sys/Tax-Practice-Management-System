@@ -24,7 +24,9 @@ import { useAuth } from '../../context/AuthContext';
 import { useData } from '../../context/DataContext';
 import { RegisterToolbar } from '../../components/RegisterToolbar';
 import { StatusPill } from '../../components/StatusPill';
+import { RemarksPreviewCell } from '../../components/RemarksPreviewCell';
 import { ExcelColumnFilter } from '../../components/ExcelColumnFilter';
+import { useColumnVisibility, usePinnedColumnOffsets } from '../../hooks/useColumnVisibility';
 import { useExcelTableFilters } from '../../hooks/useExcelTableFilters';
 import { exportToExcel, printRegisterHtml } from '../../lib/exportUtils';
 import { formatDateDDMMYYYY } from '../../lib/deadlineUtils';
@@ -51,6 +53,7 @@ const CP204_COLUMNS: ColumnDef[] = [
   { key: 'instalmentsSummary', label: 'Instalments', defaultVisible: false },
   { key: 'reviewer', label: 'Reviewer', defaultVisible: false },
   { key: 'statutoryDueDate', label: 'Statutory Due Date', defaultVisible: false },
+  { key: 'remarks', label: 'Remarks', defaultVisible: true },
 ];
 
 const CP204_COL_WIDTHS: Record<string, string> = {
@@ -67,12 +70,25 @@ const CP204_COL_WIDTHS: Record<string, string> = {
   instalmentsSummary: 'min-w-[125px]',
   reviewer: 'min-w-[125px]',
   statutoryDueDate: 'min-w-[135px]',
+  remarks: 'min-w-[220px]',
 };
 
-const DEFAULT_VISIBLE = CP204_COLUMNS.reduce<Record<string, boolean>>((acc, col) => {
-  acc[col.key] = col.defaultVisible;
-  return acc;
-}, {});
+const CP204_COL_FALLBACK_WIDTHS: Record<string, number> = {
+  clientId: 110,
+  clientName: 230,
+  fye: 75,
+  ya: 80,
+  pic: 125,
+  initialEstimate: 155,
+  rev6: 155,
+  rev9: 155,
+  rev11: 155,
+  currentEstimatedTax: 160,
+  instalmentsSummary: 125,
+  reviewer: 125,
+  statutoryDueDate: 135,
+  remarks: 220,
+};
 
 function formatRevisionExport(rev?: Cp204Revision): string {
   if (!rev) return '—';
@@ -93,7 +109,23 @@ export const Cp204ModuleView: React.FC<Cp204ModuleViewProps> = ({ initialFilter 
   const [picFilter, setPicFilter] = useState('');
   const [submissionFilter, setSubmissionFilter] = useState<'' | Cp204SubmissionFilter>('');
   const [showSpecialRemarks, setShowSpecialRemarks] = useState(false);
-  const [visibleColumns, setVisibleColumns] = useState<Record<string, boolean>>(DEFAULT_VISIBLE);
+
+  const {
+    visibleColumns,
+    pinnedColumns,
+    orderedColumns,
+    activeColumns,
+    pinnedActiveKeys,
+    toggleColumn,
+    togglePin,
+    moveColumn,
+    reorderColumn,
+    resetColumns,
+  } = useColumnVisibility('cp204', CP204_COLUMNS, ['clientId', 'clientName']);
+  const { headerRowRef, getHeaderStickyProps, getCellStickyProps } = usePinnedColumnOffsets(
+    pinnedActiveKeys,
+    CP204_COL_FALLBACK_WIDTHS
+  );
 
   useEffect(() => {
     if (!initialFilter) return;
@@ -244,6 +276,7 @@ export const Cp204ModuleView: React.FC<Cp204ModuleViewProps> = ({ initialFilter 
       },
       reviewer: (rec: Cp204Record) => rec.reviewer || '',
       statutoryDueDate: (rec: Cp204Record) => formatDateDDMMYYYY(rec.statutoryCp204DueDate),
+      remarks: (rec: Cp204Record) => rec.remarks || '',
     }),
     []
   );
@@ -294,10 +327,6 @@ export const Cp204ModuleView: React.FC<Cp204ModuleViewProps> = ({ initialFilter 
     excelMissing.resetColumnFilters();
   };
 
-  const handleToggleColumn = (key: string) => {
-    setVisibleColumns((prev) => ({ ...prev, [key]: !prev[key] }));
-  };
-
   const buildExportData = () => {
     if (isMissingMode) {
       const cols = [
@@ -319,7 +348,7 @@ export const Cp204ModuleView: React.FC<Cp204ModuleViewProps> = ({ initialFilter 
       return { cols, rows, subtitle: `Corporate Clients Missing CP204 Record for YA ${targetMissingYa}` };
     }
 
-    const activeCols = CP204_COLUMNS.filter((c) => visibleColumns[c.key]).map((c) => ({
+    const activeCols = activeColumns.map((c) => ({
       key: c.key,
       label: c.label,
     }));
@@ -342,6 +371,7 @@ export const Cp204ModuleView: React.FC<Cp204ModuleViewProps> = ({ initialFilter 
         instalmentsSummary: `${instPaid}/${rec.instalments.length} settled`,
         reviewer: rec.reviewer || '—',
         statutoryDueDate: formatDateDDMMYYYY(rec.statutoryCp204DueDate),
+        remarks: rec.remarks || '',
       };
     });
     return {
@@ -514,10 +544,14 @@ export const Cp204ModuleView: React.FC<Cp204ModuleViewProps> = ({ initialFilter 
         searchPlaceholder="Search company, Client ID, CP204 ID, PIC, or remarks..."
         hasActiveFilters={hasActiveFilters}
         onResetFilters={handleResetFilters}
-        columns={CP204_COLUMNS}
+        columns={orderedColumns}
         visibleColumns={visibleColumns}
-        onToggleColumn={handleToggleColumn}
-        onResetColumns={() => setVisibleColumns(DEFAULT_VISIBLE)}
+        onToggleColumn={toggleColumn}
+        onResetColumns={resetColumns}
+        pinnedColumns={pinnedColumns}
+        onTogglePin={togglePin}
+        onMoveColumn={moveColumn}
+        onReorderColumn={reorderColumn}
         onExportExcel={handleExportExcel}
         onPrint={handlePrint}
         onSavePdf={handleSavePdf}
@@ -607,23 +641,23 @@ export const Cp204ModuleView: React.FC<Cp204ModuleViewProps> = ({ initialFilter 
               </button>
             </div>
 
-            <div className="overflow-x-auto overflow-y-auto max-h-[65vh]">
+            <div className="max-h-[calc(100vh-64px)] overflow-auto relative border-t border-slate-200">
               <table className="w-full text-xs border-collapse">
-                <thead className="bg-slate-100 sticky top-0 z-20 border-b border-slate-200 text-slate-700">
+                <thead className="sticky top-0 z-20 bg-slate-50 shadow-sm border-b border-slate-200 text-slate-700">
                   <tr>
                     {(
                       [
-                        { key: 'clientId', label: 'Client ID', width: 'w-[110px] min-w-[110px] sticky left-0 z-30 bg-slate-100 shadow-[inset_-1px_0_0_#e2e8f0]' },
-                        { key: 'clientName', label: 'Company Name', width: 'min-w-[230px] sticky left-[110px] z-30 bg-slate-100 shadow-[inset_-1px_0_0_#e2e8f0,2px_0_4px_-2px_rgba(15,23,42,0.12)]' },
-                        { key: 'fye', label: 'FYE', width: 'min-w-[75px]' },
-                        { key: 'ya', label: 'Missing YA', width: 'min-w-[95px]' },
-                        { key: 'pic', label: 'Default PIC', width: 'min-w-[130px]' },
-                        { key: 'status', label: 'Status', width: 'min-w-[165px]' },
+                        { key: 'clientId', label: 'Client ID', width: 'w-[110px] min-w-[110px] sticky top-0 left-0 z-30 bg-slate-50 shadow-[inset_-1px_0_0_#e2e8f0]' },
+                        { key: 'clientName', label: 'Company Name', width: 'min-w-[230px] sticky top-0 left-[110px] z-30 bg-slate-50 shadow-[inset_-1px_0_0_#e2e8f0,2px_0_4px_-2px_rgba(15,23,42,0.12)]' },
+                        { key: 'fye', label: 'FYE', width: 'min-w-[75px] sticky top-0 z-20 bg-slate-50' },
+                        { key: 'ya', label: 'Missing YA', width: 'min-w-[95px] sticky top-0 z-20 bg-slate-50' },
+                        { key: 'pic', label: 'Default PIC', width: 'min-w-[130px] sticky top-0 z-20 bg-slate-50' },
+                        { key: 'status', label: 'Status', width: 'min-w-[165px] sticky top-0 z-20 bg-slate-50' },
                       ] as const
                     ).map((col) => (
                       <th
                         key={col.key}
-                        className={`px-3 py-2.5 text-left font-semibold whitespace-nowrap ${col.width}`}
+                        className={`px-3 py-2 text-left text-xs font-semibold whitespace-nowrap border-b border-slate-200 ${col.width}`}
                       >
                         <ExcelColumnFilter
                           columnKey={col.key}
@@ -640,7 +674,7 @@ export const Cp204ModuleView: React.FC<Cp204ModuleViewProps> = ({ initialFilter 
                         />
                       </th>
                     ))}
-                    <th className="px-3 py-2.5 text-right font-semibold whitespace-nowrap min-w-[115px]">
+                    <th className="sticky top-0 z-20 bg-slate-50 px-3 py-2 text-right text-xs font-semibold whitespace-nowrap border-b border-slate-200 min-w-[115px]">
                       Action
                     </th>
                   </tr>
@@ -663,7 +697,14 @@ export const Cp204ModuleView: React.FC<Cp204ModuleViewProps> = ({ initialFilter 
                           <div className="font-medium text-slate-900">{client.clientName}</div>
                           {showSpecialRemarks && client.specialRemarks && (
                             <div className="mt-1 px-2 py-1 rounded bg-amber-50 border border-amber-200 text-[11px] text-amber-900">
-                              {client.specialRemarks}
+                              <RemarksPreviewCell
+                                text={client.specialRemarks}
+                                recordTitle={client.clientName}
+                                recordId={client.clientId}
+                                fieldLabel="Client Special Remarks"
+                                maxWidthClass="max-w-[175px]"
+                                textClassName="text-amber-900"
+                              />
                             </div>
                           )}
                         </td>
@@ -701,30 +742,20 @@ export const Cp204ModuleView: React.FC<Cp204ModuleViewProps> = ({ initialFilter 
             </div>
           </div>
         ) : (
-          <div className="overflow-x-auto overflow-y-auto max-h-[68vh]">
+          <div className="max-h-[calc(100vh-64px)] overflow-auto relative">
             <table className="w-full text-xs border-collapse">
-              <thead className="bg-slate-100 sticky top-0 z-20 border-b border-slate-200 text-slate-700">
-                <tr>
-                  {CP204_COLUMNS.filter((c) => visibleColumns[c.key]).map((col) => {
-                    const isStickyId = col.key === 'clientId';
-                    const isStickyName = col.key === 'clientName';
-                    const stickyThCls = isStickyId
-                      ? `sticky left-0 z-30 bg-slate-100 ${
-                          !visibleColumns.clientName
-                            ? 'shadow-[inset_-1px_0_0_#e2e8f0,2px_0_4px_-2px_rgba(15,23,42,0.12)]'
-                            : 'shadow-[inset_-1px_0_0_#e2e8f0]'
-                        }`
-                      : isStickyName
-                      ? `sticky ${
-                          visibleColumns.clientId ? 'left-[110px]' : 'left-0'
-                        } z-30 bg-slate-100 shadow-[inset_-1px_0_0_#e2e8f0,2px_0_4px_-2px_rgba(15,23,42,0.12)]`
-                      : '';
+              <thead className="sticky top-0 z-20 bg-slate-50 shadow-sm border-b border-slate-200 text-slate-700">
+                <tr ref={headerRowRef}>
+                  {activeColumns.map((col) => {
+                    const stickyTh = getHeaderStickyProps(col.key);
                     return (
                       <th
                         key={col.key}
-                        className={`px-3 py-2.5 font-semibold whitespace-nowrap ${
+                        data-pinned-col={stickyTh['data-pinned-col']}
+                        style={stickyTh.style}
+                        className={`px-3 py-2 text-xs font-semibold whitespace-nowrap border-b border-slate-200 ${
                           col.align === 'right' ? 'text-right' : 'text-left'
-                        } ${CP204_COL_WIDTHS[col.key] || 'min-w-[120px]'} ${stickyThCls}`}
+                        } ${CP204_COL_WIDTHS[col.key] || 'min-w-[120px]'} ${stickyTh.className}`}
                       >
                         <ExcelColumnFilter
                           columnKey={col.key}
@@ -741,7 +772,7 @@ export const Cp204ModuleView: React.FC<Cp204ModuleViewProps> = ({ initialFilter 
                       </th>
                     );
                   })}
-                  <th className="px-3 py-2.5 text-right font-semibold whitespace-nowrap min-w-[240px] no-print">
+                  <th className="sticky top-0 z-20 bg-slate-50 px-3 py-2 text-right text-xs font-semibold whitespace-nowrap border-b border-slate-200 min-w-[220px] no-print">
                     Actions
                   </th>
                 </tr>
@@ -749,7 +780,7 @@ export const Cp204ModuleView: React.FC<Cp204ModuleViewProps> = ({ initialFilter 
               <tbody className="divide-y divide-slate-100">
                 {displayedRecords.length === 0 ? (
                   <tr>
-                    <td colSpan={14} className="px-4 py-12 text-center text-slate-500">
+                    <td colSpan={activeColumns.length + 1} className="px-4 py-12 text-center text-slate-500">
                       {cp204Records.length === 0
                         ? 'No CP204 records yet. Click "+ Add CP204 Initial Estimate" or "Advanced Data Entry & Detailed Records" to bulk-create YA schedules.'
                         : 'No CP204 records match the current filters.'}
@@ -767,101 +798,128 @@ export const Cp204ModuleView: React.FC<Cp204ModuleViewProps> = ({ initialFilter 
 
                     return (
                       <tr key={rec.id} className="group hover:bg-slate-50 align-top">
-                        {visibleColumns.clientId && (
-                          <td
-                            className={`sticky left-0 z-10 bg-white group-hover:bg-slate-50 w-[110px] min-w-[110px] px-3 py-2 font-mono text-slate-700 whitespace-nowrap ${
-                              !visibleColumns.clientName
-                                ? 'shadow-[inset_-1px_0_0_#e2e8f0,2px_0_4px_-2px_rgba(15,23,42,0.12)]'
-                                : 'shadow-[inset_-1px_0_0_#e2e8f0]'
-                            }`}
-                          >
-                            {rec.clientId}
-                          </td>
-                        )}
-                        {visibleColumns.clientName && (
-                          <td
-                            className={`sticky ${
-                              visibleColumns.clientId ? 'left-[110px]' : 'left-0'
-                            } z-10 bg-white group-hover:bg-slate-50 min-w-[230px] px-3 py-2 shadow-[inset_-1px_0_0_#e2e8f0,2px_0_4px_-2px_rgba(15,23,42,0.12)]`}
-                          >
-                            <div className="font-semibold text-slate-900 leading-snug">
-                              {rec.clientName}
-                            </div>
-                            <div className="text-[11px] text-slate-400 font-mono">
-                              {rec.cp204Id}
-                            </div>
-                            {showSpecialRemarks && client?.specialRemarks && (
-                              <div className="mt-1 px-2 py-1 rounded bg-amber-50 border border-amber-200 text-[11px] text-amber-900 leading-snug">
-                                <span className="font-semibold">Special Remarks: </span>
-                                {client.specialRemarks}
-                              </div>
-                            )}
-                          </td>
-                        )}
-                        {visibleColumns.fye && (
-                          <td className="px-3 py-2 font-mono text-slate-700 whitespace-nowrap">
-                            {rec.fye ? Number(rec.fye) : '—'}
-                          </td>
-                        )}
-                        {visibleColumns.ya && (
-                          <td className="px-3 py-2 font-mono font-semibold text-slate-900 whitespace-nowrap">
-                            {rec.ya}
-                          </td>
-                        )}
-                        {visibleColumns.pic && (
-                          <td className="px-3 py-2 text-slate-700 whitespace-nowrap">
-                            {rec.pic || '—'}
-                          </td>
-                        )}
-                        {visibleColumns.initialEstimate && (
-                          <td className="px-3 py-2 text-right whitespace-nowrap">
-                            <div className="flex flex-col items-end gap-0.5">
-                              <span className="font-mono tabular-nums font-medium text-slate-900">
-                                {formatCurrencyRM(rec.originalEstimatedTax)}
-                              </span>
-                              <StatusPill group="CP204_STATUS" value={rec.status} />
-                            </div>
-                          </td>
-                        )}
-                        {visibleColumns.rev6 && (
-                          <td className="px-3 py-2 text-right whitespace-nowrap">
-                            {renderRevisionCell(rev6)}
-                          </td>
-                        )}
-                        {visibleColumns.rev9 && (
-                          <td className="px-3 py-2 text-right whitespace-nowrap">
-                            {renderRevisionCell(rev9)}
-                          </td>
-                        )}
-                        {visibleColumns.rev11 && (
-                          <td className="px-3 py-2 text-right whitespace-nowrap">
-                            {renderRevisionCell(rev11)}
-                          </td>
-                        )}
-                        {visibleColumns.currentEstimatedTax && (
-                          <td className="px-3 py-2 text-right whitespace-nowrap">
-                            <span className="font-mono tabular-nums font-bold text-teal-900">
-                              {formatCurrencyRM(rec.currentEstimatedTax)}
-                            </span>
-                          </td>
-                        )}
-                        {visibleColumns.instalmentsSummary && (
-                          <td className="px-3 py-2 whitespace-nowrap font-mono text-[11px] text-slate-600">
-                            {rec.instalments.length > 0
-                              ? `${settledInstCount}/${rec.instalments.length} settled`
-                              : 'Not scheduled'}
-                          </td>
-                        )}
-                        {visibleColumns.reviewer && (
-                          <td className="px-3 py-2 text-slate-700 whitespace-nowrap">
-                            {rec.reviewer || '—'}
-                          </td>
-                        )}
-                        {visibleColumns.statutoryDueDate && (
-                          <td className="px-3 py-2 font-mono text-slate-700 whitespace-nowrap">
-                            {formatDateDDMMYYYY(rec.statutoryCp204DueDate)}
-                          </td>
-                        )}
+                        {activeColumns.map((col) => {
+                          const key = col.key;
+                          const stickyTd = getCellStickyProps(key);
+                          const colWidth = CP204_COL_WIDTHS[key] || 'min-w-[120px]';
+                          const wrapTd = (cls: string, content: React.ReactNode) => (
+                            <td
+                              key={key}
+                              style={stickyTd.style}
+                              className={`${cls} ${colWidth} ${stickyTd.className}`}
+                            >
+                              {content}
+                            </td>
+                          );
+
+                          switch (key) {
+                            case 'clientId':
+                              return wrapTd(
+                                'px-3 py-2 font-mono text-slate-700 whitespace-nowrap',
+                                rec.clientId
+                              );
+                            case 'clientName':
+                              return wrapTd(
+                                'px-3 py-2',
+                                <>
+                                  <div className="font-semibold text-slate-900 leading-snug">
+                                    {rec.clientName}
+                                  </div>
+                                  <div className="text-[11px] text-slate-400 font-mono">
+                                    {rec.cp204Id}
+                                  </div>
+                                  {showSpecialRemarks && client?.specialRemarks && (
+                                    <div className="mt-1 px-2 py-1 rounded bg-amber-50 border border-amber-200 text-[11px] text-amber-900 leading-snug">
+                                      <RemarksPreviewCell
+                                        text={client.specialRemarks}
+                                        recordTitle={rec.clientName}
+                                        recordId={rec.clientId}
+                                        fieldLabel="Client Special Remarks"
+                                        maxWidthClass="max-w-[175px]"
+                                        textClassName="text-amber-900"
+                                      />
+                                    </div>
+                                  )}
+                                </>
+                              );
+                            case 'fye':
+                              return wrapTd(
+                                'px-3 py-2 font-mono text-slate-700 whitespace-nowrap',
+                                rec.fye ? Number(rec.fye) : '—'
+                              );
+                            case 'ya':
+                              return wrapTd(
+                                'px-3 py-2 font-mono font-semibold text-slate-900 whitespace-nowrap',
+                                rec.ya
+                              );
+                            case 'pic':
+                              return wrapTd(
+                                'px-3 py-2 text-slate-700 whitespace-nowrap',
+                                rec.pic || '—'
+                              );
+                            case 'initialEstimate':
+                              return wrapTd(
+                                'px-3 py-2 text-right whitespace-nowrap',
+                                <div className="flex flex-col items-end gap-0.5">
+                                  <span className="font-mono tabular-nums font-medium text-slate-900">
+                                    {formatCurrencyRM(rec.originalEstimatedTax)}
+                                  </span>
+                                  <StatusPill group="CP204_STATUS" value={rec.status} />
+                                </div>
+                              );
+                            case 'rev6':
+                              return wrapTd(
+                                'px-3 py-2 text-right whitespace-nowrap',
+                                renderRevisionCell(rev6)
+                              );
+                            case 'rev9':
+                              return wrapTd(
+                                'px-3 py-2 text-right whitespace-nowrap',
+                                renderRevisionCell(rev9)
+                              );
+                            case 'rev11':
+                              return wrapTd(
+                                'px-3 py-2 text-right whitespace-nowrap',
+                                renderRevisionCell(rev11)
+                              );
+                            case 'currentEstimatedTax':
+                              return wrapTd(
+                                'px-3 py-2 text-right whitespace-nowrap',
+                                <span className="font-mono tabular-nums font-bold text-teal-900">
+                                  {formatCurrencyRM(rec.currentEstimatedTax)}
+                                </span>
+                              );
+                            case 'instalmentsSummary':
+                              return wrapTd(
+                                'px-3 py-2 whitespace-nowrap font-mono text-[11px] text-slate-600',
+                                rec.instalments.length > 0
+                                  ? `${settledInstCount}/${rec.instalments.length} settled`
+                                  : 'Not scheduled'
+                              );
+                            case 'reviewer':
+                              return wrapTd(
+                                'px-3 py-2 text-slate-700 whitespace-nowrap',
+                                rec.reviewer || '—'
+                              );
+                            case 'statutoryDueDate':
+                              return wrapTd(
+                                'px-3 py-2 font-mono text-slate-700 whitespace-nowrap',
+                                formatDateDDMMYYYY(rec.statutoryCp204DueDate)
+                              );
+                            case 'remarks':
+                              return wrapTd(
+                                'px-3 py-2 whitespace-nowrap',
+                                <RemarksPreviewCell
+                                  text={rec.remarks}
+                                  recordTitle={rec.clientName}
+                                  recordId={rec.cp204Id || rec.clientId}
+                                  fieldLabel="CP204 Remarks"
+                                />
+                              );
+                            default:
+                              return wrapTd('px-3 py-2 text-slate-600 whitespace-nowrap', '—');
+                          }
+                        })}
                         <td className="px-3 py-2 text-right whitespace-nowrap no-print">
                           {confirmDeleteId === rec.id ? (
                             <div className="inline-flex items-center gap-1">
@@ -887,45 +945,49 @@ export const Cp204ModuleView: React.FC<Cp204ModuleViewProps> = ({ initialFilter 
                               </button>
                             </div>
                           ) : (
-                            <div className="inline-flex items-center gap-2">
+                            <div className="inline-flex items-center gap-1.5 whitespace-nowrap">
                               <button
                                 type="button"
                                 onClick={() => openAdvanced('initial', rec.id)}
-                                className="inline-flex items-center gap-1 text-[11px] font-medium text-teal-700 hover:underline"
+                                className="text-xs font-medium text-teal-700 hover:underline"
                                 title="Edit CP204 Master"
                               >
-                                <Edit3 className="w-3 h-3" />
-                                {isReadOnly ? 'View' : 'Edit Master'}
+                                {isReadOnly ? 'View' : 'Edit'}
                               </button>
                               {!isReadOnly && (
-                                <button
-                                  type="button"
-                                  onClick={() => openQuickRevision(rec.id)}
-                                  className="inline-flex items-center gap-1 text-[11px] font-medium text-sky-700 hover:underline"
-                                  title="Add CP204A Revision"
-                                >
-                                  <FilePlus2 className="w-3 h-3" />
-                                  Add Revision
-                                </button>
+                                <>
+                                  <span className="text-slate-300">·</span>
+                                  <button
+                                    type="button"
+                                    onClick={() => openQuickRevision(rec.id)}
+                                    className="text-xs font-medium text-sky-700 hover:underline"
+                                    title="Add CP204A Revision"
+                                  >
+                                    Revision
+                                  </button>
+                                </>
                               )}
+                              <span className="text-slate-300">·</span>
                               <button
                                 type="button"
                                 onClick={() => openAdvanced('instalments', rec.id)}
-                                className="inline-flex items-center gap-1 text-[11px] font-medium text-indigo-700 hover:underline"
+                                className="text-xs font-medium text-indigo-700 hover:underline"
                                 title="Open Monthly Instalments Tracker"
                               >
-                                <CalendarRange className="w-3 h-3" />
                                 Instalments
                               </button>
                               {isManagerOrAdmin && (
-                                <button
-                                  type="button"
-                                  onClick={() => setConfirmDeleteId(rec.id)}
-                                  className="p-1 rounded text-slate-400 hover:text-rose-700 hover:bg-rose-50"
-                                  title="Delete CP204 record"
-                                >
-                                  <Trash2 className="w-3.5 h-3.5" />
-                                </button>
+                                <>
+                                  <span className="text-slate-300">·</span>
+                                  <button
+                                    type="button"
+                                    onClick={() => setConfirmDeleteId(rec.id)}
+                                    className="text-xs font-medium text-rose-600 hover:text-rose-800 hover:underline"
+                                    title="Delete CP204 record"
+                                  >
+                                    Delete
+                                  </button>
+                                </>
                               )}
                             </div>
                           )}

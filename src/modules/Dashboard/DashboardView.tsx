@@ -17,6 +17,13 @@ import { NavigationFilterPreset, NavRoute, TaxJob } from '../../types/tpms';
 import { useAuth } from '../../context/AuthContext';
 import { useData } from '../../context/DataContext';
 import { extractFyeMonth, formatDateDDMMYYYY, isIsoDateString } from '../../lib/deadlineUtils';
+import {
+  buildClientLookupMap,
+  findMatchedClient,
+  isFormCSubmittedStatus,
+  isMitrsCompletedStatus,
+  resolveJobDisplayFye,
+} from '../../lib/jobUtils';
 
 interface DashboardViewProps {
   onNavigate: (route: NavRoute, preset?: Omit<NavigationFilterPreset, 'nonce'>) => void;
@@ -88,6 +95,16 @@ function isActiveCorporateClient(status: string | undefined, category: string | 
   return s === '' || s === 'active' || s === 're-appoint';
 }
 
+function isExcludedClientStatus(status: string | undefined): boolean {
+  const s = (status || '').trim().toLowerCase();
+  return s === 'resigned' || s === 'inactive';
+}
+
+function isSpecialIncludedStatus(status: string | undefined): boolean {
+  const s = (status || '').trim().toLowerCase();
+  return s.includes('strike') || s.includes('re-appoint') || s.includes('reappoint');
+}
+
 type PanelKey = 'cp204' | 'formC' | 'overdueJobs' | 'overdueCorr';
 
 export const DashboardView: React.FC<DashboardViewProps> = ({ onNavigate }) => {
@@ -135,11 +152,14 @@ export const DashboardView: React.FC<DashboardViewProps> = ({ onNavigate }) => {
     refreshAll();
   };
 
-  // Active Corporate clients list
+  // Active Corporate clients list (used by CP204 timeline)
   const activeCorporateClients = useMemo(
     () => clients.filter((c) => isActiveCorporateClient(c.clientStatus, c.category)),
     [clients]
   );
+
+  // Normalized Client ID lookup matching JobsModuleView ("C 1085" === "C1085")
+  const clientLookup = useMemo(() => buildClientLookupMap(clients), [clients]);
 
   // Open jobs + Overdue + Due Today + My Work Today
   const {
@@ -269,42 +289,60 @@ export const DashboardView: React.FC<DashboardViewProps> = ({ onNavigate }) => {
       const fyeMonthStr = String(target.month).padStart(2, '0');
       const targetYa = String(target.year);
 
-      const matchingClients = activeCorporateClients.filter(
-        (c) => extractFyeMonth(c.fye) === target.month
-      );
-
-      // Corporate / Form C jobs for that YA
-      const corpJobsByClient = new Map<string, TaxJob>();
-      for (const j of jobs) {
+      // Count all Corporate Form C / MITRS compliance jobs matching target FYE & YA,
+      // excluding only clients whose Client Status is explicitly Resigned or Inactive.
+      const matchingJobs = jobs.filter((j) => {
         const isCorp =
           j.module === 'Corporate' || j.jobType === 'Form C' || j.jobType === 'MITRS';
-        if (!isCorp) continue;
-        if ((j.ya || '').trim() !== targetYa) continue;
-        const jobFye = extractFyeMonth(j.fye);
-        if (jobFye !== null && jobFye !== target.month) continue;
-        if (j.clientId) {
-          corpJobsByClient.set(j.clientId.trim().toLowerCase(), j);
+        if (!isCorp) return false;
+        if ((j.ya || '').trim() !== targetYa) return false;
+
+        const displayFye = resolveJobDisplayFye(j, clientLookup);
+        if (extractFyeMonth(displayFye) !== target.month) return false;
+
+        const matchedClient = findMatchedClient(j, clientLookup);
+        if (matchedClient && isExcludedClientStatus(matchedClient.clientStatus)) {
+          return false;
         }
-      }
+        return true;
+      });
 
-      const companiesCount = matchingClients.length;
+      const companiesCount = matchingJobs.length;
       let submittedCount = 0;
+      const specialStatusCounts = new Map<string, number>();
+      const specialStatusClients: string[] = [];
 
-      for (const c of matchingClients) {
-        const job = corpJobsByClient.get(c.clientId.trim().toLowerCase());
-        if (!job) continue;
+      for (const job of matchingJobs) {
         if (def.category === 'Form C') {
           const fcDone =
-            (job.formCStatus || '').trim().toLowerCase() === 'submitted' ||
+            isFormCSubmittedStatus(job.formCStatus) ||
             (job.status || '').trim().toLowerCase() === 'completed';
           if (fcDone) submittedCount += 1;
         } else {
           const mitrsDone =
-            (job.mitrsStatus || '').trim().toLowerCase() === 'submitted' ||
+            isMitrsCompletedStatus(job.mitrsStatus) ||
             (job.status || '').trim().toLowerCase() === 'completed';
           if (mitrsDone) submittedCount += 1;
         }
+
+        const matchedClient = findMatchedClient(job, clientLookup);
+        const rawStatus = (matchedClient?.clientStatus || '').trim();
+        if (isSpecialIncludedStatus(rawStatus)) {
+          specialStatusCounts.set(rawStatus, (specialStatusCounts.get(rawStatus) || 0) + 1);
+          specialStatusClients.push(
+            `${job.clientId ? `${job.clientId} ` : ''}${job.clientName} (${rawStatus})`
+          );
+        }
       }
+
+      const specialStatusNote =
+        specialStatusCounts.size > 0
+          ? `incl. ${Array.from(specialStatusCounts.entries())
+              .map(([label, count]) => `${count} ${label}`)
+              .join(', ')}`
+          : '';
+      const specialStatusTooltip =
+        specialStatusClients.length > 0 ? specialStatusClients.join('\n') : undefined;
 
       let trackerStatus: 'All submitted' | 'Pending' | 'Mixed status';
       if (companiesCount === 0 || submittedCount === 0) {
@@ -324,9 +362,11 @@ export const DashboardView: React.FC<DashboardViewProps> = ({ onNavigate }) => {
         companiesCount,
         submittedCount,
         trackerStatus,
+        specialStatusNote,
+        specialStatusTooltip,
       };
     });
-  }, [activeCorporateClients, jobs, currentYear, currentMonth, currentMonthLabel]);
+  }, [jobs, clientLookup, currentYear, currentMonth, currentMonthLabel]);
 
   // Apply quick search across tables
   const q = quickSearch.trim().toLowerCase();
@@ -692,11 +732,21 @@ export const DashboardView: React.FC<DashboardViewProps> = ({ onNavigate }) => {
                         {row.dueMonth}
                       </td>
                       <td className="py-2.5 px-4 text-right font-mono tabular-nums font-semibold text-slate-900 whitespace-nowrap">
-                        {row.companiesCount}
-                        {row.companiesCount > 0 && (
-                          <span className="text-[10px] font-normal text-slate-400 ml-1">
-                            ({row.submittedCount} submitted)
-                          </span>
+                        <div>
+                          {row.companiesCount}
+                          {row.companiesCount > 0 && (
+                            <span className="text-[10px] font-normal text-slate-400 ml-1">
+                              ({row.submittedCount} submitted)
+                            </span>
+                          )}
+                        </div>
+                        {row.specialStatusNote && (
+                          <div
+                            className="text-[10px] font-normal font-sans text-amber-700/90 mt-0.5"
+                            title={row.specialStatusTooltip}
+                          >
+                            {row.specialStatusNote}
+                          </div>
                         )}
                       </td>
                       <td className="py-2.5 px-4 whitespace-nowrap">

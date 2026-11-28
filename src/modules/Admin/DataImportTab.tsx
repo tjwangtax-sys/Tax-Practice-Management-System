@@ -17,10 +17,12 @@ import {
   ChevronUp,
   Loader2,
   Eye,
+  DatabaseBackup,
 } from 'lucide-react';
 import { auth, db } from '../../lib/firebase';
 import { useAuth } from '../../context/AuthContext';
 import { useData } from '../../context/DataContext';
+import { exportMultiSheetExcel, MultiSheetExportTab } from '../../lib/exportUtils';
 import { showToast } from '../../lib/toast';
 import {
   Cp204Instalment,
@@ -42,6 +44,7 @@ import {
   ParsedImportRow,
   sanitizeDocId,
   sanitizeFirestorePayload,
+  TEMPLATE_SHEET_NAMES,
 } from './importSchemas';
 
 const BATCH_CHUNK_SIZE = 400;
@@ -149,6 +152,7 @@ export const DataImportTab: React.FC = () => {
 
   // Execution state
   const [committing, setCommitting] = useState(false);
+  const [exportingBackup, setExportingBackup] = useState(false);
   const [activeStepInfo, setActiveStepInfo] = useState<{
     stepIndex: number;
     totalSteps: number;
@@ -1083,6 +1087,363 @@ export const DataImportTab: React.FC = () => {
     }
   };
 
+  const handleDownloadFullBackup = () => {
+    if (exportingBackup) return;
+    setExportingBackup(true);
+    try {
+      const now = new Date();
+      const yyyy = now.getFullYear();
+      const mm = String(now.getMonth() + 1).padStart(2, '0');
+      const dd = String(now.getDate()).padStart(2, '0');
+      const filename = `TPMS_Full_Backup_${yyyy}-${mm}-${dd}.xlsx`;
+
+      const staffRows: Record<string, unknown>[] = staff.map((s) => ({
+        'Staff ID': s.staffId || s.id,
+        'Staff Name': s.staffName || '',
+        Email: s.email || '',
+        Role: s.role || 'Staff',
+        Active: s.active ? 'Yes' : 'No',
+        Department: s.department || '',
+        Designation: s.designation || '',
+        Phone: s.phone || '',
+        'Join Date': s.joinDate || '',
+        'Leave Date': s.leaveDate || '',
+      }));
+
+      const settingsRows: Record<string, unknown>[] = settings.map((s) => ({
+        Group: s.group || '',
+        Code: s.code || '',
+        'Display Name': s.displayName || '',
+        Module: s.module || '',
+        'Badge Color': s.badgeColor || '#0F766E',
+        Active: s.active ? 'Yes' : 'No',
+        'Sort Order': s.sortOrder ?? 0,
+      }));
+
+      const clientRows: Record<string, unknown>[] = clients.map((c) => ({
+        'Client ID': c.clientId || c.id,
+        'Client Name': c.clientName || '',
+        'Company No': c.companyNo || '',
+        TIN: c.tin || '',
+        FYE: c.fye || '',
+        'Tax PIC': c.taxPic || '',
+        Category: c.category || 'Corporate',
+        'Client Status': c.clientStatus || 'Active',
+        'SME Status': c.smeStatus || '',
+        'Tax Agent': c.taxAgent || '',
+        'MyTax Appointment': c.myTaxAppointment || '',
+        'e-Invoice Status': c.eInvoiceStatus || '',
+        'SST Registered': c.sstRegistered || '',
+        'SST No': c.sstNo || '',
+        Email: c.email || '',
+        Phone: c.phone || '',
+        'Date of Incorporation': c.dateOfIncorporation || '',
+        'Date of Commencement Business': c.dateOfCommencementBusiness || '',
+        'Date of Engagement': c.dateOfEngagement || '',
+        'Date of Resigned': c.dateOfResigned || '',
+        Auditor: c.auditor || '',
+        Account: c.account || '',
+        'E Number': c.eNumber || '',
+        'Special Remarks': c.specialRemarks || '',
+        'Person No': c.personNo || '',
+        Relationship: c.relationship || '',
+        'Engagement Status': c.engagementStatus || '',
+        'Business Name': c.businessName || '',
+        'Business Type': c.businessType || '',
+        'Business SSM No': c.businessSsmNo || '',
+        'Business E Number': c.businessENumber || '',
+        'Business Start Date': c.businessStartDate || '',
+        'Business Status': c.businessStatus || '',
+        '1st YA': c.firstYA || c.firstYa || '',
+        '1st YA Status': c.firstYaStatus || '',
+        '2nd YA': c.secondYa || '',
+        '2nd YA Status': c.secondYaStatus || '',
+        'Group ID': c.groupId || '',
+        'Company Secretary': c.companySecretary || '',
+        'Registered Address': c.registeredAddress || '',
+        'Principal Activity 1': c.principalActivity1 || c.principalActivity || '',
+        'MSIC Code 1': c.msicCode1 || '',
+        'Principal Activity 2': c.principalActivity2 || '',
+        'MSIC Code 2': c.msicCode2 || '',
+        'Principal Activity 3': c.principalActivity3 || '',
+        'MSIC Code 3': c.msicCode3 || '',
+      }));
+
+      const jobHeaders = [
+        ...getTargetDefinition('jobs').templateHeaders,
+        'Billing Status',
+        'Fee Amount',
+        'Billed Amount',
+        'Hours Spent',
+        'Tax Payable',
+        'Tax Refundable',
+      ];
+      const jobRows: Record<string, unknown>[] = jobs.map((j) => ({
+        'Job ID': j.jobCode || j.id,
+        Module: j.module || '',
+        'Job Type': j.jobType || j.formType || '',
+        'Client ID': j.clientId || '',
+        'Client Name': j.clientName || '',
+        'Group ID': j.groupId || '',
+        FYE: j.fye || '',
+        YA: j.ya || '',
+        'Tax PIC': j.taxPic || '',
+        Reviewer: j.reviewer || '',
+        Status: j.status || '',
+        Priority: j.priority || '',
+        'Internal Deadline': j.internalDeadline || '',
+        'Original Statutory Deadline': j.originalStatutoryDeadline || '',
+        'SSM EOT 1': j.ssmEot1 || '',
+        'SSM EOT 2': j.ssmEot2 || '',
+        'SSM EOT 3': j.ssmEot3 || '',
+        'LHDN EOT 1': j.lhdnEot1 || '',
+        'LHDN EOT 2': j.lhdnEot2 || '',
+        'LHDN EOT 3': j.lhdnEot3 || '',
+        'Final Applicable Deadline': j.finalApplicableDeadline || j.dueDate || '',
+        'Audit Type': j.auditType || '',
+        'Audit Book-In Date': j.auditBookInDate || '',
+        'Audit Report Received Date': j.auditReportReceivedDate || '',
+        'Form C Status': j.formCStatus || '',
+        'Form C Due Date': j.formCDueDate || '',
+        'Form C Submission Date': j.formCSubmissionDate || '',
+        'Form C Submission Reference': j.formCSubmissionReference || '',
+        'MITRS Status': j.mitrsStatus || '',
+        'MITRS Due Date': j.mitrsDueDate || '',
+        'MITRS Submission Date': j.mitrsSubmissionDate || '',
+        'MITRS Submission Reference': j.mitrsSubmissionReference || '',
+        'Date Documents Requested': j.dateDocumentsRequested || '',
+        'Date Documents Received': j.dateDocumentsReceived || '',
+        'Draft Date': j.draftDate || '',
+        'Review Date': j.reviewDate || '',
+        'Client Confirmation Date': j.clientConfirmationDate || '',
+        'YA Status': j.yaStatus || '',
+        Auditor: j.auditor || '',
+        'Accounts Status': j.accountsStatus || '',
+        'Account Book-In Date': j.accountBookInDate || '',
+        'Account Return Date': j.accountReturnDate || '',
+        'Account Return Status': j.accountReturnStatus || '',
+        'Submission Status': j.submissionStatus || '',
+        'Submission Reference': j.submissionReference || j.eFilingAckNo || '',
+        'Person No': j.personNo || '',
+        'YA Sequence': j.yaSequence || '',
+        'Final Tax Payable': j.finalTaxPayable ?? '',
+        'Final Tax Payable Date': j.finalTaxPayableDate || '',
+        'Form E Status': j.formEStatus || '',
+        'CP8D Status': j.cp8dStatus || '',
+        'Form EA Status': j.formEaStatus || '',
+        'Completed Date': j.completedDate || '',
+        Remarks: j.remarks || '',
+        'Billing Status': j.billingStatus || '',
+        'Fee Amount': j.feeAmount ?? '',
+        'Billed Amount': j.billedAmount ?? '',
+        'Hours Spent': j.hoursSpent ?? '',
+        'Tax Payable': j.taxPayable ?? '',
+        'Tax Refundable': j.taxRefundable ?? '',
+      }));
+
+      const cp204Rows: Record<string, unknown>[] = cp204Records.map((r) => ({
+        'CP204 ID': r.cp204Id || r.id,
+        'Client ID': r.clientId || '',
+        'Client Name': r.clientName || '',
+        YA: r.ya || '',
+        FYE: r.fye || '',
+        'Basis Period Start': r.basisPeriodStart || '',
+        'Basis Period End': r.basisPeriodEnd || '',
+        'Original Estimated Tax': r.originalEstimatedTax ?? 0,
+        'Original Submission Date': r.originalSubmissionDate || '',
+        'Current Estimated Tax': r.currentEstimatedTax ?? 0,
+        'Statutory CP204 Due Date': r.statutoryCp204DueDate || '',
+        PIC: r.pic || '',
+        Reviewer: r.reviewer || '',
+        Status: r.status || '',
+        'Acknowledgement URL': r.acknowledgementUrl || '',
+        Remarks: r.remarks || '',
+      }));
+
+      const cp204RevisionRows: Record<string, unknown>[] = cp204Records.flatMap((r) =>
+        (r.revisions || []).map((rev) => ({
+          'CP204 ID': r.cp204Id || r.id,
+          'Revision Month': rev.revisionMonth,
+          'Previous Estimated Tax': rev.previousEstimatedTax ?? 0,
+          'Proposed Estimated Tax': rev.proposedEstimatedTax ?? 0,
+          Reason: rev.reason || '',
+          'Review Status': rev.reviewStatus || '',
+          PIC: rev.pic || '',
+          Reviewer: rev.reviewer || '',
+          'Submission Deadline': rev.submissionDeadline || '',
+          'Submission Date': rev.submissionDate || '',
+          'Acknowledgement URL': rev.acknowledgementUrl || '',
+          Remarks: rev.remarks || '',
+        }))
+      );
+
+      const cp204InstalmentRows: Record<string, unknown>[] = cp204Records.flatMap((r) =>
+        (r.instalments || []).map((inst) => ({
+          'CP204 ID': r.cp204Id || r.id,
+          'Instalment No': inst.instalmentNo,
+          'Due Date': inst.dueDate || '',
+          'Amount Due': inst.amountDue ?? 0,
+          'Amount Paid': inst.amountPaid ?? 0,
+          'Payment Date': inst.paymentDate || '',
+          'Payment Reference': inst.paymentReference || '',
+          'Payment Verified': inst.paymentVerified || 'No',
+          'Follow-Up Status': inst.followUpStatus || '',
+          Remarks: inst.remarks || '',
+        }))
+      );
+
+      const taxPaymentRows: Record<string, unknown>[] = taxPayments.map((p) => ({
+        'Payment ID': p.paymentId || p.id,
+        'Client ID': p.clientId || '',
+        'Client Name': p.clientName || '',
+        'Payment Type': p.paymentType || '',
+        YA: p.ya || '',
+        'Reference / Case No': p.referenceCaseNo || '',
+        'Due Date': p.dueDate || '',
+        'Amount Due': p.amountDue ?? 0,
+        'Amount Paid': p.amountPaid ?? 0,
+        'Payment Date': p.paymentDate || '',
+        'Payment Reference': p.paymentReference || '',
+        'Verification Status': p.verificationStatus || '',
+        'Follow-Up Status': p.followUpStatus || '',
+        Remarks: p.remarks || '',
+      }));
+
+      const correspondenceRows: Record<string, unknown>[] = correspondenceRecords.map((c) => ({
+        'Correspondence ID': c.correspondenceId || c.id,
+        'Client ID': c.clientId || '',
+        'Client Name': c.clientName || '',
+        YA: c.ya || '',
+        'Job ID': c.jobId || '',
+        'Date Received': c.dateReceived || '',
+        'Method Received': c.methodReceived || '',
+        Category: c.category || '',
+        'Letter Type': c.letterType || '',
+        'Letter Subject': c.letterSubject || '',
+        'Letter Reference No': c.letterReferenceNo || '',
+        'Detailed Information': c.detailedInformation || '',
+        'Due Date': c.dueDate || '',
+        'Action Required': c.actionRequired || '',
+        PIC: c.pic || '',
+        'Action Status': c.actionStatus || '',
+        'Action Date': c.actionDate || '',
+        Remarks: c.remarks || '',
+        'Attachment URL': c.attachmentUrl || '',
+      }));
+
+      const workDoneRows: Record<string, unknown>[] = workDoneRecords.map((w) => ({
+        'Work Done ID': w.workDoneId || w.id,
+        'Job ID': w.jobId || '',
+        'Client ID': w.clientId || '',
+        'Client Name': w.clientName || '',
+        YA: w.ya || '',
+        'Job Type': w.jobType || '',
+        PIC: w.pic || '',
+        Reviewer: w.reviewer || '',
+        'Job Status': w.jobStatus || '',
+        'Work Done Description': w.workDoneDescription || '',
+        'Pricing Mode': w.pricingMode || '',
+        'Audit Fee': w.auditFee ?? '',
+        'Quotation Price': w.quotationPrice ?? '',
+        'Prior Year Price': w.priorYearPrice ?? '',
+        'HOD Price': w.hodPrice ?? '',
+        'Additional Charges': w.additionalCharges ?? 0,
+        'Final Price': w.finalPrice ?? 0,
+        'SST Amount': w.sstAmount ?? '',
+        'Total Invoice Amount': w.totalInvoiceAmount ?? 0,
+        'Work Done Status': w.workDoneStatus || '',
+        'Finance Invoice Status': w.financeInvoiceStatus || '',
+        'Invoice No': w.invoiceNo || '',
+        'Issue Date': w.issueDate || '',
+        'Cancellation Date': w.cancellationDate || '',
+        'Cancellation Reason': w.cancellationReason || '',
+        Remarks: w.remarks || '',
+      }));
+
+      const workDoneAllocationRows: Record<string, unknown>[] = workDoneRecords.flatMap((w) =>
+        (w.feeAllocations || []).map((a) => ({
+          'Work Done ID': w.workDoneId || w.id,
+          'Line No': a.lineNo,
+          Description: a.description || '',
+          Fee: a.fee ?? 0,
+        }))
+      );
+
+      const calendarRows: Record<string, unknown>[] = calendarEvents.map((e) => ({
+        'Event ID': e.id,
+        'Event Type': e.eventType || '',
+        Title: e.title || '',
+        'Start Date': e.startDate || '',
+        'End Date': e.endDate || '',
+        'Assigned To': e.assignedTo || '',
+        'Client ID': e.clientId || '',
+        'Client Name': e.clientName || '',
+        Color: e.color || '',
+        'Time-Off Note': e.timeOffNote || '',
+        Notes: e.notes || '',
+      }));
+
+      const historyRows: Record<string, unknown>[] = history.map((h) => ({
+        'History ID': h.id,
+        'Job ID': h.jobId || '',
+        Action: h.action || '',
+        'Old Status': h.oldStatus || '',
+        'New Status': h.newStatus || '',
+        User: h.user || '',
+        Remarks: h.remarks || '',
+      }));
+
+      const rowsByKey: Record<ImportTargetKey, { headers: string[]; rows: Record<string, unknown>[] }> = {
+        staff: { headers: getTargetDefinition('staff').templateHeaders, rows: staffRows },
+        settings: { headers: getTargetDefinition('settings').templateHeaders, rows: settingsRows },
+        clients: { headers: getTargetDefinition('clients').templateHeaders, rows: clientRows },
+        jobs: { headers: jobHeaders, rows: jobRows },
+        cp204: { headers: getTargetDefinition('cp204').templateHeaders, rows: cp204Rows },
+        cp204_revisions: {
+          headers: getTargetDefinition('cp204_revisions').templateHeaders,
+          rows: cp204RevisionRows,
+        },
+        cp204_instalments: {
+          headers: getTargetDefinition('cp204_instalments').templateHeaders,
+          rows: cp204InstalmentRows,
+        },
+        taxPayments: { headers: getTargetDefinition('taxPayments').templateHeaders, rows: taxPaymentRows },
+        correspondence: {
+          headers: getTargetDefinition('correspondence').templateHeaders,
+          rows: correspondenceRows,
+        },
+        workDone: { headers: getTargetDefinition('workDone').templateHeaders, rows: workDoneRows },
+        workDone_allocations: {
+          headers: getTargetDefinition('workDone_allocations').templateHeaders,
+          rows: workDoneAllocationRows,
+        },
+        calendarEvents: {
+          headers: getTargetDefinition('calendarEvents').templateHeaders,
+          rows: calendarRows,
+        },
+        history: { headers: getTargetDefinition('history').templateHeaders, rows: historyRows },
+      };
+
+      const tabs: MultiSheetExportTab[] = FULL_IMPORT_ORDER.map((key) => ({
+        sheetName: TEMPLATE_SHEET_NAMES[key],
+        headers: rowsByKey[key].headers,
+        rows: rowsByKey[key].rows,
+      }));
+
+      const { sheetCount, totalRows } = exportMultiSheetExcel(filename, tabs);
+      showToast(
+        `Downloaded ${filename} (${totalRows.toLocaleString()} rows across ${sheetCount} tabs).`,
+        'success',
+        4500
+      );
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      showToast(`Full database backup failed: ${msg}`, 'error');
+    } finally {
+      setExportingBackup(false);
+    }
+  };
+
   const isFullMode = mode === 'full_combined';
   const activeTargetDef = !isFullMode ? getTargetDefinition(mode) : null;
   const previewDef = activePreviewPlan?.target ? getTargetDefinition(activePreviewPlan.target) : null;
@@ -1109,18 +1470,34 @@ export const DataImportTab: React.FC = () => {
               batches.
             </p>
           </div>
-          <button
-            type="button"
-            onClick={() =>
-              isFullMode ? downloadFullCombinedBlankTemplate() : downloadBlankTemplate(mode)
-            }
-            className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold text-teal-800 bg-teal-50 border border-teal-200 hover:bg-teal-100 rounded-md whitespace-nowrap"
-          >
-            <Download className="w-3.5 h-3.5" />
-            {isFullMode
-              ? 'Download Full Combined Excel Template (13 Tabs)'
-              : 'Download Blank Excel Template'}
-          </button>
+          <div className="flex flex-wrap items-center gap-2">
+            <button
+              type="button"
+              onClick={handleDownloadFullBackup}
+              disabled={exportingBackup || committing}
+              className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold text-white bg-slate-900 hover:bg-slate-800 disabled:opacity-60 rounded-md whitespace-nowrap shadow-xs transition-colors"
+              title="Export all Firestore collections into a 13-tab Excel workbook compatible with the 1-File Combined Importer"
+            >
+              {exportingBackup ? (
+                <Loader2 className="w-3.5 h-3.5 animate-spin" />
+              ) : (
+                <DatabaseBackup className="w-3.5 h-3.5" />
+              )}
+              Download Full Database Backup (.xlsx)
+            </button>
+            <button
+              type="button"
+              onClick={() =>
+                isFullMode ? downloadFullCombinedBlankTemplate() : downloadBlankTemplate(mode)
+              }
+              className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold text-teal-800 bg-teal-50 border border-teal-200 hover:bg-teal-100 rounded-md whitespace-nowrap"
+            >
+              <Download className="w-3.5 h-3.5" />
+              {isFullMode
+                ? 'Download Full Combined Excel Template (13 Tabs)'
+                : 'Download Blank Excel Template'}
+            </button>
+          </div>
         </div>
 
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">

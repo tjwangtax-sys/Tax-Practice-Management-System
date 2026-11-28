@@ -1,7 +1,15 @@
 import { jsPDF } from 'jspdf';
 import JSZip from 'jszip';
 import { formatDateDDMMYYYY } from '../../lib/deadlineUtils';
-import { printHtml, triggerBlobDownload } from '../../lib/exportUtils';
+import {
+  appendPdfTableSection,
+  buildPrintTableSectionCss,
+  buildPrintTableSectionHtml,
+  ExportColumn,
+  printHtml,
+  PrintTableSectionSpec,
+  triggerBlobDownload,
+} from '../../lib/exportUtils';
 import { showToast } from '../../lib/toast';
 import { StaffMember } from '../../types/tpms';
 import {
@@ -9,6 +17,7 @@ import {
   eventCoversDate,
   formatClientChipLabel,
   getContrastingTextColor,
+  isDateWithinStaffEmployment,
   ParsedCalendarEvent,
   PublicHolidayRef,
   StaffMatrixRowSummary,
@@ -48,12 +57,201 @@ export interface MatrixExportRow {
 }
 
 export interface MatrixExportNote {
-  kind: 'firm' | 'holiday';
+  kind: 'due' | 'firm' | 'holiday';
   title: string;
   dateLabel: string;
   categoryLabel: string;
   color: string;
   notes: string;
+}
+
+export interface CalendarRegisterRow {
+  sortDate: string;
+  sortPriority: number;
+  dateTime: string;
+  event: string;
+  type: string;
+  typeColor: string;
+  staff: string;
+  clientLocation: string;
+  description: string;
+}
+
+export const COMPLETE_EVENT_REGISTER_COLUMNS: ExportColumn[] = [
+  { key: 'dateTime', label: 'Date / Time' },
+  { key: 'event', label: 'Event' },
+  { key: 'type', label: 'Type' },
+  { key: 'staff', label: 'Staff' },
+  { key: 'clientLocation', label: 'Linked Client / Location' },
+  { key: 'description', label: 'Description / Notes' },
+];
+
+const REGISTER_COL_WIDTHS_PCT = ['15%', '22%', '14%', '14%', '15%', '20%'];
+const REGISTER_COL_WEIGHTS = [15, 22, 14, 14, 15, 20];
+
+function extractTimeHint(text: string): string {
+  const s = (text || '').trim();
+  if (!s) return '';
+  // Match ranges like 8-8:30am, 8:00-8:30am, 5:00–5:30pm, 9am-11am or single times like 1:20pm
+  const rangeMatch = s.match(
+    /\b\d{1,2}(?::\d{2})?\s*(?:am|pm)?\s*[–-]\s*\d{1,2}(?::\d{2})?\s*(?:am|pm)\b/i
+  );
+  if (rangeMatch) return rangeMatch[0].replace(/\s+/g, ' ').trim();
+  const singleMatch = s.match(/\b\d{1,2}(?::\d{2})?\s*(?:am|pm)\b/i);
+  if (singleMatch) return singleMatch[0].replace(/\s+/g, ' ').trim();
+  return '';
+}
+
+function mapEventTypeDisplay(ev: ParsedCalendarEvent): { label: string; priority: number } {
+  switch (ev.canonicalType) {
+    case 'Tax Due Date':
+      return { label: 'Tax Due Date', priority: 1 };
+    case 'Company Holiday':
+      return { label: 'Johor / MY Holiday', priority: 0 };
+    case 'Internal Event':
+      return { label: 'Firm Seminar / Event', priority: 2 };
+    case 'Client Appointment':
+      return { label: 'Client Appt', priority: 3 };
+    case 'Time-Off / Replace':
+    case 'Staff Availability':
+    default:
+      return { label: 'Staff Availability', priority: 4 };
+  }
+}
+
+export function buildCalendarEventRegisterRows(params: {
+  periodStart?: string;
+  periodEnd?: string;
+  parsedEvents: ParsedCalendarEvent[];
+  holidaysByDate: Map<string, PublicHolidayRef>;
+  staffList: StaffMember[];
+  typeFilter?: string;
+  searchQuery?: string;
+}): CalendarRegisterRow[] {
+  const {
+    periodStart,
+    periodEnd,
+    parsedEvents,
+    holidaysByDate,
+    staffList,
+    typeFilter = '',
+    searchQuery = '',
+  } = params;
+
+  const staffIdByName = new Map<string, string>();
+  for (const s of staffList) {
+    const nm = (s.staffName || '').trim().toLowerCase();
+    const id = (s.staffId || '').trim();
+    if (nm && id) staffIdByName.set(nm, id);
+  }
+
+  const formatStaffDisplay = (ev: ParsedCalendarEvent): string => {
+    if (
+      ev.canonicalType === 'Tax Due Date' ||
+      ev.canonicalType === 'Company Holiday'
+    ) {
+      return 'All Staff / Statutory';
+    }
+    if (ev.isFirmWide || !ev.staffName.trim()) {
+      return ev.canonicalType === 'Internal Event' ? 'All Staff / Statutory' : '-';
+    }
+    const nm = ev.staffName.trim();
+    const id = staffIdByName.get(nm.toLowerCase());
+    return id && id.toUpperCase() !== nm.toUpperCase() ? `${id} · ${nm}` : nm;
+  };
+
+  const rows: CalendarRegisterRow[] = [];
+
+  for (const ev of parsedEvents) {
+    const start = ev.raw.startDate || '';
+    const end = ev.raw.endDate || start;
+    if (periodStart && end < periodStart) continue;
+    if (periodEnd && start > periodEnd) continue;
+
+    const datePart =
+      end && end !== start
+        ? `${formatDateDDMMYYYY(start)} – ${formatDateDDMMYYYY(end)}`
+        : formatDateDDMMYYYY(start);
+    const timeHint =
+      extractTimeHint(ev.raw.timeOffNote || '') || extractTimeHint(ev.cleanLabel || '');
+    const dateTime = timeHint ? `${datePart} · ${timeHint}` : `${datePart} · All day`;
+
+    const { label: typeLabel, priority } = mapEventTypeDisplay(ev);
+
+    const clientParts = [ev.raw.clientId?.trim(), ev.raw.clientName?.trim()].filter(Boolean);
+    const clientLocation = clientParts.length > 0 ? clientParts.join(' · ') : '-';
+
+    const descParts: string[] = [];
+    const toNote = (ev.raw.timeOffNote || '').trim();
+    const rawNotes = (ev.raw.notes || '').trim();
+    if (toNote) descParts.push(toNote);
+    if (rawNotes && rawNotes.toLowerCase() !== toNote.toLowerCase()) descParts.push(rawNotes);
+    const description = descParts.length > 0 ? descParts.join(' · ') : '-';
+
+    const eventTitle =
+      ev.canonicalType === 'Time-Off / Replace' && ev.cleanLabel.trim().toUpperCase() === 'TO'
+        ? 'TO (Time-Off / Replace)'
+        : ev.cleanLabel || ev.displayTitle;
+
+    rows.push({
+      sortDate: start,
+      sortPriority: priority,
+      dateTime,
+      event: eventTitle,
+      type: typeLabel,
+      typeColor: ev.color || EVENT_TYPE_DEFAULT_COLORS[ev.canonicalType] || '#94a3b8',
+      staff: formatStaffDisplay(ev),
+      clientLocation,
+      description,
+    });
+  }
+
+  // Include Johor / Malaysia public holidays in the selected period, respecting active type & search filters
+  const q = searchQuery.trim().toLowerCase();
+  const includePublicHolidays = !typeFilter || typeFilter === 'Company Holiday';
+  if (includePublicHolidays) {
+    for (const ph of holidaysByDate.values()) {
+      if (periodStart && ph.date < periodStart) continue;
+      if (periodEnd && ph.date > periodEnd) continue;
+      if (q) {
+        const hay = `${ph.name} ${ph.scope} johor malaysia holiday ${formatDateDDMMYYYY(ph.date)}`.toLowerCase();
+        if (!hay.includes(q)) continue;
+      }
+      rows.push({
+        sortDate: ph.date,
+        sortPriority: 0,
+        dateTime: `${formatDateDDMMYYYY(ph.date)} · All day`,
+        event: ph.name,
+        type: 'Johor / MY Holiday',
+        typeColor: EVENT_TYPE_DEFAULT_COLORS['Company Holiday'],
+        staff: 'All Staff / Statutory',
+        clientLocation: '-',
+        description: `${ph.scope} Public Holiday`,
+      });
+    }
+  }
+
+  rows.sort((a, b) => {
+    const dateCmp = a.sortDate.localeCompare(b.sortDate);
+    if (dateCmp !== 0) return dateCmp;
+    if (a.sortPriority !== b.sortPriority) return a.sortPriority - b.sortPriority;
+    return a.event.localeCompare(b.event);
+  });
+
+  return rows;
+}
+
+function buildCompleteEventRegisterSpec(rows: CalendarRegisterRow[]): PrintTableSectionSpec {
+  return {
+    heading: 'Complete Event Register',
+    subtitle: `All ${rows.length} matching events for the selected period are listed below. The calendar grid shows up to three events per date for readability.`,
+    columns: COMPLETE_EVENT_REGISTER_COLUMNS,
+    rows: rows as unknown as Record<string, unknown>[],
+    emptyMessage: 'No matching events for the selected period and active filters.',
+    pageBreakBefore: true,
+    badgeColumnKey: 'type',
+    badgeColorKey: 'typeColor',
+  };
 }
 
 export interface StaffMatrixExportModel {
@@ -63,11 +261,13 @@ export interface StaffMatrixExportModel {
   includeWeekends: boolean;
   title: string;
   subtitle: string;
+  activeFilterSummary: string;
   filenameBase: string;
   sheetName: string;
   days: MatrixExportDay[];
   rows: MatrixExportRow[];
   monthlyNotes: MatrixExportNote[];
+  eventRegister: CalendarRegisterRow[];
   hasFirmEvents: boolean;
 }
 
@@ -77,18 +277,27 @@ export function buildStaffMatrixExportModel(params: {
   includeWeekends: boolean;
   days: Date[];
   activeStaff: StaffMember[];
+  allStaff?: StaffMember[];
   rowSummaries: StaffMatrixRowSummary[];
   holidaysByDate: Map<string, PublicHolidayRef>;
   parsedEvents: ParsedCalendarEvent[];
+  typeFilter?: string;
+  staffFilter?: string;
+  searchQuery?: string;
 }): StaffMatrixExportModel {
   const {
     year,
     monthIndex,
     includeWeekends,
     days,
+    activeStaff,
+    allStaff,
     rowSummaries,
     holidaysByDate,
     parsedEvents,
+    typeFilter = '',
+    staffFilter = '',
+    searchQuery = '',
   } = params;
 
   const monthLabel = new Date(year, monthIndex, 1).toLocaleDateString('en-MY', {
@@ -134,6 +343,16 @@ export function buildStaffMatrixExportModel(params: {
     const cells: Record<string, MatrixExportCell> = {};
 
     for (const day of exportDays) {
+      if (!isDateWithinStaffEmployment(summary.staff, day.iso)) {
+        cells[day.iso] = {
+          kind: 'empty',
+          text: '—',
+          bgColor: '#f1f5f9',
+          textColor: '#94a3b8',
+        };
+        continue;
+      }
+
       if (day.holidayName && day.holidayColor) {
         cells[day.iso] = {
           kind: 'holiday',
@@ -155,11 +374,16 @@ export function buildStaffMatrixExportModel(params: {
         (e) =>
           !e.isFirmWide &&
           e.canonicalType !== 'Company Holiday' &&
+          e.canonicalType !== 'Tax Due Date' &&
           e.staffName.trim().toLowerCase() === staffLower &&
           eventCoversDate(e.raw, day.iso)
       );
 
-      const primaryLeave = staffEvents.find((e) => e.canonicalType === 'Staff Availability');
+      const primaryLeave = staffEvents.find(
+        (e) =>
+          e.canonicalType === 'Staff Availability' ||
+          e.canonicalType === 'Time-Off / Replace'
+      );
       const clientAppts = staffEvents.filter(
         (e) =>
           e.canonicalType === 'Client Appointment' ||
@@ -170,19 +394,23 @@ export function buildStaffMatrixExportModel(params: {
       );
 
       if (primaryLeave) {
-        const leaveColor =
-          primaryLeave.leaveCode === 'WFH' && primaryLeave.raw.color === '#22d3ee'
-            ? '#86efac'
-            : primaryLeave.color || EVENT_TYPE_DEFAULT_COLORS['Staff Availability'];
+        const isTo =
+          primaryLeave.canonicalType === 'Time-Off / Replace' ||
+          primaryLeave.leaveCode === 'TO';
+        const leaveColor = isTo
+          ? '#e0e7ff'
+          : primaryLeave.leaveCode === 'WFH' && primaryLeave.raw.color === '#22d3ee'
+          ? '#86efac'
+          : primaryLeave.color || EVENT_TYPE_DEFAULT_COLORS['Staff Availability'];
         const tokens = [
-          primaryLeave.leaveCode || primaryLeave.cleanLabel.slice(0, 10),
+          isTo ? 'TO' : primaryLeave.leaveCode || primaryLeave.cleanLabel.slice(0, 10),
           ...clientAppts.map((a) => formatClientChipLabel(a)),
         ];
         cells[day.iso] = {
           kind: 'leave',
           text: tokens.join('\n'),
           bgColor: leaveColor,
-          textColor: getContrastingTextColor(leaveColor),
+          textColor: isTo ? '#3730a3' : getContrastingTextColor(leaveColor),
           secondaryFirmLabel: firmEvents[0]?.cleanLabel,
           secondaryFirmColor: firmEvents[0]?.color || EVENT_TYPE_DEFAULT_COLORS['Internal Event'],
         };
@@ -245,12 +473,22 @@ export function buildStaffMatrixExportModel(params: {
     };
   });
 
-  // Monthly Event Notes (firm-wide seminars/internal events + company holidays + PH)
+  // Monthly Event Notes (Tax Due Dates + firm-wide seminars/internal events + company holidays + PH)
   const monthStart = toIsoDate(new Date(year, monthIndex, 1));
   const monthEnd = toIsoDate(new Date(year, monthIndex + 1, 0));
 
+  const taxDueEvents = parsedEvents
+    .filter(
+      (e) =>
+        e.canonicalType === 'Tax Due Date' &&
+        e.raw.startDate <= monthEnd &&
+        (e.raw.endDate || e.raw.startDate) >= monthStart
+    )
+    .sort((a, b) => a.raw.startDate.localeCompare(b.raw.startDate));
+
   const firmEvents = parsedEvents.filter(
     (e) =>
+      e.canonicalType !== 'Tax Due Date' &&
       (e.isFirmWide || e.canonicalType === 'Company Holiday') &&
       e.raw.startDate <= monthEnd &&
       (e.raw.endDate || e.raw.startDate) >= monthStart
@@ -261,6 +499,17 @@ export function buildStaffMatrixExportModel(params: {
     .sort((a, b) => a.date.localeCompare(b.date));
 
   const monthlyNotes: MatrixExportNote[] = [
+    ...taxDueEvents.map((ev) => ({
+      kind: 'due' as const,
+      title: ev.cleanLabel,
+      dateLabel:
+        ev.raw.endDate && ev.raw.endDate !== ev.raw.startDate
+          ? `${formatDateDDMMYYYY(ev.raw.startDate)} – ${formatDateDDMMYYYY(ev.raw.endDate)}`
+          : formatDateDDMMYYYY(ev.raw.startDate),
+      categoryLabel: 'Tax Due Date',
+      color: ev.color || '#ef4444',
+      notes: ev.raw.notes || '',
+    })),
     ...firmEvents.map((ev) => ({
       kind: (ev.canonicalType === 'Company Holiday' ? 'holiday' : 'firm') as 'firm' | 'holiday',
       title: ev.cleanLabel,
@@ -282,10 +531,33 @@ export function buildStaffMatrixExportModel(params: {
     })),
   ];
 
-  const holidayDayCount = exportDays.filter((d) => Boolean(d.holidayName)).length;
-  const subtitle = `${monthLabel} • ${rows.length} active staff • ${holidayDayCount} holiday day(s) • Generated ${formatDateDDMMYYYY(
-    toIsoDate(new Date())
-  )}`;
+  const eventRegister = buildCalendarEventRegisterRows({
+    periodStart: monthStart,
+    periodEnd: monthEnd,
+    parsedEvents,
+    holidaysByDate,
+    staffList: allStaff && allStaff.length > 0 ? allStaff : activeStaff,
+    typeFilter,
+    searchQuery,
+  });
+
+  const activeFilterSummary = [
+    typeFilter ? `Type: ${typeFilter}` : '',
+    staffFilter ? `Staff: ${staffFilter}` : '',
+    searchQuery.trim() ? `Search: "${searchQuery.trim()}"` : '',
+  ]
+    .filter(Boolean)
+    .join(' · ');
+
+  const subtitle = [
+    monthLabel,
+    'Source: TJW Tax Department',
+    `${eventRegister.length} matching events`,
+    `${rows.length} staff`,
+    activeFilterSummary,
+  ]
+    .filter(Boolean)
+    .join(' • ');
 
   return {
     year,
@@ -294,11 +566,13 @@ export function buildStaffMatrixExportModel(params: {
     includeWeekends,
     title: `Team Staff Matrix — ${monthLabel}`,
     subtitle,
+    activeFilterSummary,
     filenameBase: `TPMS_Staff_Matrix_${year}-${String(monthIndex + 1).padStart(2, '0')}`,
     sheetName: `Matrix_${year}_${String(monthIndex + 1).padStart(2, '0')}`,
     days: exportDays,
     rows,
     monthlyNotes,
+    eventRegister,
     hasFirmEvents: firmEvents.length > 0,
   };
 }
@@ -582,17 +856,19 @@ export function printStaffMatrix(model: StaffMatrixExportModel): void {
       display: flex;
       justify-content: space-between;
     }
+    ${buildPrintTableSectionCss()}
   </style>
 </head>
 <body>
   <div class="header">
     <div>
       <p class="title">Tax Practice Management System — ${escapeHtml(model.title)}</p>
-      <p class="subtitle">${escapeHtml(model.subtitle)}</p>
+      <p class="subtitle">${escapeHtml(model.subtitle)} • Printed: ${escapeHtml(generatedAt)}</p>
     </div>
     <div class="legend">
       <span class="legend-item"><span class="swatch" style="background:#22d3ee;"></span>Leave</span>
       <span class="legend-item"><span class="swatch" style="background:#86efac;"></span>WFH</span>
+      <span class="legend-item"><span class="swatch" style="background:#ef4444;"></span>Tax Due Date</span>
       <span class="legend-item"><span class="swatch" style="background:#facc15;"></span>Holiday</span>
       <span class="legend-item"><span class="swatch" style="background:#f0abfc;"></span>Firm Event</span>
       <span class="legend-item"><span class="swatch" style="background:#bae6fd;"></span>Client Appt</span>
@@ -617,9 +893,13 @@ export function printStaffMatrix(model: StaffMatrixExportModel): void {
     </tbody>
   </table>
   ${notesStripHtml}
+  ${buildPrintTableSectionHtml(
+    buildCompleteEventRegisterSpec(model.eventRegister),
+    REGISTER_COL_WIDTHS_PCT
+  )}
   <div class="footer">
-    <span>Tax Practice Management System (Malaysia)</span>
-    <span>Generated: ${escapeHtml(generatedAt)}</span>
+    <span>Source: TJW Tax Department · Tax Practice Management System (Malaysia)</span>
+    <span>Printed: ${escapeHtml(generatedAt)}</span>
   </div>
 </body>
 </html>`;
@@ -689,6 +969,7 @@ export function exportStaffMatrixToPdf(model: StaffMatrixExportModel): void {
       const legendItems = [
         { label: 'Leave', hex: '#22d3ee' },
         { label: 'WFH', hex: '#86efac' },
+        { label: 'Tax Due Date', hex: '#ef4444' },
         { label: 'Holiday', hex: '#facc15' },
         { label: 'Firm Event', hex: '#f0abfc' },
         { label: 'Client Appt', hex: '#bae6fd' },
@@ -1059,6 +1340,14 @@ export function exportStaffMatrixToPdf(model: StaffMatrixExportModel): void {
       });
     }
 
+    // Page 2+ — Complete Event Register Table
+    appendPdfTableSection(doc, buildCompleteEventRegisterSpec(model.eventRegister), {
+      marginX,
+      marginTop,
+      footerReserve: 11,
+      columnWeights: REGISTER_COL_WEIGHTS,
+    });
+
     // Page numbers across all pages
     const totalPages = doc.getNumberOfPages();
     for (let p = 1; p <= totalPages; p++) {
@@ -1070,7 +1359,7 @@ export function exportStaffMatrixToPdf(model: StaffMatrixExportModel): void {
       doc.setFontSize(7);
       doc.setTextColor(100, 116, 139);
       doc.text(
-        `Tax Practice Management System (Malaysia)  |  Generated: ${generatedAt}`,
+        `Source: TJW Tax Department  |  Printed: ${generatedAt}`,
         marginX,
         pageHeight - 4
       );
@@ -1621,5 +1910,514 @@ export async function exportStaffMatrixToExcel(model: StaffMatrixExportModel): P
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     showToast(`Matrix Excel export failed: ${msg}`, 'error');
+  }
+}
+
+// =============================================================================
+// 4. MONTH VIEW PRINT & PDF REPORT (Page 1: Month Grid max 3 events/day + Page 2: Complete Event Register)
+// =============================================================================
+export interface MonthGridCellEvent {
+  label: string;
+  bgColor: string;
+  textColor: string;
+}
+
+export interface MonthGridCell {
+  iso: string;
+  dayNumber: number;
+  inCurrentMonth: boolean;
+  holidayName: string | null;
+  events: MonthGridCellEvent[];
+  overflowCount: number;
+}
+
+export interface MonthCalendarExportModel {
+  year: number;
+  monthIndex: number;
+  monthLabel: string;
+  periodLabel: string;
+  title: string;
+  subtitle: string;
+  filenameBase: string;
+  weeks: MonthGridCell[][];
+  eventRegister: CalendarRegisterRow[];
+}
+
+export function buildMonthCalendarExportModel(params: {
+  year: number;
+  monthIndex: number;
+  monthGridDays: Date[];
+  periodLabel?: string;
+  periodStart?: string;
+  periodEnd?: string;
+  parsedEvents: ParsedCalendarEvent[];
+  holidaysByDate: Map<string, PublicHolidayRef>;
+  staffList: StaffMember[];
+  typeFilter?: string;
+  staffFilter?: string;
+  searchQuery?: string;
+}): MonthCalendarExportModel {
+  const {
+    year,
+    monthIndex,
+    monthGridDays,
+    periodLabel,
+    periodStart,
+    periodEnd,
+    parsedEvents,
+    holidaysByDate,
+    staffList,
+    typeFilter = '',
+    staffFilter = '',
+    searchQuery = '',
+  } = params;
+
+  const monthLabel = new Date(year, monthIndex, 1).toLocaleDateString('en-MY', {
+    month: 'long',
+    year: 'numeric',
+  });
+  const effectiveStart = periodStart ?? toIsoDate(new Date(year, monthIndex, 1));
+  const effectiveEnd = periodEnd ?? toIsoDate(new Date(year, monthIndex + 1, 0));
+
+  const eventRegister = buildCalendarEventRegisterRows({
+    periodStart: effectiveStart,
+    periodEnd: effectiveEnd,
+    parsedEvents,
+    holidaysByDate,
+    staffList,
+    typeFilter,
+    searchQuery,
+  });
+
+  const q = searchQuery.trim().toLowerCase();
+  const includePublicHolidays = !typeFilter || typeFilter === 'Company Holiday';
+
+  const cells: MonthGridCell[] = monthGridDays.map((dayObj) => {
+    const iso = toIsoDate(dayObj);
+    const inCurrentMonth = dayObj.getMonth() === monthIndex;
+
+    const ph = holidaysByDate.get(iso);
+    const showPh =
+      Boolean(ph) &&
+      includePublicHolidays &&
+      (!q ||
+        `${ph!.name} ${ph!.scope} johor malaysia holiday ${formatDateDDMMYYYY(ph!.date)}`
+          .toLowerCase()
+          .includes(q));
+
+    const dayEvents = parsedEvents.filter((ev) => eventCoversDate(ev.raw, iso));
+    const allCellItems: MonthGridCellEvent[] = [];
+
+    if (showPh && ph) {
+      allCellItems.push({
+        label: ph.name,
+        bgColor: EVENT_TYPE_DEFAULT_COLORS['Company Holiday'],
+        textColor: getContrastingTextColor(EVENT_TYPE_DEFAULT_COLORS['Company Holiday']),
+      });
+    }
+
+    for (const ev of dayEvents) {
+      const bg = ev.color || EVENT_TYPE_DEFAULT_COLORS[ev.canonicalType] || '#e2e8f0';
+      allCellItems.push({
+        label: ev.displayTitle || ev.cleanLabel,
+        bgColor: bg,
+        textColor: getContrastingTextColor(bg),
+      });
+    }
+
+    const visibleItems = allCellItems.slice(0, 3);
+    const overflowCount = Math.max(0, allCellItems.length - 3);
+
+    return {
+      iso,
+      dayNumber: dayObj.getDate(),
+      inCurrentMonth,
+      holidayName: showPh && ph ? ph.name : null,
+      events: visibleItems,
+      overflowCount,
+    };
+  });
+
+  const weeks: MonthGridCell[][] = [];
+  for (let i = 0; i < cells.length; i += 7) {
+    weeks.push(cells.slice(i, i + 7));
+  }
+
+  const activeFilters = [
+    typeFilter ? `Type: ${typeFilter}` : '',
+    staffFilter ? `Staff: ${staffFilter}` : '',
+    searchQuery.trim() ? `Search: "${searchQuery.trim()}"` : '',
+  ]
+    .filter(Boolean)
+    .join(' · ');
+
+  const displayPeriod = periodLabel || monthLabel;
+  const subtitle = [
+    displayPeriod,
+    'Source: TJW Tax Department',
+    `${eventRegister.length} matching events`,
+    activeFilters,
+  ]
+    .filter(Boolean)
+    .join(' • ');
+
+  return {
+    year,
+    monthIndex,
+    monthLabel,
+    periodLabel: displayPeriod,
+    title: `Team Calendar — ${monthLabel}`,
+    subtitle,
+    filenameBase: `TPMS_Team_Calendar_${year}-${String(monthIndex + 1).padStart(2, '0')}`,
+    weeks,
+    eventRegister,
+  };
+}
+
+export function printMonthCalendar(model: MonthCalendarExportModel): void {
+  const generatedAt = new Date().toLocaleString('en-MY', {
+    dateStyle: 'medium',
+    timeStyle: 'short',
+  });
+
+  const weekdayLabels = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
+  const weekRowsHtml = model.weeks
+    .map(
+      (week) =>
+        `<tr>${week
+          .map((cell) => {
+            const pillsHtml = cell.events
+              .map(
+                (ev) =>
+                  `<div class="cal-pill" style="background:${escapeHtml(
+                    ev.bgColor
+                  )};color:${escapeHtml(ev.textColor)};">${escapeHtml(ev.label)}</div>`
+              )
+              .join('');
+            const moreHtml =
+              cell.overflowCount > 0
+                ? `<div class="cal-more">+${cell.overflowCount} more (see register)</div>`
+                : '';
+            return `<td class="cal-cell ${cell.inCurrentMonth ? '' : 'cal-outside'}">
+              <div class="cal-day-num">${cell.dayNumber}</div>
+              <div class="cal-pills">${pillsHtml}${moreHtml}</div>
+            </td>`;
+          })
+          .join('')}</tr>`
+    )
+    .join('');
+
+  const html = `<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <title>${escapeHtml(model.title)}</title>
+  <style>
+    @page { size: A4 landscape; margin: 8mm; }
+    * { box-sizing: border-box; -webkit-print-color-adjust: exact !important; print-color-adjust: exact !important; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+      color: #0f172a;
+      margin: 0;
+      padding: 0;
+      font-size: 8.5px;
+    }
+    .header {
+      display: flex;
+      justify-content: space-between;
+      align-items: flex-end;
+      border-bottom: 1.5px solid #0f766e;
+      padding-bottom: 5px;
+      margin-bottom: 7px;
+    }
+    .title { font-size: 13px; font-weight: 700; margin: 0; color: #0f172a; }
+    .subtitle { font-size: 8.8px; color: #475569; margin: 2px 0 0 0; }
+    .legend { display: flex; gap: 9px; align-items: center; font-size: 8px; color: #334155; }
+    .legend-item { display: inline-flex; align-items: center; gap: 4px; }
+    .swatch { width: 8px; height: 8px; border-radius: 2px; border: 0.5px solid rgba(15,23,42,0.25); display: inline-block; }
+    table.month-grid {
+      width: 100%;
+      border-collapse: collapse;
+      table-layout: fixed;
+    }
+    table.month-grid th {
+      background: #0f766e;
+      color: #ffffff;
+      font-weight: 700;
+      text-align: center;
+      padding: 4px 3px;
+      border: 0.75px solid #115e59;
+      font-size: 8.5px;
+      text-transform: uppercase;
+      letter-spacing: 0.3px;
+    }
+    table.month-grid td.cal-cell {
+      border: 0.75px solid #cbd5e1;
+      vertical-align: top;
+      padding: 3px 4px;
+      height: ${model.weeks.length >= 6 ? '26.5mm' : '31.5mm'};
+      background: #ffffff;
+    }
+    table.month-grid td.cal-outside {
+      background: #f8fafc;
+      color: #94a3b8;
+    }
+    .cal-day-num {
+      font-size: 8.5px;
+      font-weight: 700;
+      font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+      margin-bottom: 2px;
+      color: #334155;
+    }
+    .cal-outside .cal-day-num { color: #94a3b8; font-weight: 500; }
+    .cal-pills {
+      display: flex;
+      flex-direction: column;
+      gap: 2px;
+    }
+    .cal-pill {
+      padding: 1.5px 3.5px;
+      border-radius: 2.5px;
+      font-size: 7.3px;
+      font-weight: 600;
+      line-height: 1.2;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      border: 0.4px solid rgba(15,23,42,0.12);
+    }
+    .cal-more {
+      font-size: 7px;
+      font-weight: 600;
+      color: #0f766e;
+      padding-left: 2px;
+    }
+    .footer {
+      margin-top: 7px;
+      font-size: 7.5px;
+      color: #64748b;
+      display: flex;
+      justify-content: space-between;
+    }
+    ${buildPrintTableSectionCss()}
+  </style>
+</head>
+<body>
+  <div class="header">
+    <div>
+      <p class="title">Tax Practice Management System — ${escapeHtml(model.title)}</p>
+      <p class="subtitle">${escapeHtml(model.subtitle)} • Printed: ${escapeHtml(generatedAt)}</p>
+    </div>
+    <div class="legend">
+      <span class="legend-item"><span class="swatch" style="background:#22d3ee;"></span>Leave</span>
+      <span class="legend-item"><span class="swatch" style="background:#86efac;"></span>WFH</span>
+      <span class="legend-item"><span class="swatch" style="background:#ef4444;"></span>Tax Due Date</span>
+      <span class="legend-item"><span class="swatch" style="background:#facc15;"></span>Holiday</span>
+      <span class="legend-item"><span class="swatch" style="background:#f0abfc;"></span>Firm Event</span>
+      <span class="legend-item"><span class="swatch" style="background:#bae6fd;"></span>Client Appt</span>
+    </div>
+  </div>
+  <table class="month-grid">
+    <thead>
+      <tr>${weekdayLabels.map((wd) => `<th>${wd}</th>`).join('')}</tr>
+    </thead>
+    <tbody>
+      ${weekRowsHtml}
+    </tbody>
+  </table>
+  ${buildPrintTableSectionHtml(
+    buildCompleteEventRegisterSpec(model.eventRegister),
+    REGISTER_COL_WIDTHS_PCT
+  )}
+  <div class="footer">
+    <span>Source: TJW Tax Department · Tax Practice Management System (Malaysia)</span>
+    <span>Printed: ${escapeHtml(generatedAt)}</span>
+  </div>
+</body>
+</html>`;
+
+  printHtml(html);
+}
+
+export function exportMonthCalendarToPdf(model: MonthCalendarExportModel): void {
+  try {
+    const doc = new jsPDF({
+      orientation: 'landscape',
+      unit: 'mm',
+      format: 'a4',
+    });
+
+    const pageWidth = 297;
+    const pageHeight = 210;
+    const marginX = 8;
+    const marginTop = 9;
+    const footerReserve = 11;
+    const contentWidth = pageWidth - marginX * 2; // 281mm
+
+    const generatedAt = new Date().toLocaleString('en-MY', {
+      dateStyle: 'medium',
+      timeStyle: 'short',
+    });
+
+    let y = marginTop;
+
+    // Page 1 Header
+    doc.setFont('helvetica', 'bold');
+    doc.setFontSize(11.5);
+    doc.setTextColor(15, 23, 42);
+    doc.text(`Tax Practice Management System — ${model.title}`, marginX, y + 3.8);
+
+    // Legend
+    const legendItems = [
+      { label: 'Leave', hex: '#22d3ee' },
+      { label: 'WFH', hex: '#86efac' },
+      { label: 'Tax Due Date', hex: '#ef4444' },
+      { label: 'Holiday', hex: '#facc15' },
+      { label: 'Firm Event', hex: '#f0abfc' },
+      { label: 'Client Appt', hex: '#bae6fd' },
+    ];
+    let lx = pageWidth - marginX;
+    doc.setFont('helvetica', 'normal');
+    doc.setFontSize(6.8);
+    for (let i = legendItems.length - 1; i >= 0; i--) {
+      const item = legendItems[i];
+      const tw = doc.getTextWidth(item.label);
+      lx -= tw;
+      doc.setTextColor(51, 65, 85);
+      doc.text(item.label, lx, y + 3.5);
+      lx -= 3.6;
+      const [r, g, b] = hexToRgb(item.hex);
+      doc.setFillColor(r, g, b);
+      doc.setDrawColor(100, 116, 139);
+      doc.setLineWidth(0.15);
+      doc.rect(lx, y + 1.3, 2.5, 2.5, 'FD');
+      lx -= 3.2;
+    }
+
+    y += 5.8;
+    doc.setFont('helvetica', 'normal');
+    doc.setFontSize(7.5);
+    doc.setTextColor(71, 85, 105);
+    doc.text(`${model.subtitle} • Printed: ${generatedAt}`, marginX, y + 1.4);
+    y += 3.6;
+
+    doc.setDrawColor(15, 118, 110);
+    doc.setLineWidth(0.45);
+    doc.line(marginX, y, pageWidth - marginX, y);
+    y += 2.2;
+
+    // 7-Column Month Grid
+    const colW = contentWidth / 7;
+    const headH = 6.2;
+    const weekdayLabels = ['MON', 'TUE', 'WED', 'THU', 'FRI', 'SAT', 'SUN'];
+
+    weekdayLabels.forEach((wd, idx) => {
+      const cx = marginX + idx * colW;
+      doc.setFillColor(15, 118, 110);
+      doc.setDrawColor(17, 94, 89);
+      doc.setLineWidth(0.2);
+      doc.rect(cx, y, colW, headH, 'FD');
+      doc.setFont('helvetica', 'bold');
+      doc.setFontSize(7.4);
+      doc.setTextColor(255, 255, 255);
+      doc.text(wd, cx + colW / 2, y + 4.1, { align: 'center' });
+    });
+    y += headH;
+
+    const weekCount = Math.max(1, model.weeks.length);
+    const availH = pageHeight - footerReserve - y - 1;
+    const rowH = availH / weekCount;
+
+    model.weeks.forEach((week, wIdx) => {
+      const ry = y + wIdx * rowH;
+      week.forEach((cell, dIdx) => {
+        const cx = marginX + dIdx * colW;
+        doc.setFillColor(
+          cell.inCurrentMonth ? 255 : 248,
+          cell.inCurrentMonth ? 255 : 250,
+          cell.inCurrentMonth ? 255 : 252
+        );
+        doc.setDrawColor(203, 213, 225);
+        doc.setLineWidth(0.2);
+        doc.rect(cx, ry, colW, rowH, 'FD');
+
+        // Day number
+        doc.setFont('helvetica', cell.inCurrentMonth ? 'bold' : 'normal');
+        doc.setFontSize(7.5);
+        doc.setTextColor(
+          cell.inCurrentMonth ? 30 : 148,
+          cell.inCurrentMonth ? 41 : 163,
+          cell.inCurrentMonth ? 59 : 184
+        );
+        doc.text(String(cell.dayNumber), cx + 1.8, ry + 4.1);
+
+        // Up to 3 event pills
+        let py = ry + 5.6;
+        const pillH = 4.6;
+        const pillGap = 1.1;
+        cell.events.slice(0, 3).forEach((ev) => {
+          if (py + pillH > ry + rowH - 1.2) return;
+          const [r, g, b] = hexToRgb(ev.bgColor);
+          const [tr, tg, tb] = hexToRgb(ev.textColor);
+          doc.setFillColor(r, g, b);
+          doc.setDrawColor(148, 163, 184);
+          doc.setLineWidth(0.1);
+          doc.roundedRect(cx + 1.3, py, colW - 2.6, pillH, 0.8, 0.8, 'FD');
+
+          doc.setFont('helvetica', 'bold');
+          doc.setFontSize(6.2);
+          doc.setTextColor(tr, tg, tb);
+          const maxTextW = colW - 4.6;
+          let label = ev.label;
+          while (label.length > 3 && doc.getTextWidth(label) > maxTextW) {
+            label = `${label.slice(0, -2)}…`;
+          }
+          doc.text(label, cx + 2.2, py + 3.2);
+          py += pillH + pillGap;
+        });
+
+        if (cell.overflowCount > 0 && py + 2.8 <= ry + rowH - 0.5) {
+          doc.setFont('helvetica', 'bold');
+          doc.setFontSize(6.0);
+          doc.setTextColor(15, 118, 110);
+          doc.text(`+${cell.overflowCount} more`, cx + 1.8, py + 2.3);
+        }
+      });
+    });
+
+    // Page 2+ — Complete Event Register Table
+    appendPdfTableSection(doc, buildCompleteEventRegisterSpec(model.eventRegister), {
+      marginX,
+      marginTop,
+      footerReserve,
+      columnWeights: REGISTER_COL_WEIGHTS,
+    });
+
+    // Page numbers across all pages
+    const totalPages = doc.getNumberOfPages();
+    for (let p = 1; p <= totalPages; p++) {
+      doc.setPage(p);
+      doc.setDrawColor(226, 232, 240);
+      doc.setLineWidth(0.25);
+      doc.line(marginX, pageHeight - 7.5, pageWidth - marginX, pageHeight - 7.5);
+      doc.setFont('helvetica', 'normal');
+      doc.setFontSize(7);
+      doc.setTextColor(100, 116, 139);
+      doc.text(
+        `Source: TJW Tax Department  |  Printed: ${generatedAt}`,
+        marginX,
+        pageHeight - 4
+      );
+      doc.text(`Page ${p} of ${totalPages}`, pageWidth - marginX, pageHeight - 4, {
+        align: 'right',
+      });
+    }
+
+    const filename = `${model.filenameBase}.pdf`;
+    triggerBlobDownload(doc.output('blob'), filename);
+    showToast(`Downloaded ${filename}`, 'success', 3200);
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    showToast(`Calendar PDF export failed: ${msg}`, 'error');
   }
 }

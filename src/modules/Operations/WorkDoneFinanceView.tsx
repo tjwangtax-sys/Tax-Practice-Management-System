@@ -22,7 +22,7 @@ import {
 } from '../../types/tpms';
 import { useAuth } from '../../context/AuthContext';
 import { useData } from '../../context/DataContext';
-import { useColumnVisibility } from '../../hooks/useColumnVisibility';
+import { useColumnVisibility, usePinnedColumnOffsets } from '../../hooks/useColumnVisibility';
 import { RegisterToolbar } from '../../components/RegisterToolbar';
 import { exportToExcel, printRegisterHtml } from '../../lib/exportUtils';
 import { formatDateDDMMYYYY } from '../../lib/deadlineUtils';
@@ -34,6 +34,7 @@ import {
   exportBatchWorkDoneZip,
 } from './workDonePdfUtils';
 import { ExcelColumnFilter } from '../../components/ExcelColumnFilter';
+import { RemarksPreviewCell } from '../../components/RemarksPreviewCell';
 import { useExcelTableFilters } from '../../hooks/useExcelTableFilters';
 
 const WORK_DONE_COLUMNS: ColumnDef[] = [
@@ -55,8 +56,60 @@ const WORK_DONE_COLUMNS: ColumnDef[] = [
   { key: 'financeInvoiceStatus', label: 'Finance Status', defaultVisible: true },
   { key: 'invoiceNo', label: 'Invoice No.', defaultVisible: true },
   { key: 'issueDate', label: 'Issue Date', defaultVisible: false, optional: true },
-  { key: 'remarks', label: 'Remarks', defaultVisible: false, optional: true },
+  {
+    key: 'workDoneDescription',
+    label: 'Work Done Description',
+    defaultVisible: true,
+    optional: true,
+  },
+  { key: 'remarks', label: 'Remarks', defaultVisible: true, optional: true },
 ];
+
+const WORK_DONE_COL_WIDTHS: Record<string, string> = {
+  workDoneId: 'w-[115px] min-w-[115px]',
+  clientName: 'min-w-[205px]',
+  ya: 'min-w-[75px]',
+  jobType: 'min-w-[125px]',
+  jobId: 'min-w-[120px]',
+  pic: 'min-w-[120px]',
+  reviewer: 'min-w-[120px]',
+  pricingMode: 'min-w-[130px]',
+  quotationPrice: 'min-w-[115px]',
+  hodPrice: 'min-w-[115px]',
+  additionalCharges: 'min-w-[120px]',
+  finalPrice: 'min-w-[115px]',
+  sstAmount: 'min-w-[105px]',
+  totalInvoiceAmount: 'min-w-[130px]',
+  workDoneStatus: 'min-w-[170px]',
+  financeInvoiceStatus: 'min-w-[145px]',
+  invoiceNo: 'min-w-[125px]',
+  issueDate: 'min-w-[115px]',
+  workDoneDescription: 'min-w-[200px]',
+  remarks: 'min-w-[190px]',
+};
+
+const WORK_DONE_COL_FALLBACK_WIDTHS: Record<string, number> = {
+  workDoneId: 115,
+  clientName: 205,
+  ya: 75,
+  jobType: 125,
+  jobId: 120,
+  pic: 120,
+  reviewer: 120,
+  pricingMode: 130,
+  quotationPrice: 115,
+  hodPrice: 115,
+  additionalCharges: 120,
+  finalPrice: 115,
+  sstAmount: 105,
+  totalInvoiceAmount: 130,
+  workDoneStatus: 170,
+  financeInvoiceStatus: 145,
+  invoiceNo: 125,
+  issueDate: 115,
+  workDoneDescription: 200,
+  remarks: 190,
+};
 
 function getWorkDoneBadgeStyle(status: string): string {
   switch (status) {
@@ -105,9 +158,22 @@ function formatOptionalMoney(val: number | null | undefined): string {
 export const WorkDoneFinanceView: React.FC = () => {
   const { isAdmin, isReadOnly } = useAuth();
   const { workDoneRecords, deleteWorkDone } = useData();
-  const { visibleColumns, toggleColumn, resetColumns } = useColumnVisibility(
-    'work_done_finance_v2',
-    WORK_DONE_COLUMNS
+  const {
+    visibleColumns,
+    pinnedColumns,
+    orderedColumns,
+    activeColumns,
+    pinnedActiveKeys,
+    toggleColumn,
+    togglePin,
+    moveColumn,
+    reorderColumn,
+    resetColumns,
+  } = useColumnVisibility('work_done_finance_v2', WORK_DONE_COLUMNS, ['workDoneId', 'clientName']);
+  const { headerRowRef, getHeaderStickyProps, getCellStickyProps } = usePinnedColumnOffsets(
+    pinnedActiveKeys,
+    WORK_DONE_COL_FALLBACK_WIDTHS,
+    38
   );
 
   // Filters
@@ -263,6 +329,7 @@ export const WorkDoneFinanceView: React.FC = () => {
       financeInvoiceStatus: (r: WorkDoneRecord) => r.financeInvoiceStatus,
       invoiceNo: (r: WorkDoneRecord) => r.invoiceNo,
       issueDate: (r: WorkDoneRecord) => (r.issueDate ? formatDateDDMMYYYY(r.issueDate) : ''),
+      workDoneDescription: (r: WorkDoneRecord) => r.workDoneDescription || '',
       remarks: (r: WorkDoneRecord) => r.remarks,
     }),
     []
@@ -385,38 +452,13 @@ export const WorkDoneFinanceView: React.FC = () => {
         financeInvoiceStatus: r.financeInvoiceStatus,
         invoiceNo: r.invoiceNo || '—',
         issueDate: r.issueDate ? formatDateDDMMYYYY(r.issueDate) : '—',
+        workDoneDescription: r.workDoneDescription || '',
         remarks: r.remarks || '',
       })),
     [excel.rows]
   );
 
-  const visibleExportColumns = useMemo(
-    () => WORK_DONE_COLUMNS.filter((c) => visibleColumns[c.key]),
-    [visibleColumns]
-  );
-
-  const renderColHeader = (
-    key: string,
-    title: string,
-    align: 'left' | 'right' | 'center' = 'left'
-  ) => (
-    <th
-      className={`py-2.5 px-2.5 whitespace-nowrap ${
-        align === 'right' ? 'text-right' : align === 'center' ? 'text-center' : ''
-      }`}
-    >
-      <ExcelColumnFilter
-        columnKey={key}
-        title={title}
-        values={excel.getColumnValues(key)}
-        selectedValues={excel.columnFilters[key]}
-        onChangeSelected={(next) => excel.setColumnFilter(key, next)}
-        sortDirection={excel.sortState?.key === key ? excel.sortState.direction : null}
-        onSort={(dir) => excel.setColumnSort(key, dir)}
-        align={align}
-      />
-    </th>
-  );
+  const visibleExportColumns = activeColumns;
 
   return (
     <div className="space-y-4">
@@ -479,10 +521,14 @@ export const WorkDoneFinanceView: React.FC = () => {
         searchPlaceholder="Search WD ID, client, job ref, invoice no., description..."
         hasActiveFilters={hasActiveFilters}
         onResetFilters={resetFilters}
-        columns={WORK_DONE_COLUMNS}
+        columns={orderedColumns}
         visibleColumns={visibleColumns}
         onToggleColumn={toggleColumn}
         onResetColumns={resetColumns}
+        pinnedColumns={pinnedColumns}
+        onTogglePin={togglePin}
+        onMoveColumn={moveColumn}
+        onReorderColumn={reorderColumn}
         onExportExcel={() =>
           exportToExcel(
             `TPMS_Work_Done_Finance_${new Date().toISOString().slice(0, 10)}.xlsx`,
@@ -609,221 +655,286 @@ export const WorkDoneFinanceView: React.FC = () => {
       />
 
       {/* High-Density Table */}
-      <div className="bg-white border border-slate-200 rounded-lg overflow-hidden">
-        <div className="overflow-x-auto max-h-[65vh]">
-          <table className="w-full text-left border-collapse">
-            <thead className="sticky top-0 z-10 bg-slate-50 border-b border-slate-200">
-              <tr className="text-[11px] font-semibold text-slate-600 uppercase tracking-wider">
-                <th className="py-2.5 px-3 w-9">
-                  <input
-                    type="checkbox"
-                    checked={allFilteredSelected}
-                    onChange={toggleSelectAllFiltered}
-                    aria-label="Select all visible Work Done records"
-                    className="rounded border-slate-300 text-teal-700 focus:ring-teal-600"
-                  />
-                </th>
-                {visibleColumns.workDoneId && renderColHeader('workDoneId', 'WD ID')}
-                {visibleColumns.clientName && renderColHeader('clientName', 'Client Name')}
-                {visibleColumns.ya && renderColHeader('ya', 'YA')}
-                {visibleColumns.jobType && renderColHeader('jobType', 'Job Type')}
-                {visibleColumns.jobId && renderColHeader('jobId', 'Job Ref')}
-                {visibleColumns.pic && renderColHeader('pic', 'PIC')}
-                {visibleColumns.reviewer && renderColHeader('reviewer', 'Reviewer')}
-                {visibleColumns.pricingMode && renderColHeader('pricingMode', 'Pricing Mode')}
-                {visibleColumns.quotationPrice && renderColHeader('quotationPrice', 'Quotation', 'right')}
-                {visibleColumns.hodPrice && renderColHeader('hodPrice', 'HOD Price', 'right')}
-                {visibleColumns.additionalCharges && renderColHeader('additionalCharges', 'Add. Charges', 'right')}
-                {visibleColumns.finalPrice && renderColHeader('finalPrice', 'Final Price', 'right')}
-                {visibleColumns.sstAmount && renderColHeader('sstAmount', 'SST', 'right')}
-                {visibleColumns.totalInvoiceAmount && renderColHeader('totalInvoiceAmount', 'Total Invoice', 'right')}
-                {visibleColumns.workDoneStatus && renderColHeader('workDoneStatus', 'Work Done Status')}
-                {visibleColumns.financeInvoiceStatus && renderColHeader('financeInvoiceStatus', 'Finance Status')}
-                {visibleColumns.invoiceNo && renderColHeader('invoiceNo', 'Invoice No.')}
-                {visibleColumns.issueDate && renderColHeader('issueDate', 'Issue Date')}
-                {visibleColumns.remarks && renderColHeader('remarks', 'Remarks')}
-                <th className="py-2.5 px-3 text-right whitespace-nowrap">Actions</th>
+      <div className="max-h-[calc(100vh-64px)] overflow-auto relative bg-white border border-slate-200 rounded-lg">
+        <table className="w-full text-xs text-left border-collapse">
+          <thead className="sticky top-0 z-20 bg-slate-50 shadow-sm border-b border-slate-200 text-slate-700">
+            <tr ref={headerRowRef}>
+              <th
+                className={`sticky top-0 left-0 z-30 bg-slate-50 py-2 px-3 w-[38px] min-w-[38px] border-b border-slate-200 ${
+                  pinnedActiveKeys.length === 0
+                    ? 'shadow-[inset_-1px_0_0_#e2e8f0,2px_0_4px_-2px_rgba(15,23,42,0.12)]'
+                    : 'shadow-[inset_-1px_0_0_#e2e8f0]'
+                }`}
+              >
+                <input
+                  type="checkbox"
+                  checked={allFilteredSelected}
+                  onChange={toggleSelectAllFiltered}
+                  aria-label="Select all visible Work Done records"
+                  className="rounded border-slate-300 text-teal-700 focus:ring-teal-600"
+                />
+              </th>
+              {activeColumns.map((col) => {
+                const stickyTh = getHeaderStickyProps(col.key);
+                const align = col.align === 'right' ? 'right' : 'left';
+                return (
+                  <th
+                    key={col.key}
+                    data-pinned-col={stickyTh['data-pinned-col']}
+                    style={stickyTh.style}
+                    className={`py-2 px-3 text-xs font-semibold whitespace-nowrap border-b border-slate-200 ${
+                      align === 'right' ? 'text-right' : 'text-left'
+                    } ${WORK_DONE_COL_WIDTHS[col.key] || 'min-w-[115px]'} ${stickyTh.className}`}
+                  >
+                    <ExcelColumnFilter
+                      columnKey={col.key}
+                      title={col.label}
+                      values={excel.getColumnValues(col.key)}
+                      selectedValues={excel.columnFilters[col.key]}
+                      onChangeSelected={(next) => excel.setColumnFilter(col.key, next)}
+                      sortDirection={
+                        excel.sortState?.key === col.key ? excel.sortState.direction : null
+                      }
+                      onSort={(dir) => excel.setColumnSort(col.key, dir)}
+                      align={align}
+                    />
+                  </th>
+                );
+              })}
+              <th className="sticky top-0 z-20 bg-slate-50 py-2 px-3 text-xs font-semibold text-right whitespace-nowrap border-b border-slate-200 min-w-[175px]">
+                Actions
+              </th>
+            </tr>
+          </thead>
+          <tbody className="divide-y divide-slate-100 text-xs">
+            {excel.rows.length === 0 ? (
+              <tr>
+                <td colSpan={activeColumns.length + 2} className="py-12 text-center text-slate-400">
+                  <Receipt className="w-8 h-8 mx-auto mb-2 text-slate-300" />
+                  <div className="font-medium text-slate-600">No Work Done records found</div>
+                  <div className="text-[11px] mt-0.5">
+                    {hasActiveFilters
+                      ? 'Try clearing filters or search terms.'
+                      : 'Click "New Work Done" to create your first billing record.'}
+                  </div>
+                </td>
               </tr>
-            </thead>
-            <tbody className="divide-y divide-slate-100 text-xs">
-              {excel.rows.length === 0 ? (
-                <tr>
-                  <td colSpan={22} className="py-12 text-center text-slate-400">
-                    <Receipt className="w-8 h-8 mx-auto mb-2 text-slate-300" />
-                    <div className="font-medium text-slate-600">No Work Done records found</div>
-                    <div className="text-[11px] mt-0.5">
-                      {hasActiveFilters
-                        ? 'Try clearing filters or search terms.'
-                        : 'Click "New Work Done" to create your first billing record.'}
-                    </div>
-                  </td>
-                </tr>
-              ) : (
-                excel.rows.map((rec) => {
-                  const isChecked = Boolean(selectedIds[rec.id]);
-                  const isDeletingConfirm = confirmDeleteId === rec.id;
-                  return (
-                    <tr
-                      key={rec.id}
-                      className={`hover:bg-slate-50/80 transition-colors ${
-                        isChecked ? 'bg-teal-50/40' : ''
+            ) : (
+              excel.rows.map((rec) => {
+                const isChecked = Boolean(selectedIds[rec.id]);
+                const isDeletingConfirm = confirmDeleteId === rec.id;
+                const stickyBg = isChecked
+                  ? 'bg-teal-50 group-hover:bg-teal-50/90'
+                  : 'bg-white group-hover:bg-slate-50';
+                return (
+                  <tr
+                    key={rec.id}
+                    className={`group hover:bg-slate-50 transition-colors ${
+                      isChecked ? 'bg-teal-50/40' : ''
+                    }`}
+                  >
+                    <td
+                      className={`sticky left-0 z-10 ${stickyBg} w-[38px] min-w-[38px] py-2 px-3 ${
+                        pinnedActiveKeys.length === 0
+                          ? 'shadow-[inset_-1px_0_0_#e2e8f0,2px_0_4px_-2px_rgba(15,23,42,0.12)]'
+                          : 'shadow-[inset_-1px_0_0_#e2e8f0]'
                       }`}
                     >
-                      <td className="py-2 px-3">
-                        <input
-                          type="checkbox"
-                          checked={isChecked}
-                          onChange={() => toggleSelectOne(rec.id)}
-                          aria-label={`Select ${rec.workDoneId}`}
-                          className="rounded border-slate-300 text-teal-700 focus:ring-teal-600"
-                        />
-                      </td>
-                      {visibleColumns.workDoneId && (
-                        <td className="py-2 px-2.5 font-mono text-[11px] font-semibold text-slate-800 whitespace-nowrap">
-                          {rec.workDoneId}
+                      <input
+                        type="checkbox"
+                        checked={isChecked}
+                        onChange={() => toggleSelectOne(rec.id)}
+                        aria-label={`Select ${rec.workDoneId}`}
+                        className="rounded border-slate-300 text-teal-700 focus:ring-teal-600"
+                      />
+                    </td>
+                    {activeColumns.map((col) => {
+                      const key = col.key;
+                      const stickyTd = getCellStickyProps(key, stickyBg);
+                      const colWidth = WORK_DONE_COL_WIDTHS[key] || 'min-w-[115px]';
+                      const wrapTd = (cls: string, content: React.ReactNode) => (
+                        <td
+                          key={key}
+                          style={stickyTd.style}
+                          className={`${cls} ${colWidth} ${stickyTd.className}`}
+                        >
+                          {content}
                         </td>
-                      )}
-                      {visibleColumns.clientName && (
-                        <td className="py-2 px-2.5 min-w-[180px]">
-                          <div className="font-medium text-slate-900 leading-tight">
-                            {rec.clientName}
-                          </div>
-                          {rec.clientId && (
-                            <div className="text-[10px] font-mono text-slate-400">
-                              {rec.clientId}
-                            </div>
-                          )}
-                        </td>
-                      )}
-                      {visibleColumns.ya && (
-                        <td className="py-2 px-2.5 font-mono tabular-nums text-slate-700 whitespace-nowrap">
-                          {rec.ya || '—'}
-                        </td>
-                      )}
-                      {visibleColumns.jobType && (
-                        <td className="py-2 px-2.5 text-slate-700 whitespace-nowrap">
-                          {rec.jobType || '—'}
-                        </td>
-                      )}
-                      {visibleColumns.jobId && (
-                        <td className="py-2 px-2.5 font-mono text-[11px] text-slate-600 whitespace-nowrap">
-                          {rec.jobId || '—'}
-                        </td>
-                      )}
-                      {visibleColumns.pic && (
-                        <td className="py-2 px-2.5 text-slate-700 whitespace-nowrap">
-                          {rec.pic || '—'}
-                        </td>
-                      )}
-                      {visibleColumns.reviewer && (
-                        <td className="py-2 px-2.5 text-slate-600 whitespace-nowrap">
-                          {rec.reviewer || '—'}
-                        </td>
-                      )}
-                      {visibleColumns.pricingMode && (
-                        <td className="py-2 px-2.5 whitespace-nowrap">
-                          <span className="inline-flex items-center px-2 py-0.5 rounded text-[11px] font-medium bg-slate-100 text-slate-700">
-                            {rec.pricingMode === 'Individual Allocation'
-                              ? `Individual (${rec.feeAllocations?.length ?? 0})`
-                              : 'Overall Fee'}
-                          </span>
-                        </td>
-                      )}
-                      {visibleColumns.quotationPrice && (
-                        <td className="py-2 px-2.5 font-mono tabular-nums text-right text-slate-600 whitespace-nowrap">
-                          {formatOptionalMoney(rec.quotationPrice)}
-                        </td>
-                      )}
-                      {visibleColumns.hodPrice && (
-                        <td className="py-2 px-2.5 font-mono tabular-nums text-right text-slate-800 whitespace-nowrap">
-                          {formatOptionalMoney(rec.hodPrice)}
-                        </td>
-                      )}
-                      {visibleColumns.additionalCharges && (
-                        <td className="py-2 px-2.5 font-mono tabular-nums text-right text-slate-600 whitespace-nowrap">
-                          {formatCurrencyRM(rec.additionalCharges)}
-                        </td>
-                      )}
-                      {visibleColumns.finalPrice && (
-                        <td className="py-2 px-2.5 font-mono tabular-nums text-right font-medium text-slate-800 whitespace-nowrap">
-                          {formatCurrencyRM(rec.finalPrice)}
-                        </td>
-                      )}
-                      {visibleColumns.sstAmount && (
-                        <td className="py-2 px-2.5 font-mono tabular-nums text-right text-slate-600 whitespace-nowrap">
-                          {formatOptionalMoney(rec.sstAmount)}
-                        </td>
-                      )}
-                      {visibleColumns.totalInvoiceAmount && (
-                        <td className="py-2 px-2.5 font-mono tabular-nums text-right font-semibold text-teal-800 whitespace-nowrap">
-                          {formatCurrencyRM(rec.totalInvoiceAmount)}
-                        </td>
-                      )}
-                      {visibleColumns.workDoneStatus && (
-                        <td className="py-2 px-2.5 whitespace-nowrap">
-                          <span
-                            className={`inline-flex items-center px-2 py-0.5 rounded border text-[11px] font-medium ${getWorkDoneBadgeStyle(
-                              rec.workDoneStatus
-                            )}`}
-                          >
-                            {rec.workDoneStatus}
-                          </span>
-                        </td>
-                      )}
-                      {visibleColumns.financeInvoiceStatus && (
-                        <td className="py-2 px-2.5 whitespace-nowrap">
-                          <span
-                            className={`inline-flex items-center px-2 py-0.5 rounded border text-[11px] font-medium ${getFinanceBadgeStyle(
-                              rec.financeInvoiceStatus
-                            )}`}
-                          >
-                            {rec.financeInvoiceStatus}
-                          </span>
-                        </td>
-                      )}
-                      {visibleColumns.invoiceNo && (
-                        <td className="py-2 px-2.5 font-mono text-[11px] text-slate-700 whitespace-nowrap">
-                          {rec.invoiceNo || '—'}
-                        </td>
-                      )}
-                      {visibleColumns.issueDate && (
-                        <td className="py-2 px-2.5 font-mono text-[11px] text-slate-600 whitespace-nowrap">
-                          {rec.issueDate ? formatDateDDMMYYYY(rec.issueDate) : '—'}
-                        </td>
-                      )}
-                      {visibleColumns.remarks && (
-                        <td className="py-2 px-2.5 text-slate-600 max-w-[200px] truncate" title={rec.remarks}>
-                          {rec.remarks || '—'}
-                        </td>
-                      )}
-                      <td className="py-2 px-3 text-right whitespace-nowrap">
-                        <div className="inline-flex items-center gap-1">
+                      );
+
+                      switch (key) {
+                        case 'workDoneId':
+                          return wrapTd(
+                            'py-2 px-3 font-mono text-xs font-semibold text-slate-800 whitespace-nowrap',
+                            rec.workDoneId
+                          );
+                        case 'clientName':
+                          return wrapTd(
+                            'py-2 px-3 whitespace-nowrap',
+                            <>
+                              <div
+                                className="font-medium text-slate-900 leading-tight max-w-[240px] truncate"
+                                title={rec.clientName}
+                              >
+                                {rec.clientName}
+                              </div>
+                              {rec.clientId && (
+                                <div className="text-[10px] font-mono text-slate-400">
+                                  {rec.clientId}
+                                </div>
+                              )}
+                            </>
+                          );
+                        case 'ya':
+                          return wrapTd(
+                            'py-2 px-2.5 font-mono tabular-nums text-slate-700 whitespace-nowrap',
+                            rec.ya || '—'
+                          );
+                        case 'jobType':
+                          return wrapTd(
+                            'py-2 px-2.5 text-slate-700 whitespace-nowrap',
+                            rec.jobType || '—'
+                          );
+                        case 'jobId':
+                          return wrapTd(
+                            'py-2 px-2.5 font-mono text-[11px] text-slate-600 whitespace-nowrap',
+                            rec.jobId || '—'
+                          );
+                        case 'pic':
+                          return wrapTd(
+                            'py-2 px-2.5 text-slate-700 whitespace-nowrap',
+                            rec.pic || '—'
+                          );
+                        case 'reviewer':
+                          return wrapTd(
+                            'py-2 px-2.5 text-slate-600 whitespace-nowrap',
+                            rec.reviewer || '—'
+                          );
+                        case 'pricingMode':
+                          return wrapTd(
+                            'py-2 px-2.5 whitespace-nowrap',
+                            <span className="inline-flex items-center px-2 py-0.5 rounded text-[11px] font-medium bg-slate-100 text-slate-700">
+                              {rec.pricingMode === 'Individual Allocation'
+                                ? `Individual (${rec.feeAllocations?.length ?? 0})`
+                                : 'Overall Fee'}
+                            </span>
+                          );
+                        case 'quotationPrice':
+                          return wrapTd(
+                            'py-2 px-2.5 font-mono tabular-nums text-right text-slate-600 whitespace-nowrap',
+                            formatOptionalMoney(rec.quotationPrice)
+                          );
+                        case 'hodPrice':
+                          return wrapTd(
+                            'py-2 px-2.5 font-mono tabular-nums text-right text-slate-800 whitespace-nowrap',
+                            formatOptionalMoney(rec.hodPrice)
+                          );
+                        case 'additionalCharges':
+                          return wrapTd(
+                            'py-2 px-2.5 font-mono tabular-nums text-right text-slate-600 whitespace-nowrap',
+                            formatCurrencyRM(rec.additionalCharges)
+                          );
+                        case 'finalPrice':
+                          return wrapTd(
+                            'py-2 px-2.5 font-mono tabular-nums text-right font-medium text-slate-800 whitespace-nowrap',
+                            formatCurrencyRM(rec.finalPrice)
+                          );
+                        case 'sstAmount':
+                          return wrapTd(
+                            'py-2 px-2.5 font-mono tabular-nums text-right text-slate-600 whitespace-nowrap',
+                            formatOptionalMoney(rec.sstAmount)
+                          );
+                        case 'totalInvoiceAmount':
+                          return wrapTd(
+                            'py-2 px-2.5 font-mono tabular-nums text-right font-semibold text-teal-800 whitespace-nowrap',
+                            formatCurrencyRM(rec.totalInvoiceAmount)
+                          );
+                        case 'workDoneStatus':
+                          return wrapTd(
+                            'py-2 px-2.5 whitespace-nowrap',
+                            <span
+                              className={`inline-flex items-center px-2 py-0.5 rounded border text-[11px] font-medium ${getWorkDoneBadgeStyle(
+                                rec.workDoneStatus
+                              )}`}
+                            >
+                              {rec.workDoneStatus}
+                            </span>
+                          );
+                        case 'financeInvoiceStatus':
+                          return wrapTd(
+                            'py-2 px-2.5 whitespace-nowrap',
+                            <span
+                              className={`inline-flex items-center px-2 py-0.5 rounded border text-[11px] font-medium ${getFinanceBadgeStyle(
+                                rec.financeInvoiceStatus
+                              )}`}
+                            >
+                              {rec.financeInvoiceStatus}
+                            </span>
+                          );
+                        case 'invoiceNo':
+                          return wrapTd(
+                            'py-2 px-2.5 font-mono text-[11px] text-slate-700 whitespace-nowrap',
+                            rec.invoiceNo || '—'
+                          );
+                        case 'issueDate':
+                          return wrapTd(
+                            'py-2 px-2.5 font-mono text-[11px] text-slate-600 whitespace-nowrap',
+                            rec.issueDate ? formatDateDDMMYYYY(rec.issueDate) : '—'
+                          );
+                        case 'workDoneDescription':
+                          return wrapTd(
+                            'py-2 px-2.5 whitespace-nowrap',
+                            <RemarksPreviewCell
+                              text={rec.workDoneDescription}
+                              recordTitle={rec.clientName}
+                              recordId={rec.workDoneId}
+                              fieldLabel="Work Done Description"
+                            />
+                          );
+                        case 'remarks':
+                          return wrapTd(
+                            'py-2 px-2.5 whitespace-nowrap',
+                            <RemarksPreviewCell
+                              text={rec.remarks}
+                              recordTitle={rec.clientName}
+                              recordId={rec.workDoneId}
+                              fieldLabel="Work Done Remarks"
+                            />
+                          );
+                        default:
+                          return wrapTd('py-2 px-2.5 text-slate-600 whitespace-nowrap', '—');
+                      }
+                    })}
+                      <td className="py-2 px-3 text-xs text-right whitespace-nowrap">
+                        <div className="inline-flex items-center gap-1.5 whitespace-nowrap">
                           <button
                             type="button"
                             onClick={() => setPreviewRecord(rec)}
-                            className="p-1 rounded text-slate-500 hover:text-teal-700 hover:bg-teal-50"
+                            className="font-medium text-teal-700 hover:underline"
                             title="Preview A4 PDF"
                           >
-                            <Eye className="w-3.5 h-3.5" />
+                            Preview
                           </button>
+                          <span className="text-slate-300">·</span>
                           <button
                             type="button"
                             onClick={() => downloadWorkDonePdf(rec)}
-                            className="p-1 rounded text-slate-500 hover:text-teal-700 hover:bg-teal-50"
+                            className="font-medium text-sky-700 hover:underline"
                             title="Download A4 PDF"
                           >
-                            <FileDown className="w-3.5 h-3.5" />
+                            PDF
                           </button>
+                          <span className="text-slate-300">·</span>
                           <button
                             type="button"
                             onClick={() => {
                               setEditingRecord(rec);
                               setModalOpen(true);
                             }}
-                            className="p-1 rounded text-slate-500 hover:text-slate-900 hover:bg-slate-100"
+                            className="font-medium text-slate-700 hover:text-slate-950 hover:underline"
                             title={isReadOnly ? 'View Details' : 'Edit Record'}
                           >
-                            <Edit3 className="w-3.5 h-3.5" />
+                            {isReadOnly ? 'View' : 'Edit'}
                           </button>
                           {isAdmin &&
                             (isDeletingConfirm ? (
@@ -847,14 +958,17 @@ export const WorkDoneFinanceView: React.FC = () => {
                                 </button>
                               </span>
                             ) : (
-                              <button
-                                type="button"
-                                onClick={() => setConfirmDeleteId(rec.id)}
-                                className="p-1 rounded text-slate-400 hover:text-rose-700 hover:bg-rose-50"
-                                title="Delete Record (Admin)"
-                              >
-                                <Trash2 className="w-3.5 h-3.5" />
-                              </button>
+                              <>
+                                <span className="text-slate-300">·</span>
+                                <button
+                                  type="button"
+                                  onClick={() => setConfirmDeleteId(rec.id)}
+                                  className="font-medium text-rose-600 hover:text-rose-800 hover:underline"
+                                  title="Delete Record (Admin)"
+                                >
+                                  Delete
+                                </button>
+                              </>
                             ))}
                         </div>
                       </td>
@@ -862,9 +976,8 @@ export const WorkDoneFinanceView: React.FC = () => {
                   );
                 })
               )}
-            </tbody>
-          </table>
-        </div>
+          </tbody>
+        </table>
       </div>
 
       {/* Add/Edit Work Done Modal */}

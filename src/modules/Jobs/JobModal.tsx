@@ -3,19 +3,14 @@ import {
   X,
   Save,
   Lock,
-  Plus,
-  Trash2,
   History,
-  CheckCircle2,
   RotateCcw,
   AlertTriangle,
   CalendarClock,
   ShieldAlert,
 } from 'lucide-react';
 import {
-  ChecklistStepStatus,
   ClientRecord,
-  DocumentFollowupItem,
   FYE_MONTHS,
   JOB_TYPES,
   JobModule,
@@ -23,20 +18,32 @@ import {
   TaxJob,
 } from '../../types/tpms';
 import {
+  AUDIT_TYPE_OPTIONS,
   analyzeJobDeadlines,
   applyMalaysianJobRules,
+  buildClientLookupMap,
   createDefaultComplianceChecklist,
+  extractFyeMonth,
+  findMatchedClient,
+  formatDateDDMMYYYY,
   formatDisplayDate,
+  formatOverdueLabel,
+  getDeadlineStageBadge,
+  getOverdueDays,
+  getStagePillClasses,
+  inferModuleFromJobType,
   isFormCJob,
   normalizeComplianceChecklist,
-} from '../../lib/deadlineUtils';
+  normalizeFyeMonthString,
+  resolveJobDisplayFye,
+} from '../../lib/jobUtils';
 import { useAuth } from '../../context/AuthContext';
 import { JobSavePayload, useData } from '../../context/DataContext';
 import { StatusPill } from '../../components/StatusPill';
 import { ClientSelectorField } from '../../components/ClientSelectorField';
 import { buildDynamicSelectOptions } from '../../lib/settingsDropdown';
 
-export type JobModalTab = 'core' | 'workflow' | 'checklist' | 'followups' | 'history';
+export type JobModalTab = 'basic' | 'deadlines' | 'progress' | 'submission' | 'remarks';
 
 interface JobModalProps {
   open: boolean;
@@ -47,16 +54,38 @@ interface JobModalProps {
   onClose: () => void;
 }
 
-type ModalTab = JobModalTab;
+const FYE_MONTH_LABELS: Record<string, string> = {
+  '01': '01 — Jan',
+  '02': '02 — Feb',
+  '03': '03 — Mar',
+  '04': '04 — Apr',
+  '05': '05 — May',
+  '06': '06 — Jun',
+  '07': '07 — Jul',
+  '08': '08 — Aug',
+  '09': '09 — Sep',
+  '10': '10 — Oct',
+  '11': '11 — Nov',
+  '12': '12 — Dec',
+};
 
-const ALL_JOB_MODULES: JobModule[] = [
-  'CP204',
-  'Corporate',
-  'Individual',
-  'Ad Hoc',
-  'Form E',
-  'Tax Payment Monitor',
-  'Correspondence',
+const YA_SEQUENCE_SUGGESTIONS = ['1st', '2nd', '3rd', '4th', '5th', 'Ongoing'];
+
+const FORM_C_STATUS_FALLBACK = [
+  'Pending',
+  'In Progress',
+  'Prepared',
+  'Manager Review',
+  'Client Approval',
+  'Submitted',
+  'Not Applicable',
+];
+
+const MITRS_STATUS_FALLBACK = [
+  'Pending',
+  'Submitted',
+  'Self-Submit',
+  'Not Applicable',
 ];
 
 const SUBMISSION_SUBSTATUS_OPTIONS = [
@@ -69,6 +98,10 @@ const SUBMISSION_SUBSTATUS_OPTIONS = [
   'Not Applicable',
 ];
 
+const NON_CP204_JOB_TYPES = JOB_TYPES.filter(
+  (jt) => jt !== 'CP204' && jt !== 'CP204A' && jt !== 'CP204B'
+);
+
 function defaultJobTypeForModule(module: JobModule): JobType {
   switch (module) {
     case 'Corporate':
@@ -77,23 +110,23 @@ function defaultJobTypeForModule(module: JobModule): JobType {
       return 'Form B';
     case 'Form E':
       return 'Form E';
-    case 'CP204':
-      return 'CP204';
     case 'Ad Hoc':
       return 'Tax Audit';
     default:
-      return 'Other';
+      return 'Form C';
   }
 }
 
 function createEmptyJob(module: JobModule): JobSavePayload {
+  const safeModule: JobModule = module === 'CP204' ? 'Corporate' : module;
   const yr = String(new Date().getFullYear());
-  const jobType = defaultJobTypeForModule(module);
+  const todayIso = new Date().toISOString().slice(0, 10);
+  const jobType = defaultJobTypeForModule(safeModule);
   return applyMalaysianJobRules({
     jobCode: `${jobType.replace(/[^A-Z0-9]/gi, '').slice(0, 4).toUpperCase()}-${yr}-${String(
       Math.floor(100 + Math.random() * 900)
     )}`,
-    module,
+    module: safeModule,
     jobType,
     clientDocId: '',
     clientId: '',
@@ -104,11 +137,12 @@ function createEmptyJob(module: JobModule): JobSavePayload {
     taxPic: '',
     reviewer: '',
     status:
-      module === 'Tax Payment Monitor'
+      safeModule === 'Tax Payment Monitor'
         ? 'Unpaid'
-        : module === 'Correspondence'
+        : safeModule === 'Correspondence'
         ? 'Open Query'
         : 'Not Started',
+    statusDate: todayIso,
     priority: 'Normal',
     dueDate: '',
     completedDate: '',
@@ -121,13 +155,14 @@ function createEmptyJob(module: JobModule): JobSavePayload {
     lhdnEot2: '',
     lhdnEot3: '',
     finalApplicableDeadline: '',
+    auditType: '',
     auditBookInDate: '',
     auditReportReceivedDate: '',
-    formCStatus: jobType === 'Form C' ? 'Pending' : '',
+    formCStatus: '',
     formCDueDate: '',
     formCSubmissionDate: '',
     formCSubmissionReference: '',
-    mitrsStatus: jobType === 'Form C' ? 'Pending' : '',
+    mitrsStatus: '',
     mitrsDueDate: '',
     mitrsSubmissionDate: '',
     mitrsSubmissionReference: '',
@@ -148,9 +183,9 @@ function createEmptyJob(module: JobModule): JobSavePayload {
     yaSequence: '',
     finalTaxPayable: 0,
     finalTaxPayableDate: '',
-    formEStatus: module === 'Form E' ? 'Pending' : '',
-    cp8dStatus: module === 'Form E' ? 'Pending' : '',
-    formEaStatus: module === 'Form E' ? 'Pending' : '',
+    formEStatus: safeModule === 'Form E' ? 'Pending' : '',
+    cp8dStatus: safeModule === 'Form E' ? 'Pending' : '',
+    formEaStatus: safeModule === 'Form E' ? 'Pending' : '',
     complianceChecklist: createDefaultComplianceChecklist(),
     documentFollowups: [],
     feeAmount: 0,
@@ -163,22 +198,6 @@ function createEmptyJob(module: JobModule): JobSavePayload {
     eFilingAckNo: '',
     taxPayable: 0,
     taxRefundable: 0,
-    cp204Estimate: 0,
-    cp204Revised6th: 0,
-    cp204Revised9th: 0,
-    cp204Revised11th: 0,
-    cp204InstallmentStart: '',
-    paymentType: module === 'Tax Payment Monitor' ? 'CP204 Installment' : '',
-    installmentNo: module === 'Tax Payment Monitor' ? '1/12' : '',
-    amountDue: 0,
-    amountPaid: 0,
-    paymentDate: '',
-    receiptNo: '',
-    correspondenceType: module === 'Correspondence' ? 'LHDN Desk Audit' : '',
-    letterRefNo: '',
-    letterDate: '',
-    responseDueDate: '',
-    responseSentDate: '',
   });
 }
 
@@ -187,17 +206,19 @@ export const JobModal: React.FC<JobModalProps> = ({
   job,
   defaultModule,
   lockModule = false,
-  initialTab = 'core',
+  initialTab = 'basic',
   onClose,
 }) => {
   const { isReadOnly, isManagerOrAdmin, role } = useAuth();
   const { clients, staff, saveJob, getSettingsByGroup, getHistoryForJob } = useData();
 
-  const [tab, setTab] = useState<ModalTab>(initialTab);
+  const [tab, setTab] = useState<JobModalTab>(initialTab);
   const [form, setForm] = useState<JobSavePayload>(() => createEmptyJob(defaultModule));
   const [auditRemarks, setAuditRemarks] = useState('');
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
+
+  const clientLookup = useMemo(() => buildClientLookupMap(clients), [clients]);
 
   useEffect(() => {
     if (!open) return;
@@ -205,6 +226,7 @@ export const JobModal: React.FC<JobModalProps> = ({
     setError(null);
     setAuditRemarks('');
     if (job) {
+      const displayFye = resolveJobDisplayFye(job, buildClientLookupMap(clients));
       setForm(
         applyMalaysianJobRules({
           jobCode: job.jobCode ?? '',
@@ -214,11 +236,12 @@ export const JobModal: React.FC<JobModalProps> = ({
           clientId: job.clientId ?? '',
           clientName: job.clientName ?? '',
           groupId: job.groupId ?? '',
-          fye: job.fye ?? '',
+          fye: normalizeFyeMonthString(displayFye) || displayFye,
           ya: job.ya ?? '',
           taxPic: job.taxPic ?? '',
           reviewer: job.reviewer ?? '',
           status: job.status ?? 'Not Started',
+          statusDate: job.statusDate ?? '',
           priority: job.priority ?? 'Normal',
           dueDate: job.dueDate ?? '',
           completedDate: job.completedDate ?? '',
@@ -231,6 +254,7 @@ export const JobModal: React.FC<JobModalProps> = ({
           lhdnEot2: job.lhdnEot2 ?? '',
           lhdnEot3: job.lhdnEot3 ?? '',
           finalApplicableDeadline: job.finalApplicableDeadline ?? '',
+          auditType: job.auditType ?? '',
           auditBookInDate: job.auditBookInDate ?? '',
           auditReportReceivedDate: job.auditReportReceivedDate ?? '',
           formCStatus: job.formCStatus ?? '',
@@ -256,7 +280,7 @@ export const JobModal: React.FC<JobModalProps> = ({
           submissionReference: job.submissionReference ?? '',
           personNo: job.personNo ?? '',
           yaSequence: job.yaSequence ?? '',
-          finalTaxPayable: job.finalTaxPayable ?? 0,
+          finalTaxPayable: job.finalTaxPayable ?? job.taxPayable ?? 0,
           finalTaxPayableDate: job.finalTaxPayableDate ?? '',
           formEStatus: job.formEStatus ?? '',
           cp8dStatus: job.cp8dStatus ?? '',
@@ -273,11 +297,6 @@ export const JobModal: React.FC<JobModalProps> = ({
           eFilingAckNo: job.eFilingAckNo ?? '',
           taxPayable: job.taxPayable ?? 0,
           taxRefundable: job.taxRefundable ?? 0,
-          cp204Estimate: job.cp204Estimate ?? 0,
-          cp204Revised6th: job.cp204Revised6th ?? 0,
-          cp204Revised9th: job.cp204Revised9th ?? 0,
-          cp204Revised11th: job.cp204Revised11th ?? 0,
-          cp204InstallmentStart: job.cp204InstallmentStart ?? '',
           paymentType: job.paymentType ?? '',
           installmentNo: job.installmentNo ?? '',
           amountDue: job.amountDue ?? 0,
@@ -294,11 +313,39 @@ export const JobModal: React.FC<JobModalProps> = ({
     } else {
       setForm(createEmptyJob(defaultModule));
     }
-  }, [open, job, defaultModule, initialTab]);
+  }, [open, job, defaultModule, initialTab]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  // Live recalculated view of statutory deadlines & Form C/MITRS auto-status (preserving manual overrides)
+  // Backfill Company FYE if clients finish loading after modal opens and FYE is still blank
+  useEffect(() => {
+    if (!open || !job) return;
+    setForm((prev) => {
+      if (extractFyeMonth(prev.fye) !== null) return prev;
+      const resolvedFye = resolveJobDisplayFye(
+        {
+          fye: prev.fye,
+          companyFye: job.companyFye,
+          clientDocId: prev.clientDocId || job.clientDocId,
+          clientId: prev.clientId || job.clientId,
+        },
+        clientLookup
+      );
+      const normalized = normalizeFyeMonthString(resolvedFye) || resolvedFye;
+      if (!normalized) return prev;
+      return applyMalaysianJobRules({ ...prev, fye: normalized });
+    });
+  }, [open, job, clientLookup]);
+
+  // Live recalculated view of statutory deadlines & Form C/MITRS auto-status
   const liveForm = useMemo(() => applyMalaysianJobRules(form), [form]);
   const deadlineAnalysis = useMemo(() => analyzeJobDeadlines(liveForm), [liveForm]);
+  const stageBadge = useMemo(
+    () => getDeadlineStageBadge(deadlineAnalysis.winningRule),
+    [deadlineAnalysis.winningRule]
+  );
+  const overdueDays = useMemo(
+    () => getOverdueDays(deadlineAnalysis.finalApplicableDeadline, liveForm.status),
+    [deadlineAnalysis.finalApplicableDeadline, liveForm.status]
+  );
   const jobAuditLog = useMemo(() => (job ? getHistoryForJob(job.id) : []), [job, getHistoryForJob]);
 
   if (!open) return null;
@@ -310,18 +357,18 @@ export const JobModal: React.FC<JobModalProps> = ({
   const isFormE = liveForm.module === 'Form E' || liveForm.jobType === 'Form E';
 
   const statusGroup =
-    liveForm.module === 'CP204'
-      ? 'CP204_STATUS'
-      : liveForm.module === 'Tax Payment Monitor'
+    liveForm.module === 'Tax Payment Monitor'
       ? 'PAYMENT_STATUS'
       : liveForm.module === 'Correspondence'
       ? 'CORRESPONDENCE_STATUS'
       : 'JOB_STATUS';
 
   const jobTypeOptions = buildDynamicSelectOptions(
-    getSettingsByGroup('JOB_TYPE'),
-    JOB_TYPES,
-    liveForm.jobType || 'Other'
+    getSettingsByGroup('JOB_TYPE').filter(
+      (s) => !['CP204', 'CP204A', 'CP204B'].includes(s.displayName.trim().toUpperCase())
+    ),
+    NON_CP204_JOB_TYPES,
+    liveForm.jobType || 'Form C'
   );
 
   const statusOptions = (() => {
@@ -357,17 +404,23 @@ export const JobModal: React.FC<JobModalProps> = ({
     liveForm.priority
   );
 
-  const billingOptions = (() => {
-    const list = getSettingsByGroup('BILLING_STATUS').map((s) => s.displayName);
-    return list.length > 0 ? list : ['Unbilled WIP', 'Ready to Bill', 'Invoiced', 'Collected'];
-  })();
+  const auditTypeOptions = buildDynamicSelectOptions(
+    getSettingsByGroup('AUDIT TYPE'),
+    [...AUDIT_TYPE_OPTIONS],
+    liveForm.auditType
+  );
 
-  const corrTypeOptions = (() => {
-    const list = getSettingsByGroup('CORRESPONDENCE_TYPE').map((s) => s.displayName);
-    return list.length > 0
-      ? list
-      : ['LHDN Desk Audit', 'LHDN Field Audit', 'Section 78 / 81 Query', 'Form Q Appeal', 'Tax Refund Follow-up'];
-  })();
+  const formCStatusOptions = buildDynamicSelectOptions(
+    getSettingsByGroup('FORM C SUBMISSION STATUS'),
+    FORM_C_STATUS_FALLBACK,
+    liveForm.formCStatus
+  );
+
+  const mitrsStatusOptions = buildDynamicSelectOptions(
+    getSettingsByGroup('MITRS SUBMISSION STATUS'),
+    MITRS_STATUS_FALLBACK,
+    liveForm.mitrsStatus
+  );
 
   const activeStaffNames = Array.from(
     new Set(staff.filter((s) => s.active).map((s) => s.staffName.trim()).filter(Boolean))
@@ -375,21 +428,35 @@ export const JobModal: React.FC<JobModalProps> = ({
 
   const patchForm = (
     partial: Partial<JobSavePayload>,
-    recomputeBaseDeadlines = false
+    recomputeBaseDeadlines = false,
+    triggerSubmissionAutoStatus = false
   ) => {
     setForm((prev) =>
       applyMalaysianJobRules(
         { ...prev, ...partial },
-        { forceRecomputeBaseDeadlines: recomputeBaseDeadlines }
+        {
+          forceRecomputeBaseDeadlines: recomputeBaseDeadlines,
+          applySubmissionAutoStatus: triggerSubmissionAutoStatus,
+        }
       )
     );
   };
 
   const handleRecomputeDeadlines = () => {
     if (effectiveReadOnly) return;
-    setForm((prev) =>
-      applyMalaysianJobRules(prev, { forceRecomputeBaseDeadlines: true })
-    );
+    setForm((prev) => {
+      let nextFye = prev.fye || '';
+      if (extractFyeMonth(nextFye) === null) {
+        const matchedClient = findMatchedClient(prev, clientLookup);
+        if (matchedClient?.fye) {
+          nextFye = normalizeFyeMonthString(matchedClient.fye) || matchedClient.fye.trim();
+        }
+      }
+      return applyMalaysianJobRules(
+        { ...prev, fye: nextFye },
+        { forceRecomputeBaseDeadlines: true }
+      );
+    });
   };
 
   const handleSelectClient = (found: ClientRecord | null) => {
@@ -397,14 +464,17 @@ export const JobModal: React.FC<JobModalProps> = ({
       patchForm({ clientDocId: '', clientId: '', clientName: '' });
       return;
     }
-    const fyeChanged = Boolean(found.fye && found.fye !== form.fye);
+    const normalizedClientFye = found.fye
+      ? normalizeFyeMonthString(found.fye) || found.fye.trim()
+      : form.fye;
+    const fyeChanged = Boolean(normalizedClientFye && normalizedClientFye !== form.fye);
     patchForm(
       {
         clientDocId: found.id,
         clientId: found.clientId,
         clientName: found.clientName,
         groupId: found.groupId || form.groupId,
-        fye: found.fye || form.fye,
+        fye: normalizedClientFye,
         taxPic: found.taxPic || form.taxPic,
         auditor: found.auditor || form.auditor,
         personNo: found.personNo || form.personNo,
@@ -417,8 +487,8 @@ export const JobModal: React.FC<JobModalProps> = ({
     e.preventDefault();
     if (effectiveReadOnly) return;
     if (!liveForm.jobCode.trim() || !liveForm.clientId.trim() || !liveForm.clientName.trim()) {
-      setError('Job Code, Client ID, and Client Name are required.');
-      setTab('core');
+      setError('Job ID, Client ID, and Client Name are required.');
+      setTab('basic');
       return;
     }
     setSaving(true);
@@ -433,41 +503,36 @@ export const JobModal: React.FC<JobModalProps> = ({
     }
   };
 
-  const addFollowupRow = () => {
-    const row: DocumentFollowupItem = {
-      id: `df_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 5)}`,
-      documentRequired: '',
-      dateRequested: new Date().toISOString().slice(0, 10),
-      followUpDate: '',
-      dateReceived: '',
-      pic: liveForm.taxPic || '',
-      status: 'Pending',
-      remarks: '',
-    };
-    patchForm({ documentFollowups: [...(liveForm.documentFollowups || []), row] });
-  };
-
-  const checklist = liveForm.complianceChecklist || [];
-  const checklistDoneCount = checklist.filter((c) => c.status === 'Completed').length;
-  const followups = liveForm.documentFollowups || [];
-
   const inputCls =
     'w-full px-2.5 py-1.5 text-xs bg-white border border-slate-200 rounded-md focus:outline-none focus:ring-2 focus:ring-teal-600/20 focus:border-teal-700 disabled:bg-slate-50 disabled:text-slate-500';
   const labelCls = 'block text-[11px] font-medium text-slate-600 mb-1';
 
+  const TABS: ReadonlyArray<{ id: JobModalTab; label: string }> = [
+    { id: 'basic', label: 'Basic' },
+    { id: 'deadlines', label: 'Deadlines' },
+    { id: 'progress', label: 'Progress & Documents' },
+    { id: 'submission', label: 'Tax Submission' },
+    { id: 'remarks', label: 'Remarks' },
+  ];
+
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-3 sm:p-5 no-print">
       <div className="fixed inset-0 bg-slate-900/50 backdrop-blur-[1px]" onClick={onClose} />
-      <div className="relative z-10 w-full max-w-6xl max-h-[90vh] bg-white border border-slate-200 rounded-xl shadow-2xl flex flex-col overflow-hidden">
+      <div className="relative z-10 w-full max-w-4xl max-h-[90vh] bg-white border border-slate-200 rounded-xl shadow-2xl flex flex-col overflow-hidden">
         {/* Header */}
-        <div className="shrink-0 px-5 py-3.5 border-b border-slate-200 bg-slate-50 flex flex-wrap items-center justify-between gap-2">
-          <div className="flex items-center gap-2.5 min-w-0">
+        <div className="shrink-0 px-5 py-3 border-b border-slate-200 bg-slate-50 flex flex-wrap items-center justify-between gap-2">
+          <div className="flex items-center gap-2 min-w-0 flex-wrap">
             <h3 className="font-display font-bold text-base text-slate-900 truncate">
               {job ? `Job ${job.jobCode}` : `New ${liveForm.module} Job`}
             </h3>
             <StatusPill group={statusGroup} value={liveForm.status} />
             {liveForm.jobType && (
               <span className="text-xs font-mono text-slate-500">· {liveForm.jobType}</span>
+            )}
+            {overdueDays > 0 && (
+              <span className="inline-flex items-center px-1.5 py-0.5 rounded bg-rose-100 text-rose-700 border border-rose-200 text-[10px] font-semibold leading-none">
+                {formatOverdueLabel(overdueDays)}
+              </span>
             )}
             {effectiveReadOnly && (
               <span className="inline-flex items-center gap-1 text-[11px] text-slate-500">
@@ -480,22 +545,15 @@ export const JobModal: React.FC<JobModalProps> = ({
             type="button"
             onClick={onClose}
             className="p-1.5 rounded text-slate-500 hover:bg-slate-200/70"
+            aria-label="Close modal"
           >
             <X className="w-4 h-4" />
           </button>
         </div>
 
-        {/* Tabs */}
-        <div className="px-5 pt-2 border-b border-slate-200 bg-white flex items-center gap-1 overflow-x-auto shrink-0">
-          {(
-            [
-              { id: 'core', label: 'Core, Deadlines & EOTs' },
-              { id: 'workflow', label: 'Workflow, Accounts & Filing' },
-              { id: 'checklist', label: `Compliance Checklist (${checklistDoneCount}/${checklist.length})` },
-              { id: 'followups', label: `Document Follow-ups (${followups.length})` },
-              { id: 'history', label: `Audit History (${jobAuditLog.length})` },
-            ] as const
-          ).map((t) => (
+        {/* 5 Compact Tabs */}
+        <div className="px-5 pt-1.5 border-b border-slate-200 bg-white flex items-center gap-1 overflow-x-auto shrink-0">
+          {TABS.map((t) => (
             <button
               key={t.id}
               type="button"
@@ -511,21 +569,34 @@ export const JobModal: React.FC<JobModalProps> = ({
           ))}
         </div>
 
-        <form onSubmit={(e) => void handleSubmit(e)} className="flex-1 flex flex-col min-h-0 overflow-hidden">
-          <div className="flex-1 min-h-0 overflow-y-auto p-5 space-y-5">
+        <form
+          onSubmit={(e) => void handleSubmit(e)}
+          className="flex-1 flex flex-col min-h-0 overflow-hidden"
+        >
+          <div className="flex-1 min-h-0 overflow-y-auto p-5 space-y-4">
             {error && (
               <div className="p-2.5 rounded bg-rose-50 border border-rose-200 text-xs text-rose-800">
                 {error}
               </div>
             )}
 
-            {/* TAB 1: CORE, DEADLINES, EOTs & FORM C / MITRS / FORM E */}
-            {tab === 'core' && (
-              <div className="space-y-5">
-                {/* Core Identification */}
+            <datalist id="job-staff-list">
+              {activeStaffNames.map((n) => (
+                <option key={n} value={n} />
+              ))}
+            </datalist>
+            <datalist id="job-ya-seq-list">
+              {YA_SEQUENCE_SUGGESTIONS.map((seq) => (
+                <option key={seq} value={seq} />
+              ))}
+            </datalist>
+
+            {/* TAB 1: BASIC */}
+            {tab === 'basic' && (
+              <div className="space-y-4">
                 <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
                   <div>
-                    <label className={labelCls}>Job Code *</label>
+                    <label className={labelCls}>Job ID *</label>
                     <input
                       required
                       maxLength={40}
@@ -535,50 +606,13 @@ export const JobModal: React.FC<JobModalProps> = ({
                       className={`${inputCls} font-mono`}
                     />
                   </div>
-                  <div>
-                    <label className={labelCls}>Module *</label>
-                    <select
-                      disabled={effectiveReadOnly || lockModule}
-                      value={liveForm.module}
-                      onChange={(e) =>
-                        patchForm({ module: e.target.value as JobModule }, true)
-                      }
-                      className={inputCls}
-                    >
-                      {ALL_JOB_MODULES.map((m) => (
-                        <option key={m} value={m}>
-                          {m}
-                        </option>
-                      ))}
-                    </select>
-                  </div>
-                  <div>
-                    <label className={labelCls}>Job Type *</label>
-                    <select
-                      disabled={effectiveReadOnly}
-                      value={liveForm.jobType || 'Other'}
-                      onChange={(e) =>
-                        patchForm(
-                          { jobType: e.target.value as JobType, formType: e.target.value },
-                          true
-                        )
-                      }
-                      className={inputCls}
-                    >
-                      {jobTypeOptions.map((jt) => (
-                        <option key={jt.value} value={jt.value}>
-                          {jt.label}
-                        </option>
-                      ))}
-                    </select>
-                  </div>
-                  <div className="sm:col-span-2 lg:col-span-4">
+                  <div className="sm:col-span-2 lg:col-span-3">
                     <ClientSelectorField
                       clients={clients}
                       value={liveForm.clientId}
                       onSelectClient={handleSelectClient}
                       disabled={effectiveReadOnly}
-                      label="Client Picker (Search by Name, Client ID, Company No. or TIN)"
+                      label="Client ID (Search by ID, Name, Company No. or TIN) *"
                     />
                   </div>
 
@@ -589,11 +623,31 @@ export const JobModal: React.FC<JobModalProps> = ({
                       maxLength={40}
                       disabled={effectiveReadOnly}
                       value={liveForm.clientId}
-                      onChange={(e) => patchForm({ clientId: e.target.value })}
+                      onChange={(e) => {
+                        const nextClientId = e.target.value;
+                        const matched = findMatchedClient({ clientId: nextClientId }, clientLookup);
+                        if (matched) {
+                          const nextFye = matched.fye
+                            ? normalizeFyeMonthString(matched.fye) || matched.fye.trim()
+                            : liveForm.fye;
+                          const fyeChanged = Boolean(nextFye && nextFye !== liveForm.fye);
+                          patchForm(
+                            {
+                              clientId: nextClientId,
+                              clientDocId: matched.id,
+                              clientName: liveForm.clientName || matched.clientName,
+                              fye: nextFye,
+                            },
+                            fyeChanged
+                          );
+                        } else {
+                          patchForm({ clientId: nextClientId });
+                        }
+                      }}
                       className={`${inputCls} font-mono`}
                     />
                   </div>
-                  <div className="sm:col-span-2">
+                  <div className="sm:col-span-2 lg:col-span-3">
                     <label className={labelCls}>Client Name *</label>
                     <input
                       required
@@ -604,94 +658,71 @@ export const JobModal: React.FC<JobModalProps> = ({
                       className={inputCls}
                     />
                   </div>
-                  <div>
-                    <label className={labelCls}>Group ID</label>
-                    <input
-                      maxLength={60}
-                      disabled={effectiveReadOnly}
-                      value={liveForm.groupId}
-                      onChange={(e) => patchForm({ groupId: e.target.value })}
-                      className={`${inputCls} font-mono`}
-                    />
-                  </div>
 
                   <div>
-                    <label className={labelCls}>YA (Year of Assessment)</label>
+                    <label className={labelCls}>YA</label>
                     <input
                       maxLength={16}
                       disabled={effectiveReadOnly}
                       value={liveForm.ya}
                       onChange={(e) => patchForm({ ya: e.target.value }, true)}
                       placeholder="2026"
-                      className={`${inputCls} font-mono`}
+                      className={`${inputCls} font-mono tabular-nums`}
                     />
                   </div>
                   <div>
-                    <label className={labelCls}>FYE [01–12]</label>
+                    <label className={labelCls}>Job Type *</label>
                     <select
                       disabled={effectiveReadOnly}
-                      value={liveForm.fye}
-                      onChange={(e) => patchForm({ fye: e.target.value }, true)}
-                      className={`${inputCls} font-mono`}
+                      value={liveForm.jobType || 'Form C'}
+                      onChange={(e) => {
+                        const nextJobType = e.target.value as JobType;
+                        const nextModule = lockModule
+                          ? liveForm.module
+                          : inferModuleFromJobType(nextJobType, liveForm.module);
+                        patchForm(
+                          {
+                            jobType: nextJobType,
+                            formType: nextJobType,
+                            module: nextModule,
+                          },
+                          true
+                        );
+                      }}
+                      className={inputCls}
                     >
-                      <option value="">—</option>
-                      {FYE_MONTHS.map((m) => (
-                        <option key={m} value={m}>
-                          {m}
+                      {jobTypeOptions.map((jt) => (
+                        <option key={jt.value} value={jt.value}>
+                          {jt.label}
                         </option>
                       ))}
                     </select>
                   </div>
                   <div>
-                    <label className={labelCls}>TAX PIC</label>
+                    <label className={labelCls}>PIC</label>
                     <input
                       list="job-staff-list"
                       maxLength={120}
                       disabled={effectiveReadOnly}
                       value={liveForm.taxPic}
                       onChange={(e) => patchForm({ taxPic: e.target.value })}
+                      placeholder="Assign Tax PIC"
                       className={inputCls}
                     />
-                    <datalist id="job-staff-list">
-                      {activeStaffNames.map((n) => (
-                        <option key={n} value={n} />
-                      ))}
-                    </datalist>
                   </div>
                   <div>
-                    <label className={labelCls}>Reviewer (Manager-HOD)</label>
+                    <label className={labelCls}>Reviewer</label>
                     <input
                       list="job-staff-list"
                       maxLength={120}
                       disabled={effectiveReadOnly}
                       value={liveForm.reviewer}
                       onChange={(e) => patchForm({ reviewer: e.target.value })}
+                      placeholder="Assign Manager / HOD"
                       className={inputCls}
                     />
                   </div>
 
-                  <div>
-                    <label className={labelCls}>
-                      Job Status{' '}
-                      {isFormC && (
-                        <span className="text-[10px] text-teal-700">
-                          (Auto-Completed via Form C + MITRS)
-                        </span>
-                      )}
-                    </label>
-                    <select
-                      disabled={effectiveReadOnly}
-                      value={liveForm.status}
-                      onChange={(e) => patchForm({ status: e.target.value })}
-                      className={inputCls}
-                    >
-                      {statusOptions.map((s) => (
-                        <option key={s.value} value={s.value}>
-                          {s.label}
-                        </option>
-                      ))}
-                    </select>
-                  </div>
                   <div>
                     <label className={labelCls}>Priority</label>
                     <select
@@ -708,414 +739,642 @@ export const JobModal: React.FC<JobModalProps> = ({
                     </select>
                   </div>
                   <div>
-                    <label className={labelCls}>YA Status</label>
-                    <input
-                      maxLength={60}
+                    <label className={labelCls}>Company FYE</label>
+                    <select
                       disabled={effectiveReadOnly}
-                      value={liveForm.yaStatus}
-                      onChange={(e) => patchForm({ yaStatus: e.target.value })}
-                      placeholder="e.g. Active / Dormant / 1st YA"
+                      value={normalizeFyeMonthString(liveForm.fye)}
+                      onChange={(e) => patchForm({ fye: e.target.value }, true)}
+                      className={`${inputCls} font-mono`}
+                    >
+                      <option value="">— Select FYE —</option>
+                      {FYE_MONTHS.map((m) => (
+                        <option key={m} value={m}>
+                          {FYE_MONTH_LABELS[m] || m}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                  <div>
+                    <label className={labelCls}>YA Sequence</label>
+                    <input
+                      list="job-ya-seq-list"
+                      maxLength={40}
+                      disabled={effectiveReadOnly}
+                      value={liveForm.yaSequence}
+                      onChange={(e) => patchForm({ yaSequence: e.target.value })}
+                      placeholder="1st, 2nd, 3rd..."
                       className={inputCls}
                     />
                   </div>
                   <div>
-                    <label className={labelCls}>Completed Date</label>
+                    <label className={labelCls}>Audit Type</label>
+                    <select
+                      disabled={effectiveReadOnly}
+                      value={liveForm.auditType || ''}
+                      onChange={(e) => patchForm({ auditType: e.target.value })}
+                      className={inputCls}
+                    >
+                      <option value="">— Select —</option>
+                      {auditTypeOptions.map((opt) => (
+                        <option key={opt.value} value={opt.value}>
+                          {opt.label}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                </div>
+              </div>
+            )}
+
+            {/* TAB 2: DEADLINES */}
+            {tab === 'deadlines' && (
+              <div className="space-y-4">
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <div className="flex items-center gap-2">
+                    <CalendarClock className="w-4 h-4 text-teal-700" />
+                    <h4 className="text-xs font-semibold text-slate-900">
+                      Malaysian Tax &amp; SSM Statutory Deadlines
+                    </h4>
+                  </div>
+                  <span className="text-[11px] text-slate-500">
+                    Computed from YA ({liveForm.ya || '—'}) &amp; FYE (
+                    {normalizeFyeMonthString(liveForm.fye) || '—'})
+                  </span>
+                </div>
+
+                {/* Top 3-column base deadlines */}
+                <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+                  <div>
+                    <label className={labelCls}>Internal Deadline</label>
                     <input
                       type="date"
                       disabled={effectiveReadOnly}
-                      value={liveForm.completedDate}
-                      onChange={(e) => patchForm({ completedDate: e.target.value })}
-                      className={`${inputCls} font-mono`}
+                      value={liveForm.internalDeadline}
+                      onChange={(e) => patchForm({ internalDeadline: e.target.value })}
+                      className={`${inputCls} font-mono tabular-nums`}
+                    />
+                  </div>
+                  <div>
+                    <label className={labelCls}>
+                      Original Statutory Deadline (+7 Months)
+                    </label>
+                    <input
+                      type="date"
+                      disabled={effectiveReadOnly}
+                      value={liveForm.originalStatutoryDeadline}
+                      onChange={(e) =>
+                        patchForm({ originalStatutoryDeadline: e.target.value })
+                      }
+                      className={`${inputCls} font-mono tabular-nums`}
+                    />
+                  </div>
+                  <div>
+                    <label className={labelCls}>
+                      Normal E-Filing Deadline (+8 Months)
+                    </label>
+                    <input
+                      type="date"
+                      disabled={effectiveReadOnly}
+                      value={liveForm.formCDueDate}
+                      onChange={(e) => patchForm({ formCDueDate: e.target.value })}
+                      className={`${inputCls} font-mono tabular-nums`}
                     />
                   </div>
                 </div>
 
-                {/* Deadlines & Extension of Time (EOT) Section */}
-                <div className="pt-4 border-t border-slate-200 space-y-4">
-                  <div className="flex flex-wrap items-center justify-between gap-2">
-                    <div className="flex items-center gap-2">
-                      <CalendarClock className="w-4 h-4 text-teal-700" />
-                      <h4 className="text-xs font-semibold text-slate-900">
-                        Deadlines &amp; Extension of Time (EOT) Schedule
-                      </h4>
-                    </div>
+                {/* Grouped SSM EOT Extensions */}
+                <div className="rounded-lg border border-slate-200 overflow-hidden bg-white">
+                  <div className="px-3.5 py-2 bg-slate-100/90 border-b border-slate-200 flex flex-wrap items-center justify-between gap-2">
+                    <span className="text-xs font-semibold text-slate-700">
+                      SSM EOT Extensions
+                    </span>
                     <span className="text-[11px] text-slate-500">
-                      Auto-computed from YA &amp; FYE · Both statutory &amp; normal e-filing dates remain editable for overrides
+                      Separate SSM tracking — never changes LHDN Final Applicable Deadline
                     </span>
                   </div>
-
-                  {/* Top Row: Statutory & Normal e-Filing Deadlines (3-Column Side-by-Side) */}
-                  <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+                  <div className="p-3 grid grid-cols-1 sm:grid-cols-3 gap-3 bg-slate-50/40">
                     <div>
-                      <label className={labelCls}>Internal Deadline</label>
+                      <label className={labelCls}>SSM EOT 1</label>
                       <input
                         type="date"
                         disabled={effectiveReadOnly}
-                        value={liveForm.internalDeadline}
-                        onChange={(e) => patchForm({ internalDeadline: e.target.value })}
+                        value={liveForm.ssmEot1}
+                        onChange={(e) => patchForm({ ssmEot1: e.target.value })}
                         className={`${inputCls} font-mono tabular-nums`}
                       />
                     </div>
                     <div>
-                      <label className={labelCls}>
-                        Original Statutory Deadline (+7 Months)
-                      </label>
+                      <label className={labelCls}>SSM EOT 2</label>
                       <input
                         type="date"
                         disabled={effectiveReadOnly}
-                        value={liveForm.originalStatutoryDeadline}
-                        onChange={(e) =>
-                          patchForm({ originalStatutoryDeadline: e.target.value })
-                        }
+                        value={liveForm.ssmEot2}
+                        onChange={(e) => patchForm({ ssmEot2: e.target.value })}
                         className={`${inputCls} font-mono tabular-nums`}
                       />
                     </div>
                     <div>
-                      <label className={labelCls}>
-                        Normal e-Filing Deadline (+8 Months)
-                      </label>
+                      <label className={labelCls}>SSM EOT 3</label>
                       <input
                         type="date"
                         disabled={effectiveReadOnly}
-                        value={liveForm.formCDueDate}
-                        onChange={(e) => patchForm({ formCDueDate: e.target.value })}
+                        value={liveForm.ssmEot3}
+                        onChange={(e) => patchForm({ ssmEot3: e.target.value })}
                         className={`${inputCls} font-mono tabular-nums`}
                       />
-                    </div>
-                  </div>
-
-                  {/* Grouped Extension Section 1: SSM EOT Extensions — Reference Only */}
-                  <div className="rounded-lg border border-slate-200 overflow-hidden bg-white">
-                    <div className="px-3.5 py-2 bg-slate-100/90 border-b border-slate-200 flex flex-wrap items-center justify-between gap-2">
-                      <span className="text-xs font-semibold text-slate-700">
-                        SSM EOT Extensions — Reference Only
-                      </span>
-                      <span className="text-[11px] text-slate-500">
-                        Excluded from LHDN Final Applicable Deadline calculation
-                      </span>
-                    </div>
-                    <div className="p-3 grid grid-cols-1 sm:grid-cols-3 gap-3 bg-slate-50/40">
-                      <div>
-                        <label className={labelCls}>SSM EOT 1</label>
-                        <input
-                          type="date"
-                          disabled={effectiveReadOnly}
-                          value={liveForm.ssmEot1}
-                          onChange={(e) => patchForm({ ssmEot1: e.target.value })}
-                          className={`${inputCls} font-mono tabular-nums`}
-                        />
-                      </div>
-                      <div>
-                        <label className={labelCls}>SSM EOT 2</label>
-                        <input
-                          type="date"
-                          disabled={effectiveReadOnly}
-                          value={liveForm.ssmEot2}
-                          onChange={(e) => patchForm({ ssmEot2: e.target.value })}
-                          className={`${inputCls} font-mono tabular-nums`}
-                        />
-                      </div>
-                      <div>
-                        <label className={labelCls}>SSM EOT 3</label>
-                        <input
-                          type="date"
-                          disabled={effectiveReadOnly}
-                          value={liveForm.ssmEot3}
-                          onChange={(e) => patchForm({ ssmEot3: e.target.value })}
-                          className={`${inputCls} font-mono tabular-nums`}
-                        />
-                      </div>
-                    </div>
-                  </div>
-
-                  {/* Grouped Extension Section 2: LHDN EOT Extensions */}
-                  <div className="rounded-lg border border-teal-200/80 overflow-hidden bg-white">
-                    <div className="px-3.5 py-2 bg-teal-50/80 border-b border-teal-200/70 flex flex-wrap items-center justify-between gap-2">
-                      <span className="text-xs font-semibold text-teal-900">
-                        LHDN EOT Extensions
-                      </span>
-                      <span className="text-[11px] text-teal-700">
-                        Latest valid date extends the Final Applicable Deadline
-                      </span>
-                    </div>
-                    <div className="p-3 grid grid-cols-1 sm:grid-cols-3 gap-3">
-                      <div>
-                        <label className={labelCls}>LHDN EOT 1</label>
-                        <input
-                          type="date"
-                          disabled={effectiveReadOnly}
-                          value={liveForm.lhdnEot1}
-                          onChange={(e) => patchForm({ lhdnEot1: e.target.value })}
-                          className={`${inputCls} font-mono tabular-nums`}
-                        />
-                      </div>
-                      <div>
-                        <label className={labelCls}>LHDN EOT 2</label>
-                        <input
-                          type="date"
-                          disabled={effectiveReadOnly}
-                          value={liveForm.lhdnEot2}
-                          onChange={(e) => patchForm({ lhdnEot2: e.target.value })}
-                          className={`${inputCls} font-mono tabular-nums`}
-                        />
-                      </div>
-                      <div>
-                        <label className={labelCls}>LHDN EOT 3</label>
-                        <input
-                          type="date"
-                          disabled={effectiveReadOnly}
-                          value={liveForm.lhdnEot3}
-                          onChange={(e) => patchForm({ lhdnEot3: e.target.value })}
-                          className={`${inputCls} font-mono tabular-nums`}
-                        />
-                      </div>
-                    </div>
-                  </div>
-
-                  {/* Bottom Summary Cards (2 Columns Side-by-Side) */}
-                  <div className="grid grid-cols-1 md:grid-cols-2 gap-4 items-stretch">
-                    {/* Left Card: FINAL APPLICABLE DEADLINE */}
-                    <div className="rounded-lg border border-slate-300 bg-slate-50/80 p-4 flex flex-col justify-between gap-3">
-                      <div className="space-y-2.5">
-                        <div className="flex flex-wrap items-center justify-between gap-2">
-                          <span className="text-[11px] font-bold tracking-wide text-slate-700">
-                            FINAL APPLICABLE DEADLINE
-                          </span>
-                          <div className="flex items-center gap-2">
-                            {deadlineAnalysis.winningRule && (
-                              <span
-                                className={`inline-flex items-center px-2 py-0.5 rounded text-[11px] font-semibold whitespace-nowrap ${
-                                  deadlineAnalysis.winningRule.includes('EOT')
-                                    ? 'bg-sky-100 text-sky-800 border border-sky-200'
-                                    : 'bg-teal-100 text-teal-800 border border-teal-200'
-                                }`}
-                              >
-                                {deadlineAnalysis.winningRule}
-                              </span>
-                            )}
-                            {!effectiveReadOnly && (
-                              <button
-                                type="button"
-                                onClick={handleRecomputeDeadlines}
-                                className="inline-flex items-center gap-1 px-2 py-1 text-[11px] font-medium text-slate-700 bg-white border border-slate-200 hover:bg-slate-100 hover:text-slate-900 rounded-md transition-colors whitespace-nowrap shrink-0"
-                                title="Recalculate Statutory (+7m), Normal e-Filing (+8m), Final Applicable, and MITRS deadlines from YA, FYE, and LHDN EOT 1–3"
-                              >
-                                <RotateCcw className="w-3 h-3" />
-                                Re-compute Deadlines
-                              </button>
-                            )}
-                          </div>
-                        </div>
-
-                        <div className="flex items-baseline gap-2.5">
-                          <span className="font-mono tabular-nums text-xl font-bold text-slate-900">
-                            {deadlineAnalysis.finalApplicableDeadline || '—'}
-                          </span>
-                          {deadlineAnalysis.finalApplicableDeadline && (
-                            <span className="text-xs text-slate-500">
-                              ({formatDisplayDate(deadlineAnalysis.finalApplicableDeadline)})
-                            </span>
-                          )}
-                        </div>
-
-                        <p className="text-[11px] text-slate-500">
-                          {liveForm.module === 'Ad Hoc' && !isFormC
-                            ? 'Uses Internal Deadline for Ad Hoc engagements.'
-                            : isFormC
-                            ? 'Latest of Normal e-Filing (+8m) and LHDN EOT 1–3 (SSM EOTs excluded).'
-                            : 'Latest of Original Statutory Deadline and LHDN EOT 1–3 (SSM EOTs excluded).'}
-                        </p>
-                      </div>
-
-                      {/* Subtle Amber Warning if any LHDN EOT is earlier than base deadline */}
-                      {deadlineAnalysis.earlierLhdnEots.length > 0 && (
-                        <div className="flex items-start gap-2 px-2.5 py-2 rounded-md bg-amber-50 border border-amber-200 text-[11px] text-amber-800">
-                          <AlertTriangle className="w-3.5 h-3.5 text-amber-600 shrink-0 mt-0.5" />
-                          <span>
-                            {deadlineAnalysis.earlierLhdnEots
-                              .map((e) => `${e.label} (${e.date})`)
-                              .join(', ')}{' '}
-                            {deadlineAnalysis.earlierLhdnEots.length === 1 ? 'is' : 'are'} earlier
-                            than the {deadlineAnalysis.baseLabel} deadline (
-                            <span className="font-mono">{deadlineAnalysis.baseDeadline}</span>) and{' '}
-                            {deadlineAnalysis.earlierLhdnEots.length === 1 ? 'does' : 'do'} not
-                            extend the final deadline.
-                          </span>
-                        </div>
-                      )}
-                    </div>
-
-                    {/* Right Card: MITRS APPLICABLE DEADLINE */}
-                    <div className="rounded-lg border border-emerald-200 bg-emerald-50/40 p-4 flex flex-col justify-between gap-3">
-                      <div className="space-y-2.5">
-                        <div className="flex flex-wrap items-center justify-between gap-2">
-                          <span className="text-[11px] font-bold tracking-wide text-emerald-900">
-                            MITRS APPLICABLE DEADLINE
-                          </span>
-                          <span className="inline-flex items-center px-2.5 py-0.5 rounded-full text-[11px] font-semibold bg-emerald-100 text-emerald-800 border border-emerald-200 whitespace-nowrap">
-                            +30 Days
-                          </span>
-                        </div>
-
-                        <div className="flex items-baseline gap-2.5">
-                          <span className="font-mono tabular-nums text-xl font-bold text-emerald-950">
-                            {deadlineAnalysis.mitrsApplicableDeadline || '—'}
-                          </span>
-                          {deadlineAnalysis.mitrsApplicableDeadline && (
-                            <span className="text-xs text-emerald-700/80">
-                              ({formatDisplayDate(deadlineAnalysis.mitrsApplicableDeadline)})
-                            </span>
-                          )}
-                        </div>
-
-                        <p className="text-[11px] text-emerald-800/80">
-                          {isFormC
-                            ? 'Automatically calculated as Final Applicable Deadline + 30 calendar days.'
-                            : 'Calculated as Final Applicable Deadline + 30 calendar days (applicable to Form C / MITRS filings).'}
-                        </p>
-                      </div>
-
-                      {isFormC && (
-                        <div className="flex items-center gap-1.5 text-[11px] text-emerald-900/90 pt-2 border-t border-emerald-200/70">
-                          <ShieldAlert className="w-3.5 h-3.5 text-emerald-700 shrink-0" />
-                          <span>
-                            Form C Submitted → Pending MITRS; both Form C &amp; MITRS Submitted → Completed.
-                          </span>
-                        </div>
-                      )}
                     </div>
                   </div>
                 </div>
 
-                {/* Form C & MITRS Section */}
+                {/* Grouped LHDN EOT Extensions */}
+                <div className="rounded-lg border border-teal-200/80 overflow-hidden bg-white">
+                  <div className="px-3.5 py-2 bg-teal-50/80 border-b border-teal-200/70 flex flex-wrap items-center justify-between gap-2">
+                    <span className="text-xs font-semibold text-teal-900">
+                      LHDN EOT Extensions
+                    </span>
+                    <span className="text-[11px] text-teal-700">
+                      Updates Final Applicable Deadline &amp; stage (1st EOT / 2nd EOT / 3rd EOT)
+                    </span>
+                  </div>
+                  <div className="p-3 grid grid-cols-1 sm:grid-cols-3 gap-3">
+                    <div>
+                      <label className={labelCls}>LHDN EOT 1</label>
+                      <input
+                        type="date"
+                        disabled={effectiveReadOnly}
+                        value={liveForm.lhdnEot1}
+                        onChange={(e) => patchForm({ lhdnEot1: e.target.value })}
+                        className={`${inputCls} font-mono tabular-nums`}
+                      />
+                    </div>
+                    <div>
+                      <label className={labelCls}>LHDN EOT 2</label>
+                      <input
+                        type="date"
+                        disabled={effectiveReadOnly}
+                        value={liveForm.lhdnEot2}
+                        onChange={(e) => patchForm({ lhdnEot2: e.target.value })}
+                        className={`${inputCls} font-mono tabular-nums`}
+                      />
+                    </div>
+                    <div>
+                      <label className={labelCls}>LHDN EOT 3</label>
+                      <input
+                        type="date"
+                        disabled={effectiveReadOnly}
+                        value={liveForm.lhdnEot3}
+                        onChange={(e) => patchForm({ lhdnEot3: e.target.value })}
+                        className={`${inputCls} font-mono tabular-nums`}
+                      />
+                    </div>
+                  </div>
+                </div>
+
+                {/* Bottom Summary Cards */}
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-3.5 items-stretch">
+                  {/* Final Applicable Deadline Card */}
+                  <div className="rounded-lg border border-slate-300 bg-slate-50/80 p-3.5 flex flex-col justify-between gap-2.5">
+                    <div className="space-y-2">
+                      <div className="flex flex-wrap items-center justify-between gap-2">
+                        <span className="text-[11px] font-bold tracking-wide text-slate-700">
+                          FINAL APPLICABLE DEADLINE
+                        </span>
+                        <div className="flex items-center gap-1.5 flex-wrap">
+                          {stageBadge && (
+                            <span
+                              className={`inline-flex items-center px-2 py-0.5 rounded text-[11px] font-semibold whitespace-nowrap ${getStagePillClasses(
+                                stageBadge
+                              )}`}
+                            >
+                              {stageBadge}
+                            </span>
+                          )}
+                          {overdueDays > 0 && (
+                            <span className="inline-flex items-center px-2 py-0.5 rounded text-[11px] font-semibold bg-rose-100 text-rose-700 border border-rose-200 whitespace-nowrap">
+                              {formatOverdueLabel(overdueDays)}
+                            </span>
+                          )}
+                          {!effectiveReadOnly && (
+                            <button
+                              type="button"
+                              onClick={handleRecomputeDeadlines}
+                              className="inline-flex items-center gap-1 px-2 py-1 text-[11px] font-medium text-slate-700 bg-white border border-slate-200 hover:bg-slate-100 hover:text-slate-900 rounded-md transition-colors whitespace-nowrap shrink-0"
+                              title="Backfill missing FYE from Client Master and recalculate Statutory (+7m), Normal E-Filing (+8m), Final Applicable, and MITRS (+30d) deadlines"
+                            >
+                              <RotateCcw className="w-3 h-3" />
+                              Re-compute Deadlines
+                            </button>
+                          )}
+                        </div>
+                      </div>
+
+                      <div className="flex items-baseline gap-2.5">
+                        <span
+                          className={`font-mono tabular-nums text-lg font-bold ${
+                            overdueDays > 0 ? 'text-rose-700' : 'text-slate-900'
+                          }`}
+                        >
+                          {deadlineAnalysis.finalApplicableDeadline
+                            ? formatDateDDMMYYYY(deadlineAnalysis.finalApplicableDeadline)
+                            : '—'}
+                        </span>
+                        {deadlineAnalysis.finalApplicableDeadline && (
+                          <span className="text-xs text-slate-500">
+                            ({formatDisplayDate(deadlineAnalysis.finalApplicableDeadline)})
+                          </span>
+                        )}
+                      </div>
+
+                      <p className="text-[11px] text-slate-500">
+                        {liveForm.module === 'Ad Hoc' && !isFormC
+                          ? 'Uses Internal Deadline for Ad Hoc engagements.'
+                          : isFormC
+                          ? 'Defaults to Normal E-Filing (+8 Months); updates only via LHDN EOT 1–3 (SSM EOTs excluded).'
+                          : 'Defaults to Original Statutory Deadline; updates only via LHDN EOT 1–3 (SSM EOTs excluded).'}
+                      </p>
+                    </div>
+
+                    {deadlineAnalysis.earlierLhdnEots.length > 0 && (
+                      <div className="flex items-start gap-2 px-2.5 py-2 rounded-md bg-amber-50 border border-amber-200 text-[11px] text-amber-800">
+                        <AlertTriangle className="w-3.5 h-3.5 text-amber-600 shrink-0 mt-0.5" />
+                        <span>
+                          {deadlineAnalysis.earlierLhdnEots
+                            .map((e) => `${e.label} (${formatDateDDMMYYYY(e.date)})`)
+                            .join(', ')}{' '}
+                          {deadlineAnalysis.earlierLhdnEots.length === 1 ? 'is' : 'are'} earlier
+                          than {deadlineAnalysis.baseLabel} (
+                          <span className="font-mono">
+                            {formatDateDDMMYYYY(deadlineAnalysis.baseDeadline)}
+                          </span>
+                          ) and does not extend the final deadline.
+                        </span>
+                      </div>
+                    )}
+                  </div>
+
+                  {/* MITRS Applicable Deadline Card */}
+                  <div className="rounded-lg border border-emerald-200 bg-emerald-50/40 p-3.5 flex flex-col justify-between gap-2.5">
+                    <div className="space-y-2">
+                      <div className="flex flex-wrap items-center justify-between gap-2">
+                        <span className="text-[11px] font-bold tracking-wide text-emerald-900">
+                          MITRS APPLICABLE DEADLINE
+                        </span>
+                        <span className="inline-flex items-center px-2 py-0.5 rounded-full text-[11px] font-semibold bg-emerald-100 text-emerald-800 border border-emerald-200 whitespace-nowrap">
+                          +30 Days
+                        </span>
+                      </div>
+
+                      <div className="flex items-baseline gap-2.5">
+                        <span className="font-mono tabular-nums text-lg font-bold text-emerald-950">
+                          {deadlineAnalysis.mitrsApplicableDeadline
+                            ? formatDateDDMMYYYY(deadlineAnalysis.mitrsApplicableDeadline)
+                            : '—'}
+                        </span>
+                        {deadlineAnalysis.mitrsApplicableDeadline && (
+                          <span className="text-xs text-emerald-700/80">
+                            ({formatDisplayDate(deadlineAnalysis.mitrsApplicableDeadline)})
+                          </span>
+                        )}
+                      </div>
+
+                      <p className="text-[11px] text-emerald-800/80">
+                        Automatically calculated as Final Applicable Deadline + 30 calendar days.
+                      </p>
+                    </div>
+
+                    {isFormC && (
+                      <div className="flex items-center gap-1.5 text-[11px] text-emerald-900/90 pt-2 border-t border-emerald-200/70">
+                        <ShieldAlert className="w-3.5 h-3.5 text-emerald-700 shrink-0" />
+                        <span>
+                          Form C Submitted → Pending MITRS; Form C Submitted + MITRS Submitted /
+                          Self-Submit → Completed.
+                        </span>
+                      </div>
+                    )}
+                  </div>
+                </div>
+              </div>
+            )}
+
+            {/* TAB 3: PROGRESS & DOCUMENTS (4-Column Grid) */}
+            {tab === 'progress' && (
+              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
+                <div>
+                  <label className={labelCls}>Overall Status</label>
+                  <select
+                    disabled={effectiveReadOnly}
+                    value={liveForm.status}
+                    onChange={(e) => {
+                      const nextStatus = e.target.value;
+                      patchForm({
+                        status: nextStatus,
+                        statusDate:
+                          liveForm.statusDate || new Date().toISOString().slice(0, 10),
+                      });
+                    }}
+                    className={inputCls}
+                  >
+                    {statusOptions.map((s) => (
+                      <option key={s.value} value={s.value}>
+                        {s.label}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+                <div>
+                  <label className={labelCls}>Status Date</label>
+                  <input
+                    type="date"
+                    disabled={effectiveReadOnly}
+                    value={liveForm.statusDate || ''}
+                    onChange={(e) => patchForm({ statusDate: e.target.value })}
+                    className={`${inputCls} font-mono tabular-nums`}
+                  />
+                </div>
+                <div>
+                  <label className={labelCls}>Date Documents Requested</label>
+                  <input
+                    type="date"
+                    disabled={effectiveReadOnly}
+                    value={liveForm.dateDocumentsRequested}
+                    onChange={(e) => patchForm({ dateDocumentsRequested: e.target.value })}
+                    className={`${inputCls} font-mono tabular-nums`}
+                  />
+                </div>
+                <div>
+                  <label className={labelCls}>Date Documents Received</label>
+                  <input
+                    type="date"
+                    disabled={effectiveReadOnly}
+                    value={liveForm.dateDocumentsReceived}
+                    onChange={(e) => patchForm({ dateDocumentsReceived: e.target.value })}
+                    className={`${inputCls} font-mono tabular-nums`}
+                  />
+                </div>
+
+                <div>
+                  <label className={labelCls}>Audit Book-In Date</label>
+                  <input
+                    type="date"
+                    disabled={effectiveReadOnly}
+                    value={liveForm.auditBookInDate}
+                    onChange={(e) => patchForm({ auditBookInDate: e.target.value })}
+                    className={`${inputCls} font-mono tabular-nums`}
+                  />
+                </div>
+                <div>
+                  <label className={labelCls}>Audit Report Received Date</label>
+                  <input
+                    type="date"
+                    disabled={effectiveReadOnly}
+                    value={liveForm.auditReportReceivedDate}
+                    onChange={(e) => patchForm({ auditReportReceivedDate: e.target.value })}
+                    className={`${inputCls} font-mono tabular-nums`}
+                  />
+                </div>
+                <div>
+                  <label className={labelCls}>Accounts Status</label>
+                  <select
+                    disabled={effectiveReadOnly}
+                    value={liveForm.accountsStatus}
+                    onChange={(e) => patchForm({ accountsStatus: e.target.value })}
+                    className={inputCls}
+                  >
+                    <option value="">— Select —</option>
+                    <option value="Pending">Pending</option>
+                    <option value="Book-In">Book-In</option>
+                    <option value="Draft Received">Draft Received</option>
+                    <option value="Final / Audited Received">Final / Audited Received</option>
+                    <option value="Not Applicable">Not Applicable</option>
+                  </select>
+                </div>
+                <div>
+                  <label className={labelCls}>Account Book-In Date</label>
+                  <input
+                    type="date"
+                    disabled={effectiveReadOnly}
+                    value={liveForm.accountBookInDate}
+                    onChange={(e) => patchForm({ accountBookInDate: e.target.value })}
+                    className={`${inputCls} font-mono tabular-nums`}
+                  />
+                </div>
+
+                <div>
+                  <label className={labelCls}>Account Return Date</label>
+                  <input
+                    type="date"
+                    disabled={effectiveReadOnly}
+                    value={liveForm.accountReturnDate}
+                    onChange={(e) => patchForm({ accountReturnDate: e.target.value })}
+                    className={`${inputCls} font-mono tabular-nums`}
+                  />
+                </div>
+                <div>
+                  <label className={labelCls}>Account Return Status</label>
+                  <select
+                    disabled={effectiveReadOnly}
+                    value={liveForm.accountReturnStatus}
+                    onChange={(e) => patchForm({ accountReturnStatus: e.target.value })}
+                    className={inputCls}
+                  >
+                    <option value="">— Select —</option>
+                    <option value="Pending">Pending</option>
+                    <option value="In Review">In Review</option>
+                    <option value="Returned to Client">Returned to Client</option>
+                    <option value="Completed">Completed</option>
+                  </select>
+                </div>
+                <div>
+                  <label className={labelCls}>Draft Date</label>
+                  <input
+                    type="date"
+                    disabled={effectiveReadOnly}
+                    value={liveForm.draftDate}
+                    onChange={(e) => patchForm({ draftDate: e.target.value })}
+                    className={`${inputCls} font-mono tabular-nums`}
+                  />
+                </div>
+                <div>
+                  <label className={labelCls}>Review Date</label>
+                  <input
+                    type="date"
+                    disabled={effectiveReadOnly}
+                    value={liveForm.reviewDate}
+                    onChange={(e) => patchForm({ reviewDate: e.target.value })}
+                    className={`${inputCls} font-mono tabular-nums`}
+                  />
+                </div>
+
+                <div>
+                  <label className={labelCls}>Client Confirmation Date</label>
+                  <input
+                    type="date"
+                    disabled={effectiveReadOnly}
+                    value={liveForm.clientConfirmationDate}
+                    onChange={(e) => patchForm({ clientConfirmationDate: e.target.value })}
+                    className={`${inputCls} font-mono tabular-nums`}
+                  />
+                </div>
+                <div>
+                  <label className={labelCls}>YA Status</label>
+                  <input
+                    maxLength={60}
+                    disabled={effectiveReadOnly}
+                    value={liveForm.yaStatus}
+                    onChange={(e) => patchForm({ yaStatus: e.target.value })}
+                    placeholder="e.g. Active / Dormant / 1st YA"
+                    className={inputCls}
+                  />
+                </div>
+                <div>
+                  <label className={labelCls}>Auditor</label>
+                  <input
+                    maxLength={120}
+                    disabled={effectiveReadOnly}
+                    value={liveForm.auditor}
+                    onChange={(e) => patchForm({ auditor: e.target.value })}
+                    placeholder="Audit firm name"
+                    className={inputCls}
+                  />
+                </div>
+                <div>
+                  <label className={labelCls}>Person No.</label>
+                  <input
+                    maxLength={60}
+                    disabled={effectiveReadOnly}
+                    value={liveForm.personNo}
+                    onChange={(e) => patchForm({ personNo: e.target.value })}
+                    placeholder="Director / Individual ref"
+                    className={`${inputCls} font-mono`}
+                  />
+                </div>
+              </div>
+            )}
+
+            {/* TAB 4: TAX SUBMISSION (4-Column Grid) */}
+            {tab === 'submission' && (
+              <div className="space-y-4">
                 {isFormC && (
-                  <div className="pt-3 border-t border-slate-200 space-y-3">
-                    <div className="flex flex-wrap items-center justify-between gap-2">
-                      <h4 className="text-xs font-semibold text-slate-900">
-                        Form C &amp; MITRS Filing Tracker
-                      </h4>
-                      <span className="text-[11px] text-sky-800 bg-sky-50 border border-sky-200 px-2 py-0.5 rounded">
-                        Form C Submitted → Pending MITRS · Both Form C &amp; MITRS Submitted → Completed
-                      </span>
-                    </div>
-                    <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-3">
-                      <div>
-                        <label className={labelCls}>Audit Book-In Date</label>
-                        <input
-                          type="date"
-                          disabled={effectiveReadOnly}
-                          value={liveForm.auditBookInDate}
-                          onChange={(e) => patchForm({ auditBookInDate: e.target.value })}
-                          className={`${inputCls} font-mono`}
-                        />
-                      </div>
-                      <div>
-                        <label className={labelCls}>Audit Report Received Date</label>
-                        <input
-                          type="date"
-                          disabled={effectiveReadOnly}
-                          value={liveForm.auditReportReceivedDate}
-                          onChange={(e) => patchForm({ auditReportReceivedDate: e.target.value })}
-                          className={`${inputCls} font-mono`}
-                        />
-                      </div>
-                      <div>
-                        <label className={labelCls}>Form C Status</label>
-                        <select
-                          disabled={effectiveReadOnly}
-                          value={liveForm.formCStatus || 'Pending'}
-                          onChange={(e) => patchForm({ formCStatus: e.target.value })}
-                          className={inputCls}
-                        >
-                          {SUBMISSION_SUBSTATUS_OPTIONS.map((o) => (
-                            <option key={o} value={o}>
-                              {o}
-                            </option>
-                          ))}
-                        </select>
-                      </div>
-                      <div>
-                        <label className={labelCls}>Form C Due Date (FYE + 8m)</label>
-                        <input
-                          type="date"
-                          disabled
-                          value={liveForm.formCDueDate}
-                          className={`${inputCls} font-mono`}
-                        />
-                      </div>
-                      <div>
-                        <label className={labelCls}>Form C Submission Date</label>
-                        <input
-                          type="date"
-                          disabled={effectiveReadOnly}
-                          value={liveForm.formCSubmissionDate}
-                          onChange={(e) => patchForm({ formCSubmissionDate: e.target.value })}
-                          className={`${inputCls} font-mono`}
-                        />
-                      </div>
-                      <div className="lg:col-span-2">
-                        <label className={labelCls}>Form C Submission Reference</label>
-                        <input
-                          maxLength={80}
-                          disabled={effectiveReadOnly}
-                          value={liveForm.formCSubmissionReference}
-                          onChange={(e) => patchForm({ formCSubmissionReference: e.target.value })}
-                          placeholder="MyTax e-Filing Ack Ref"
-                          className={`${inputCls} font-mono`}
-                        />
-                      </div>
-                      <div>
-                        <label className={labelCls}>MITRS Status</label>
-                        <select
-                          disabled={effectiveReadOnly}
-                          value={liveForm.mitrsStatus || 'Pending'}
-                          onChange={(e) => patchForm({ mitrsStatus: e.target.value })}
-                          className={inputCls}
-                        >
-                          {SUBMISSION_SUBSTATUS_OPTIONS.map((o) => (
-                            <option key={o} value={o}>
-                              {o}
-                            </option>
-                          ))}
-                        </select>
-                      </div>
-                      <div>
-                        <label className={labelCls}>MITRS Due Date (+30d)</label>
-                        <input
-                          type="date"
-                          disabled
-                          value={liveForm.mitrsDueDate}
-                          className={`${inputCls} font-mono`}
-                        />
-                      </div>
-                      <div>
-                        <label className={labelCls}>MITRS Submission Date</label>
-                        <input
-                          type="date"
-                          disabled={effectiveReadOnly}
-                          value={liveForm.mitrsSubmissionDate}
-                          onChange={(e) => patchForm({ mitrsSubmissionDate: e.target.value })}
-                          className={`${inputCls} font-mono`}
-                        />
-                      </div>
-                      <div className="lg:col-span-2">
-                        <label className={labelCls}>MITRS Submission Reference</label>
-                        <input
-                          maxLength={80}
-                          disabled={effectiveReadOnly}
-                          value={liveForm.mitrsSubmissionReference}
-                          onChange={(e) => patchForm({ mitrsSubmissionReference: e.target.value })}
-                          placeholder="MITRS Filing Reference"
-                          className={`${inputCls} font-mono`}
-                        />
-                      </div>
-                    </div>
+                  <div className="flex flex-wrap items-center justify-between gap-2 px-3 py-2 rounded-md bg-sky-50 border border-sky-200 text-[11px] text-sky-900">
+                    <span>
+                      Auto-completion rule: <strong>Form C Submitted</strong> sets status to{' '}
+                      <strong>Pending MITRS</strong>;{' '}
+                      <strong>Form C Submitted + MITRS Submitted or Self-Submit</strong>{' '}
+                      automatically marks the job <strong>Completed</strong>.
+                    </span>
+                    <span className="font-mono text-sky-800">
+                      MITRS Due: {formatDateDDMMYYYY(deadlineAnalysis.mitrsApplicableDeadline)}
+                    </span>
                   </div>
                 )}
 
-                {/* Form E Sub-Statuses */}
+                <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
+                  <div>
+                    <label className={labelCls}>Form C Status</label>
+                    <select
+                      disabled={effectiveReadOnly}
+                      value={liveForm.formCStatus ?? ''}
+                      onChange={(e) => patchForm({ formCStatus: e.target.value }, false, true)}
+                      className={inputCls}
+                    >
+                      <option value="">-</option>
+                      {formCStatusOptions.map((o) => (
+                        <option key={o.value} value={o.value}>
+                          {o.label}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                  <div>
+                    <label className={labelCls}>Form C Submission Date</label>
+                    <input
+                      type="date"
+                      disabled={effectiveReadOnly}
+                      value={liveForm.formCSubmissionDate}
+                      onChange={(e) => patchForm({ formCSubmissionDate: e.target.value })}
+                      className={`${inputCls} font-mono tabular-nums`}
+                    />
+                  </div>
+                  <div className="sm:col-span-2">
+                    <label className={labelCls}>Form C Submission Reference</label>
+                    <input
+                      maxLength={80}
+                      disabled={effectiveReadOnly}
+                      value={liveForm.formCSubmissionReference}
+                      onChange={(e) => patchForm({ formCSubmissionReference: e.target.value })}
+                      placeholder="MyTax e-Filing Acknowledgement Ref"
+                      className={`${inputCls} font-mono`}
+                    />
+                  </div>
+
+                  <div>
+                    <label className={labelCls}>MITRS Status</label>
+                    <select
+                      disabled={effectiveReadOnly}
+                      value={liveForm.mitrsStatus ?? ''}
+                      onChange={(e) => patchForm({ mitrsStatus: e.target.value }, false, true)}
+                      className={inputCls}
+                    >
+                      <option value="">-</option>
+                      {mitrsStatusOptions.map((o) => (
+                        <option key={o.value} value={o.value}>
+                          {o.label}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                  <div>
+                    <label className={labelCls}>MITRS Submission Date</label>
+                    <input
+                      type="date"
+                      disabled={effectiveReadOnly}
+                      value={liveForm.mitrsSubmissionDate}
+                      onChange={(e) => patchForm({ mitrsSubmissionDate: e.target.value })}
+                      className={`${inputCls} font-mono tabular-nums`}
+                    />
+                  </div>
+                  <div className="sm:col-span-2">
+                    <label className={labelCls}>MITRS Submission Reference</label>
+                    <input
+                      maxLength={80}
+                      disabled={effectiveReadOnly}
+                      value={liveForm.mitrsSubmissionReference}
+                      onChange={(e) => patchForm({ mitrsSubmissionReference: e.target.value })}
+                      placeholder="MITRS Filing Reference"
+                      className={`${inputCls} font-mono`}
+                    />
+                  </div>
+
+                  <div className="sm:col-span-2">
+                    <label className={labelCls}>Final Tax Payable (RM)</label>
+                    <input
+                      type="number"
+                      step="0.01"
+                      disabled={effectiveReadOnly}
+                      value={liveForm.finalTaxPayable}
+                      onChange={(e) =>
+                        patchForm({
+                          finalTaxPayable: Number(e.target.value),
+                          taxPayable: Number(e.target.value),
+                        })
+                      }
+                      className={`${inputCls} font-mono tabular-nums text-right`}
+                    />
+                  </div>
+                  <div className="sm:col-span-2">
+                    <label className={labelCls}>Final Tax Payable Date</label>
+                    <input
+                      type="date"
+                      disabled={effectiveReadOnly}
+                      value={liveForm.finalTaxPayableDate}
+                      onChange={(e) => patchForm({ finalTaxPayableDate: e.target.value })}
+                      className={`${inputCls} font-mono tabular-nums`}
+                    />
+                  </div>
+                </div>
+
                 {isFormE && (
-                  <div className="pt-3 border-t border-slate-200 space-y-3">
+                  <div className="pt-3 border-t border-slate-200 space-y-2.5">
                     <h4 className="text-xs font-semibold text-slate-900">
                       Form E, C.P.8D &amp; Form EA Sub-Statuses
                     </h4>
@@ -1168,870 +1427,99 @@ export const JobModal: React.FC<JobModalProps> = ({
                     </div>
                   </div>
                 )}
-
-                {/* Specialized CP204 / Payment / Correspondence */}
-                {liveForm.module === 'CP204' && (
-                  <div className="pt-3 border-t border-slate-200">
-                    <h4 className="text-xs font-semibold text-slate-900 mb-3">
-                      CP204 / CP204A Tax Estimate Schedule
-                    </h4>
-                    <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-3">
-                      <div>
-                        <label className={labelCls}>Initial CP204 (RM)</label>
-                        <input
-                          type="number"
-                          step="0.01"
-                          disabled={effectiveReadOnly}
-                          value={liveForm.cp204Estimate}
-                          onChange={(e) => patchForm({ cp204Estimate: Number(e.target.value) })}
-                          className={`${inputCls} font-mono text-right`}
-                        />
-                      </div>
-                      <div>
-                        <label className={labelCls}>6th Month Rev (RM)</label>
-                        <input
-                          type="number"
-                          step="0.01"
-                          disabled={effectiveReadOnly}
-                          value={liveForm.cp204Revised6th}
-                          onChange={(e) => patchForm({ cp204Revised6th: Number(e.target.value) })}
-                          className={`${inputCls} font-mono text-right`}
-                        />
-                      </div>
-                      <div>
-                        <label className={labelCls}>9th Month Rev (RM)</label>
-                        <input
-                          type="number"
-                          step="0.01"
-                          disabled={effectiveReadOnly}
-                          value={liveForm.cp204Revised9th}
-                          onChange={(e) => patchForm({ cp204Revised9th: Number(e.target.value) })}
-                          className={`${inputCls} font-mono text-right`}
-                        />
-                      </div>
-                      <div>
-                        <label className={labelCls}>11th Month Rev (RM)</label>
-                        <input
-                          type="number"
-                          step="0.01"
-                          disabled={effectiveReadOnly}
-                          value={liveForm.cp204Revised11th}
-                          onChange={(e) => patchForm({ cp204Revised11th: Number(e.target.value) })}
-                          className={`${inputCls} font-mono text-right`}
-                        />
-                      </div>
-                      <div>
-                        <label className={labelCls}>Installment Start</label>
-                        <input
-                          type="date"
-                          disabled={effectiveReadOnly}
-                          value={liveForm.cp204InstallmentStart}
-                          onChange={(e) => patchForm({ cp204InstallmentStart: e.target.value })}
-                          className={`${inputCls} font-mono`}
-                        />
-                      </div>
-                    </div>
-                  </div>
-                )}
-
-                {liveForm.module === 'Tax Payment Monitor' && (
-                  <div className="pt-3 border-t border-slate-200">
-                    <h4 className="text-xs font-semibold text-slate-900 mb-3">
-                      LHDN Tax Payment &amp; ByrHASiL Receipt Tracking
-                    </h4>
-                    <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
-                      <div>
-                        <label className={labelCls}>Payment Type</label>
-                        <select
-                          disabled={effectiveReadOnly}
-                          value={liveForm.paymentType}
-                          onChange={(e) => patchForm({ paymentType: e.target.value })}
-                          className={inputCls}
-                        >
-                          <option value="CP204 Installment">CP204 Installment</option>
-                          <option value="CP500 Bi-Monthly">CP500 Bi-Monthly</option>
-                          <option value="Balance Tax (Form C/B)">Balance Tax (Form C/B)</option>
-                          <option value="Withholding Tax (Sec 107A/109)">
-                            Withholding Tax (Sec 107A/109)
-                          </option>
-                          <option value="Penalty / Compound">Penalty / Compound</option>
-                        </select>
-                      </div>
-                      <div>
-                        <label className={labelCls}>Installment No.</label>
-                        <input
-                          maxLength={20}
-                          disabled={effectiveReadOnly}
-                          value={liveForm.installmentNo}
-                          onChange={(e) => patchForm({ installmentNo: e.target.value })}
-                          className={`${inputCls} font-mono`}
-                        />
-                      </div>
-                      <div>
-                        <label className={labelCls}>ByrHASiL / FPX Receipt No.</label>
-                        <input
-                          maxLength={80}
-                          disabled={effectiveReadOnly}
-                          value={liveForm.receiptNo}
-                          onChange={(e) => patchForm({ receiptNo: e.target.value })}
-                          className={`${inputCls} font-mono`}
-                        />
-                      </div>
-                      <div>
-                        <label className={labelCls}>Amount Due (RM)</label>
-                        <input
-                          type="number"
-                          step="0.01"
-                          disabled={effectiveReadOnly}
-                          value={liveForm.amountDue}
-                          onChange={(e) => patchForm({ amountDue: Number(e.target.value) })}
-                          className={`${inputCls} font-mono text-right`}
-                        />
-                      </div>
-                      <div>
-                        <label className={labelCls}>Amount Paid (RM)</label>
-                        <input
-                          type="number"
-                          step="0.01"
-                          disabled={effectiveReadOnly}
-                          value={liveForm.amountPaid}
-                          onChange={(e) => patchForm({ amountPaid: Number(e.target.value) })}
-                          className={`${inputCls} font-mono text-right`}
-                        />
-                      </div>
-                      <div>
-                        <label className={labelCls}>Payment Date</label>
-                        <input
-                          type="date"
-                          disabled={effectiveReadOnly}
-                          value={liveForm.paymentDate}
-                          onChange={(e) => patchForm({ paymentDate: e.target.value })}
-                          className={`${inputCls} font-mono`}
-                        />
-                      </div>
-                    </div>
-                  </div>
-                )}
-
-                {liveForm.module === 'Correspondence' && (
-                  <div className="pt-3 border-t border-slate-200">
-                    <h4 className="text-xs font-semibold text-slate-900 mb-3">
-                      LHDN Correspondence &amp; Audit Query Details
-                    </h4>
-                    <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-3">
-                      <div>
-                        <label className={labelCls}>Correspondence Type</label>
-                        <select
-                          disabled={effectiveReadOnly}
-                          value={liveForm.correspondenceType}
-                          onChange={(e) => patchForm({ correspondenceType: e.target.value })}
-                          className={inputCls}
-                        >
-                          {corrTypeOptions.map((o) => (
-                            <option key={o} value={o}>
-                              {o}
-                            </option>
-                          ))}
-                        </select>
-                      </div>
-                      <div>
-                        <label className={labelCls}>LHDN Ref No.</label>
-                        <input
-                          maxLength={80}
-                          disabled={effectiveReadOnly}
-                          value={liveForm.letterRefNo}
-                          onChange={(e) => patchForm({ letterRefNo: e.target.value })}
-                          className={`${inputCls} font-mono`}
-                        />
-                      </div>
-                      <div>
-                        <label className={labelCls}>Letter Date</label>
-                        <input
-                          type="date"
-                          disabled={effectiveReadOnly}
-                          value={liveForm.letterDate}
-                          onChange={(e) => patchForm({ letterDate: e.target.value })}
-                          className={`${inputCls} font-mono`}
-                        />
-                      </div>
-                      <div>
-                        <label className={labelCls}>Response Due Date</label>
-                        <input
-                          type="date"
-                          disabled={effectiveReadOnly}
-                          value={liveForm.responseDueDate}
-                          onChange={(e) => patchForm({ responseDueDate: e.target.value })}
-                          className={`${inputCls} font-mono`}
-                        />
-                      </div>
-                      <div>
-                        <label className={labelCls}>Response Sent Date</label>
-                        <input
-                          type="date"
-                          disabled={effectiveReadOnly}
-                          value={liveForm.responseSentDate}
-                          onChange={(e) => patchForm({ responseSentDate: e.target.value })}
-                          className={`${inputCls} font-mono`}
-                        />
-                      </div>
-                    </div>
-                  </div>
-                )}
               </div>
             )}
 
-            {/* TAB 2: WORKFLOW, ACCOUNTS, SUBMISSION & BILLING */}
-            {tab === 'workflow' && (
-              <div className="space-y-5">
-                <section>
-                  <h4 className="text-xs font-semibold text-slate-900 pb-2 mb-3 border-b border-slate-200">
-                    1. Workflow Milestone Dates
-                  </h4>
-                  <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-3">
-                    <div>
-                      <label className={labelCls}>Date Documents Requested</label>
-                      <input
-                        type="date"
-                        disabled={effectiveReadOnly}
-                        value={liveForm.dateDocumentsRequested}
-                        onChange={(e) => patchForm({ dateDocumentsRequested: e.target.value })}
-                        className={`${inputCls} font-mono`}
-                      />
-                    </div>
-                    <div>
-                      <label className={labelCls}>Date Documents Received</label>
-                      <input
-                        type="date"
-                        disabled={effectiveReadOnly}
-                        value={liveForm.dateDocumentsReceived}
-                        onChange={(e) => patchForm({ dateDocumentsReceived: e.target.value })}
-                        className={`${inputCls} font-mono`}
-                      />
-                    </div>
-                    <div>
-                      <label className={labelCls}>Draft Date</label>
-                      <input
-                        type="date"
-                        disabled={effectiveReadOnly}
-                        value={liveForm.draftDate}
-                        onChange={(e) => patchForm({ draftDate: e.target.value })}
-                        className={`${inputCls} font-mono`}
-                      />
-                    </div>
-                    <div>
-                      <label className={labelCls}>Review Date</label>
-                      <input
-                        type="date"
-                        disabled={effectiveReadOnly}
-                        value={liveForm.reviewDate}
-                        onChange={(e) => patchForm({ reviewDate: e.target.value })}
-                        className={`${inputCls} font-mono`}
-                      />
-                    </div>
-                    <div>
-                      <label className={labelCls}>Client Confirmation Date</label>
-                      <input
-                        type="date"
-                        disabled={effectiveReadOnly}
-                        value={liveForm.clientConfirmationDate}
-                        onChange={(e) => patchForm({ clientConfirmationDate: e.target.value })}
-                        className={`${inputCls} font-mono`}
-                      />
-                    </div>
-                  </div>
-                </section>
-
-                <section>
-                  <h4 className="text-xs font-semibold text-slate-900 pb-2 mb-3 border-b border-slate-200">
-                    2. Auditor &amp; Accounts Tracking
-                  </h4>
-                  <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-3">
-                    <div>
-                      <label className={labelCls}>Auditor</label>
-                      <input
-                        maxLength={120}
-                        disabled={effectiveReadOnly}
-                        value={liveForm.auditor}
-                        onChange={(e) => patchForm({ auditor: e.target.value })}
-                        className={inputCls}
-                      />
-                    </div>
-                    <div>
-                      <label className={labelCls}>Accounts Status</label>
-                      <select
-                        disabled={effectiveReadOnly}
-                        value={liveForm.accountsStatus}
-                        onChange={(e) => patchForm({ accountsStatus: e.target.value })}
-                        className={inputCls}
-                      >
-                        <option value="">— Select —</option>
-                        <option value="Pending">Pending</option>
-                        <option value="Book-In">Book-In</option>
-                        <option value="Draft Received">Draft Received</option>
-                        <option value="Final / Audited Received">Final / Audited Received</option>
-                        <option value="Not Applicable">Not Applicable</option>
-                      </select>
-                    </div>
-                    <div>
-                      <label className={labelCls}>Account Book-In Date</label>
-                      <input
-                        type="date"
-                        disabled={effectiveReadOnly}
-                        value={liveForm.accountBookInDate}
-                        onChange={(e) => patchForm({ accountBookInDate: e.target.value })}
-                        className={`${inputCls} font-mono`}
-                      />
-                    </div>
-                    <div>
-                      <label className={labelCls}>Account Return Date</label>
-                      <input
-                        type="date"
-                        disabled={effectiveReadOnly}
-                        value={liveForm.accountReturnDate}
-                        onChange={(e) => patchForm({ accountReturnDate: e.target.value })}
-                        className={`${inputCls} font-mono`}
-                      />
-                    </div>
-                    <div>
-                      <label className={labelCls}>Account Return Status</label>
-                      <select
-                        disabled={effectiveReadOnly}
-                        value={liveForm.accountReturnStatus}
-                        onChange={(e) => patchForm({ accountReturnStatus: e.target.value })}
-                        className={inputCls}
-                      >
-                        <option value="">— Select —</option>
-                        <option value="Pending">Pending</option>
-                        <option value="In Review">In Review</option>
-                        <option value="Returned to Client">Returned to Client</option>
-                        <option value="Completed">Completed</option>
-                      </select>
-                    </div>
-                  </div>
-                </section>
-
-                <section>
-                  <h4 className="text-xs font-semibold text-slate-900 pb-2 mb-3 border-b border-slate-200">
-                    3. Submission, Final Tax Payable &amp; Practice Billing
-                  </h4>
-                  <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
-                    <div>
-                      <label className={labelCls}>Submission Status</label>
-                      <select
-                        disabled={effectiveReadOnly}
-                        value={liveForm.submissionStatus}
-                        onChange={(e) => patchForm({ submissionStatus: e.target.value })}
-                        className={inputCls}
-                      >
-                        {SUBMISSION_SUBSTATUS_OPTIONS.map((o) => (
-                          <option key={o} value={o}>
-                            {o}
-                          </option>
-                        ))}
-                      </select>
-                    </div>
-                    <div>
-                      <label className={labelCls}>Submission Reference</label>
-                      <input
-                        maxLength={80}
-                        disabled={effectiveReadOnly}
-                        value={liveForm.submissionReference}
-                        onChange={(e) => patchForm({ submissionReference: e.target.value })}
-                        className={`${inputCls} font-mono`}
-                      />
-                    </div>
-                    <div>
-                      <label className={labelCls}>Submission Date</label>
-                      <input
-                        type="date"
-                        disabled={effectiveReadOnly}
-                        value={liveForm.submissionDate}
-                        onChange={(e) => patchForm({ submissionDate: e.target.value })}
-                        className={`${inputCls} font-mono`}
-                      />
-                    </div>
-                    <div>
-                      <label className={labelCls}>e-Filing Ack No.</label>
-                      <input
-                        maxLength={80}
-                        disabled={effectiveReadOnly}
-                        value={liveForm.eFilingAckNo}
-                        onChange={(e) => patchForm({ eFilingAckNo: e.target.value })}
-                        className={`${inputCls} font-mono`}
-                      />
-                    </div>
-
-                    <div>
-                      <label className={labelCls}>Final Tax Payable (RM)</label>
-                      <input
-                        type="number"
-                        step="0.01"
-                        disabled={effectiveReadOnly}
-                        value={liveForm.finalTaxPayable}
-                        onChange={(e) =>
-                          patchForm({
-                            finalTaxPayable: Number(e.target.value),
-                            taxPayable: Number(e.target.value),
-                          })
-                        }
-                        className={`${inputCls} font-mono text-right`}
-                      />
-                    </div>
-                    <div>
-                      <label className={labelCls}>Final Tax Payable Date</label>
-                      <input
-                        type="date"
-                        disabled={effectiveReadOnly}
-                        value={liveForm.finalTaxPayableDate}
-                        onChange={(e) => patchForm({ finalTaxPayableDate: e.target.value })}
-                        className={`${inputCls} font-mono`}
-                      />
-                    </div>
-                    <div>
-                      <label className={labelCls}>Tax Refundable (RM)</label>
-                      <input
-                        type="number"
-                        step="0.01"
-                        disabled={effectiveReadOnly}
-                        value={liveForm.taxRefundable}
-                        onChange={(e) => patchForm({ taxRefundable: Number(e.target.value) })}
-                        className={`${inputCls} font-mono text-right`}
-                      />
-                    </div>
-                    <div>
-                      <label className={labelCls}>Hours Spent</label>
-                      <input
-                        type="number"
-                        step="0.25"
-                        disabled={effectiveReadOnly}
-                        value={liveForm.hoursSpent}
-                        onChange={(e) => patchForm({ hoursSpent: Number(e.target.value) })}
-                        className={`${inputCls} font-mono text-right`}
-                      />
-                    </div>
-
-                    <div>
-                      <label className={labelCls}>Agreed Fee (RM)</label>
-                      <input
-                        type="number"
-                        step="0.01"
-                        disabled={effectiveReadOnly}
-                        value={liveForm.feeAmount}
-                        onChange={(e) => patchForm({ feeAmount: Number(e.target.value) })}
-                        className={`${inputCls} font-mono text-right`}
-                      />
-                    </div>
-                    <div>
-                      <label className={labelCls}>Billed Amount (RM)</label>
-                      <input
-                        type="number"
-                        step="0.01"
-                        disabled={effectiveReadOnly}
-                        value={liveForm.billedAmount}
-                        onChange={(e) => patchForm({ billedAmount: Number(e.target.value) })}
-                        className={`${inputCls} font-mono text-right`}
-                      />
-                    </div>
-                    <div className="sm:col-span-2">
-                      <label className={labelCls}>Billing Status</label>
-                      <select
-                        disabled={effectiveReadOnly}
-                        value={liveForm.billingStatus}
-                        onChange={(e) => patchForm({ billingStatus: e.target.value })}
-                        className={inputCls}
-                      >
-                        {billingOptions.map((b) => (
-                          <option key={b} value={b}>
-                            {b}
-                          </option>
-                        ))}
-                      </select>
-                    </div>
-                    <div className="sm:col-span-1 lg:col-span-2">
-                      <label className={labelCls}>YA Sequence</label>
-                      <input
-                        maxLength={40}
-                        disabled={effectiveReadOnly}
-                        value={liveForm.yaSequence}
-                        onChange={(e) => patchForm({ yaSequence: e.target.value })}
-                        placeholder="e.g. 1st / 2nd / Ongoing"
-                        className={inputCls}
-                      />
-                    </div>
-                    <div className="sm:col-span-1 lg:col-span-2">
-                      <label className={labelCls}>Person No.</label>
-                      <input
-                        maxLength={60}
-                        disabled={effectiveReadOnly}
-                        value={liveForm.personNo}
-                        onChange={(e) => patchForm({ personNo: e.target.value })}
-                        placeholder="e.g. Individual / Director Person No."
-                        className={`${inputCls} font-mono`}
-                      />
-                    </div>
-                    <div className="sm:col-span-2 lg:col-span-4">
-                      <label className={labelCls}>General Job Remarks</label>
-                      <textarea
-                        rows={2}
-                        maxLength={2000}
-                        disabled={effectiveReadOnly}
-                        value={liveForm.remarks}
-                        onChange={(e) => patchForm({ remarks: e.target.value })}
-                        className={inputCls}
-                      />
-                    </div>
-                  </div>
-                </section>
-              </div>
-            )}
-
-            {/* TAB 3: 7-STEP COMPLIANCE CHECKLIST */}
-            {tab === 'checklist' && (
-              <div className="space-y-3">
-                <div className="flex items-center justify-between">
-                  <div>
-                    <h4 className="text-xs font-semibold text-slate-900">
-                      Malaysian Tax Compliance Checklist (7 Mandatory Milestones)
-                    </h4>
-                    <p className="text-[11px] text-slate-500">
-                      Mark each compliance stage as Pending, Completed, or Not Applicable.
-                    </p>
-                  </div>
-                  <span className="text-xs font-mono font-semibold text-teal-800">
-                    {checklistDoneCount} / {checklist.length} Completed
-                  </span>
+            {/* TAB 5: REMARKS & INTERNAL AUDIT NOTES */}
+            {tab === 'remarks' && (
+              <div className="space-y-4">
+                <div>
+                  <label className={labelCls}>Job Remarks</label>
+                  <textarea
+                    rows={4}
+                    maxLength={2000}
+                    disabled={effectiveReadOnly}
+                    value={liveForm.remarks}
+                    onChange={(e) => patchForm({ remarks: e.target.value })}
+                    placeholder="Key filing remarks, follow-up notes, client queries, EOT reasons..."
+                    className={inputCls}
+                  />
                 </div>
 
-                <div className="border border-slate-200 rounded-lg overflow-hidden">
-                  <table className="w-full text-xs border-collapse">
-                    <thead className="bg-slate-50 border-b border-slate-200 text-slate-600">
-                      <tr>
-                        <th className="px-3 py-2 text-left font-semibold w-10">#</th>
-                        <th className="px-3 py-2 text-left font-semibold">Compliance Step</th>
-                        <th className="px-3 py-2 text-left font-semibold w-56">Status</th>
-                        <th className="px-3 py-2 text-left font-semibold w-36">Completed Date</th>
-                        <th className="px-3 py-2 text-left font-semibold">Remarks</th>
-                      </tr>
-                    </thead>
-                    <tbody className="divide-y divide-slate-100">
-                      {checklist.map((item, idx) => (
-                        <tr key={item.step} className="hover:bg-slate-50/70">
-                          <td className="px-3 py-2 font-mono text-slate-400">{idx + 1}</td>
-                          <td className="px-3 py-2 font-medium text-slate-900 flex items-center gap-1.5">
-                            {item.status === 'Completed' && (
-                              <CheckCircle2 className="w-3.5 h-3.5 text-emerald-600 shrink-0" />
-                            )}
-                            {item.step}
-                          </td>
-                          <td className="px-3 py-2">
-                            <div className="inline-flex p-0.5 bg-slate-100 rounded-md">
-                              {(['Pending', 'Completed', 'Not Applicable'] as ChecklistStepStatus[]).map(
-                                (st) => (
-                                  <button
-                                    key={st}
-                                    type="button"
-                                    disabled={effectiveReadOnly}
-                                    onClick={() => {
-                                      const next = [...checklist];
-                                      next[idx] = {
-                                        ...item,
-                                        status: st,
-                                        completedDate:
-                                          st === 'Completed'
-                                            ? item.completedDate ||
-                                              new Date().toISOString().slice(0, 10)
-                                            : '',
-                                      };
-                                      patchForm({ complianceChecklist: next });
-                                    }}
-                                    className={`px-2 py-1 text-[11px] font-medium rounded transition-colors ${
-                                      item.status === st
-                                        ? st === 'Completed'
-                                          ? 'bg-emerald-600 text-white'
-                                          : st === 'Not Applicable'
-                                          ? 'bg-slate-600 text-white'
-                                          : 'bg-white text-slate-900 shadow-xs'
-                                        : 'text-slate-600 hover:text-slate-900'
-                                    } disabled:opacity-60`}
-                                  >
-                                    {st === 'Not Applicable' ? 'N/A' : st}
-                                  </button>
-                                )
-                              )}
-                            </div>
-                          </td>
-                          <td className="px-3 py-2">
-                            <input
-                              type="date"
-                              disabled={effectiveReadOnly || item.status !== 'Completed'}
-                              value={item.completedDate || ''}
-                              onChange={(e) => {
-                                const next = [...checklist];
-                                next[idx] = { ...item, completedDate: e.target.value };
-                                patchForm({ complianceChecklist: next });
-                              }}
-                              className={`${inputCls} font-mono`}
-                            />
-                          </td>
-                          <td className="px-3 py-2">
-                            <input
-                              disabled={effectiveReadOnly}
-                              value={item.remarks || ''}
-                              onChange={(e) => {
-                                const next = [...checklist];
-                                next[idx] = { ...item, remarks: e.target.value };
-                                patchForm({ complianceChecklist: next });
-                              }}
-                              placeholder="Optional notes"
-                              className={inputCls}
-                            />
-                          </td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                </div>
-              </div>
-            )}
-
-            {/* TAB 4: DOCUMENT FOLLOW-UPS */}
-            {tab === 'followups' && (
-              <div className="space-y-3">
-                <div className="flex items-center justify-between">
-                  <div>
-                    <h4 className="text-xs font-semibold text-slate-900">Document Follow-ups</h4>
-                    <p className="text-[11px] text-slate-500">
-                      Track client document requests, follow-up chase dates, and receipt dates.
-                    </p>
-                  </div>
-                  {!effectiveReadOnly && (
-                    <button
-                      type="button"
-                      onClick={addFollowupRow}
-                      className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold text-white bg-teal-700 hover:bg-teal-800 rounded-md"
-                    >
-                      <Plus className="w-3.5 h-3.5" /> Add Follow-up
-                    </button>
-                  )}
+                <div>
+                  <label className={labelCls}>Internal Audit Notes (Logged on Save)</label>
+                  <textarea
+                    rows={2}
+                    maxLength={500}
+                    disabled={effectiveReadOnly}
+                    value={auditRemarks}
+                    onChange={(e) => setAuditRemarks(e.target.value)}
+                    placeholder="Optional internal audit note appended to this job's immutable history on save..."
+                    className={inputCls}
+                  />
                 </div>
 
-                {followups.length === 0 ? (
-                  <div className="py-10 text-center border border-dashed border-slate-200 rounded-lg text-xs text-slate-500">
-                    No document follow-up items logged yet.
-                  </div>
-                ) : (
-                  <div className="overflow-x-auto border border-slate-200 rounded-lg">
-                    <table className="w-full text-xs border-collapse">
-                      <thead className="bg-slate-50 border-b border-slate-200 text-slate-600">
-                        <tr>
-                          <th className="px-2.5 py-2 text-left font-semibold">Document Required</th>
-                          <th className="px-2.5 py-2 text-left font-semibold">Date Requested</th>
-                          <th className="px-2.5 py-2 text-left font-semibold">Follow-Up Date</th>
-                          <th className="px-2.5 py-2 text-left font-semibold">Date Received</th>
-                          <th className="px-2.5 py-2 text-left font-semibold">PIC</th>
-                          <th className="px-2.5 py-2 text-left font-semibold">Status</th>
-                          <th className="px-2.5 py-2 text-left font-semibold">Remarks</th>
-                          {!effectiveReadOnly && <th className="px-2 py-2 w-10" />}
-                        </tr>
-                      </thead>
-                      <tbody className="divide-y divide-slate-100">
-                        {followups.map((item, idx) => (
-                          <tr key={item.id}>
-                            <td className="p-1.5 min-w-[160px]">
-                              <input
-                                disabled={effectiveReadOnly}
-                                value={item.documentRequired}
-                                onChange={(e) => {
-                                  const next = [...followups];
-                                  next[idx] = { ...item, documentRequired: e.target.value };
-                                  patchForm({ documentFollowups: next });
-                                }}
-                                placeholder="e.g. Audited FS / EA Form"
-                                className={inputCls}
-                              />
-                            </td>
-                            <td className="p-1.5">
-                              <input
-                                type="date"
-                                disabled={effectiveReadOnly}
-                                value={item.dateRequested}
-                                onChange={(e) => {
-                                  const next = [...followups];
-                                  next[idx] = { ...item, dateRequested: e.target.value };
-                                  patchForm({ documentFollowups: next });
-                                }}
-                                className={`${inputCls} font-mono`}
-                              />
-                            </td>
-                            <td className="p-1.5">
-                              <input
-                                type="date"
-                                disabled={effectiveReadOnly}
-                                value={item.followUpDate}
-                                onChange={(e) => {
-                                  const next = [...followups];
-                                  next[idx] = { ...item, followUpDate: e.target.value };
-                                  patchForm({ documentFollowups: next });
-                                }}
-                                className={`${inputCls} font-mono`}
-                              />
-                            </td>
-                            <td className="p-1.5">
-                              <input
-                                type="date"
-                                disabled={effectiveReadOnly}
-                                value={item.dateReceived}
-                                onChange={(e) => {
-                                  const next = [...followups];
-                                  next[idx] = { ...item, dateReceived: e.target.value };
-                                  patchForm({ documentFollowups: next });
-                                }}
-                                className={`${inputCls} font-mono`}
-                              />
-                            </td>
-                            <td className="p-1.5">
-                              <input
-                                list="job-staff-list"
-                                disabled={effectiveReadOnly}
-                                value={item.pic}
-                                onChange={(e) => {
-                                  const next = [...followups];
-                                  next[idx] = { ...item, pic: e.target.value };
-                                  patchForm({ documentFollowups: next });
-                                }}
-                                className={inputCls}
-                              />
-                            </td>
-                            <td className="p-1.5">
-                              <select
-                                disabled={effectiveReadOnly}
-                                value={item.status}
-                                onChange={(e) => {
-                                  const next = [...followups];
-                                  next[idx] = { ...item, status: e.target.value };
-                                  patchForm({ documentFollowups: next });
-                                }}
-                                className={inputCls}
-                              >
-                                <option value="Pending">Pending</option>
-                                <option value="Followed Up">Followed Up</option>
-                                <option value="Partial">Partial</option>
-                                <option value="Received">Received</option>
-                                <option value="Waived">Waived</option>
-                              </select>
-                            </td>
-                            <td className="p-1.5 min-w-[140px]">
-                              <input
-                                disabled={effectiveReadOnly}
-                                value={item.remarks}
-                                onChange={(e) => {
-                                  const next = [...followups];
-                                  next[idx] = { ...item, remarks: e.target.value };
-                                  patchForm({ documentFollowups: next });
-                                }}
-                                className={inputCls}
-                              />
-                            </td>
-                            {!effectiveReadOnly && (
-                              <td className="p-1.5 text-center">
-                                <button
-                                  type="button"
-                                  onClick={() =>
-                                    patchForm({
-                                      documentFollowups: followups.filter((_, i) => i !== idx),
-                                    })
-                                  }
-                                  className="p-1 text-slate-400 hover:text-rose-600 rounded"
-                                >
-                                  <Trash2 className="w-3.5 h-3.5" />
-                                </button>
-                              </td>
-                            )}
-                          </tr>
-                        ))}
-                      </tbody>
-                    </table>
-                  </div>
-                )}
-              </div>
-            )}
-
-            {/* TAB 5: IMMUTABLE AUDIT HISTORY */}
-            {tab === 'history' && (
-              <div className="space-y-3">
-                <div className="flex items-center gap-2">
-                  <History className="w-4 h-4 text-teal-700" />
-                  <h4 className="text-xs font-semibold text-slate-900">
-                    Job Audit History (Immutable Log)
-                  </h4>
-                </div>
-                {jobAuditLog.length === 0 ? (
-                  <div className="py-10 text-center border border-dashed border-slate-200 rounded-lg text-xs text-slate-500">
-                    {job
-                      ? 'No audit history entries recorded yet for this job.'
-                      : 'Audit history will be automatically created when you save this job.'}
-                  </div>
-                ) : (
-                  <div className="border border-slate-200 rounded-lg overflow-hidden">
-                    <table className="w-full text-xs border-collapse">
-                      <thead className="bg-slate-50 border-b border-slate-200 text-slate-600">
-                        <tr>
-                          <th className="px-3 py-2 text-left font-semibold">Timestamp</th>
-                          <th className="px-3 py-2 text-left font-semibold">Action</th>
-                          <th className="px-3 py-2 text-left font-semibold">Status Transition</th>
-                          <th className="px-3 py-2 text-left font-semibold">User</th>
-                          <th className="px-3 py-2 text-left font-semibold">Remarks</th>
-                        </tr>
-                      </thead>
-                      <tbody className="divide-y divide-slate-100">
-                        {jobAuditLog.map((h) => (
-                          <tr key={h.id}>
-                            <td className="px-3 py-2 font-mono text-slate-600 whitespace-nowrap">
-                              {h.timestamp?.toDate
-                                ? h.timestamp.toDate().toLocaleString('en-MY', {
-                                    dateStyle: 'medium',
-                                    timeStyle: 'short',
-                                  })
-                                : 'Just now'}
-                            </td>
-                            <td className="px-3 py-2 font-mono font-semibold text-slate-800 whitespace-nowrap">
-                              {h.action}
-                            </td>
-                            <td className="px-3 py-2 whitespace-nowrap text-slate-700">
-                              {h.oldStatus ? `${h.oldStatus} → ${h.newStatus}` : h.newStatus}
-                            </td>
-                            <td className="px-3 py-2 text-slate-700 whitespace-nowrap">{h.user}</td>
-                            <td className="px-3 py-2 text-slate-600">{h.remarks}</td>
-                          </tr>
-                        ))}
-                      </tbody>
-                    </table>
+                {job && (
+                  <div className="pt-2 border-t border-slate-200 space-y-2">
+                    <div className="flex items-center gap-1.5 text-xs font-semibold text-slate-800">
+                      <History className="w-3.5 h-3.5 text-teal-700" />
+                      <span>Audit Trail ({jobAuditLog.length})</span>
+                    </div>
+                    {jobAuditLog.length === 0 ? (
+                      <p className="text-[11px] text-slate-500">
+                        No audit log entries recorded yet for this job.
+                      </p>
+                    ) : (
+                      <div className="max-h-44 overflow-y-auto border border-slate-200 rounded-lg">
+                        <table className="w-full text-[11px] border-collapse">
+                          <thead className="bg-slate-50 border-b border-slate-200 text-slate-600 sticky top-0">
+                            <tr>
+                              <th className="px-2.5 py-1.5 text-left font-semibold">Date</th>
+                              <th className="px-2.5 py-1.5 text-left font-semibold">Transition</th>
+                              <th className="px-2.5 py-1.5 text-left font-semibold">User</th>
+                              <th className="px-2.5 py-1.5 text-left font-semibold">Notes</th>
+                            </tr>
+                          </thead>
+                          <tbody className="divide-y divide-slate-100">
+                            {jobAuditLog.slice(0, 20).map((h) => (
+                              <tr key={h.id}>
+                                <td className="px-2.5 py-1.5 font-mono text-slate-600 whitespace-nowrap">
+                                  {h.timestamp?.toDate
+                                    ? h.timestamp.toDate().toLocaleDateString('en-MY', {
+                                        day: '2-digit',
+                                        month: 'short',
+                                        year: 'numeric',
+                                      })
+                                    : 'Just now'}
+                                </td>
+                                <td className="px-2.5 py-1.5 text-slate-700 whitespace-nowrap">
+                                  {h.oldStatus ? `${h.oldStatus} → ${h.newStatus}` : h.newStatus}
+                                </td>
+                                <td className="px-2.5 py-1.5 text-slate-600 whitespace-nowrap">
+                                  {h.user}
+                                </td>
+                                <td className="px-2.5 py-1.5 text-slate-600">{h.remarks}</td>
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                      </div>
+                    )}
                   </div>
                 )}
               </div>
             )}
           </div>
 
-          {/* Footer with optional Audit Note */}
+          {/* Footer */}
           <div className="shrink-0 px-5 py-3 border-t border-slate-200 bg-slate-50 flex flex-wrap items-center justify-between gap-3">
-            {!effectiveReadOnly ? (
-              <div className="flex-1 min-w-[220px] max-w-md">
-                <input
-                  type="text"
-                  maxLength={300}
-                  value={auditRemarks}
-                  onChange={(e) => setAuditRemarks(e.target.value)}
-                  placeholder="Optional audit log remark for this save..."
-                  className="w-full px-2.5 py-1.5 text-xs bg-white border border-slate-200 rounded-md focus:outline-none focus:border-teal-700"
-                />
-              </div>
-            ) : (
-              <span className="text-[11px] text-slate-500">
-                {isCompletedLocked && !isManagerOrAdmin
+            <span className="text-[11px] text-slate-500">
+              {effectiveReadOnly
+                ? isCompletedLocked && !isManagerOrAdmin
                   ? 'Completed jobs are locked for Staff edits.'
-                  : 'Read-only preview.'}
-              </span>
-            )}
+                  : 'Read-only preview.'
+                : 'Changes are automatically saved with an immutable audit trail entry.'}
+            </span>
             <div className="flex items-center gap-2">
               <button
                 type="button"
@@ -2047,7 +1535,7 @@ export const JobModal: React.FC<JobModalProps> = ({
                   className="inline-flex items-center gap-1.5 px-4 py-1.5 text-xs font-semibold text-white bg-teal-700 hover:bg-teal-800 rounded-md disabled:opacity-50"
                 >
                   <Save className="w-3.5 h-3.5" />
-                  {saving ? 'Saving...' : job ? 'Save Job & Log History' : 'Create Job'}
+                  {saving ? 'Saving...' : job ? 'Save Job' : 'Create Job'}
                 </button>
               )}
             </div>
