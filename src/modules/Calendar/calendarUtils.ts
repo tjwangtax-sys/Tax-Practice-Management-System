@@ -116,6 +116,15 @@ export interface StatutoryDeadlineRef {
   description: string;
 }
 
+export interface ShiftedDueDateInfo {
+  actualDate: string;
+  effectiveDate: string;
+  shifted: boolean;
+  actualWeekday: string;
+  effectiveWeekday: string;
+  shiftNote: string;
+}
+
 export interface DeadlineCollisionItem {
   source: 'job' | 'cp204' | 'statutory' | 'calendar';
   clientName: string;
@@ -134,6 +143,7 @@ export interface DeadlineCollisionItem {
   daysAfterLeave: number;
   severity: 'critical' | 'warning';
   picName?: string;
+  shiftNote?: string;
 }
 
 export interface PeakCoverageAlert {
@@ -1289,12 +1299,87 @@ export function getMalaysianStatutoryDeadlinesForDate(isoDate: string): Statutor
   return results;
 }
 
+const SHORT_WEEKDAY_LABELS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'] as const;
+
+/**
+ * When a statutory or calendar Tax Due Date falls on a weekend (Sat/Sun),
+ * shifts its effective working day backward to the last working weekday before
+ * that weekend (also stepping back past any Johor/MY Public Holiday or Company Holiday).
+ * Weekday due dates are returned unchanged (shifted: false).
+ */
+export function shiftToLastWorkingWeekday(
+  isoDate: string,
+  holidaysByDate?: Map<string, PublicHolidayRef>,
+  companyHolidayDates?: Set<string>
+): ShiftedDueDateInfo {
+  const cleanIso = (isoDate || '').slice(0, 10);
+  if (!isIsoDateString(cleanIso)) {
+    return {
+      actualDate: cleanIso,
+      effectiveDate: cleanIso,
+      shifted: false,
+      actualWeekday: '',
+      effectiveWeekday: '',
+      shiftNote: '',
+    };
+  }
+
+  const dt = parseIsoDateLocal(cleanIso);
+  const dow = dt.getDay();
+  const actualWeekday = SHORT_WEEKDAY_LABELS[dow] || '';
+
+  if (dow !== 0 && dow !== 6) {
+    return {
+      actualDate: cleanIso,
+      effectiveDate: cleanIso,
+      shifted: false,
+      actualWeekday,
+      effectiveWeekday: actualWeekday,
+      shiftNote: '',
+    };
+  }
+
+  let cursor = addDaysIso(cleanIso, -1);
+  for (let steps = 0; steps < 14; steps++) {
+    const cDt = parseIsoDateLocal(cursor);
+    const cDow = cDt.getDay();
+    const isWknd = cDow === 0 || cDow === 6;
+    const isPh = Boolean(holidaysByDate?.has(cursor));
+    const isCompHol = Boolean(companyHolidayDates?.has(cursor));
+    if (!isWknd && !isPh && !isCompHol) {
+      const effectiveWeekday = SHORT_WEEKDAY_LABELS[cDow] || '';
+      return {
+        actualDate: cleanIso,
+        effectiveDate: cursor,
+        shifted: true,
+        actualWeekday,
+        effectiveWeekday,
+        shiftNote: `Actual due date: ${formatDateDDMMYYYY(cleanIso)} (${actualWeekday}) → Last working day: ${effectiveWeekday} ${formatDateDDMMYYYY(cursor)}`,
+      };
+    }
+    cursor = addDaysIso(cursor, -1);
+  }
+
+  const fallbackDow = parseIsoDateLocal(cursor).getDay();
+  const effectiveWeekday = SHORT_WEEKDAY_LABELS[fallbackDow] || '';
+  return {
+    actualDate: cleanIso,
+    effectiveDate: cursor,
+    shifted: true,
+    actualWeekday,
+    effectiveWeekday,
+    shiftNote: `Actual due date: ${formatDateDDMMYYYY(cleanIso)} (${actualWeekday}) → Last working day: ${effectiveWeekday} ${formatDateDDMMYYYY(cursor)}`,
+  };
+}
+
 export function computeStaffDeadlineCollisions(
   staffName: string,
   leaveDateIso: string,
   jobs: TaxJob[],
   cp204Records: Cp204Record[],
-  parsedEvents: ParsedCalendarEvent[] = []
+  parsedEvents: ParsedCalendarEvent[] = [],
+  holidaysByDate?: Map<string, PublicHolidayRef>,
+  companyHolidayDates?: Set<string>
 ): DeadlineCollisionItem[] {
   const target = staffName.trim().toLowerCase();
   if (!target || !isIsoDateString(leaveDateIso)) return [];
@@ -1391,14 +1476,29 @@ export function computeStaffDeadlineCollisions(
     }
   }
 
-  // 3. Tax Due Date events (single or recurring) & recurring due calendar events falling on this leave date
+  // Identify weekend dates immediately following leaveDateIso whose shifted last working weekday lands on leaveDateIso
+  const shiftedWeekendMatches: ShiftedDueDateInfo[] = [];
+  for (let offset = 1; offset <= 7; offset++) {
+    const candidateIso = addDaysIso(leaveDateIso, offset);
+    const dow = parseIsoDateLocal(candidateIso).getDay();
+    if (dow !== 0 && dow !== 6) continue;
+    const shiftInfo = shiftToLastWorkingWeekday(candidateIso, holidaysByDate, companyHolidayDates);
+    if (shiftInfo.shifted && shiftInfo.effectiveDate === leaveDateIso) {
+      shiftedWeekendMatches.push(shiftInfo);
+    }
+  }
+
+  const seenCalendarKeys = new Set<string>();
+
+  // 3. Tax Due Date events (direct or shifted from a weekend) & recurring due calendar events falling on this leave date
   for (const ev of parsedEvents) {
     if (ev.canonicalType === 'Staff Availability' || ev.canonicalType === 'Company Holiday') continue;
     const isTaxDue = ev.canonicalType === 'Tax Due Date';
     if (!isTaxDue && !ev.raw.recurrenceGroupId) continue;
-    if (!eventCoversDate(ev.raw, leaveDateIso)) continue;
+
     const assignedLower = ev.staffName.trim().toLowerCase();
     if (!isTaxDue && !ev.isFirmWide && assignedLower && assignedLower !== target) continue;
+
     const recurrenceText = ev.raw.recurrenceGroupId
       ? formatRecurrenceRuleLabel(
           ev.raw.recurrenceRule,
@@ -1406,29 +1506,62 @@ export function computeStaffDeadlineCollisions(
           ev.raw.recurrenceLabel
         )
       : 'Tax Due Date';
-    collisions.push({
-      source: 'calendar',
-      clientName:
-        ev.raw.clientName ||
-        (isTaxDue
-          ? 'All Staff / Statutory Tax Due Date'
-          : ev.isFirmWide
-          ? 'Firm-Wide Recurring Event'
-          : 'Recurring Event'),
-      clientId: ev.raw.clientId || (isTaxDue ? 'TAX DUE' : 'RECURRING'),
-      refCode: recurrenceText,
-      formName: ev.cleanLabel,
-      deadlineType: isTaxDue ? 'Tax Due Date' : 'Recurring Due Date',
-      dueDate: leaveDateIso,
-      daysAfterLeave: 0,
-      severity: 'critical',
-      picName: ev.staffName || undefined,
-    });
+
+    if (eventCoversDate(ev.raw, leaveDateIso)) {
+      const dedupeKey = `${ev.raw.id}|${leaveDateIso}`;
+      if (!seenCalendarKeys.has(dedupeKey)) {
+        seenCalendarKeys.add(dedupeKey);
+        collisions.push({
+          source: 'calendar',
+          clientName:
+            ev.raw.clientName ||
+            (isTaxDue
+              ? 'All Staff / Statutory Tax Due Date'
+              : ev.isFirmWide
+              ? 'Firm-Wide Recurring Event'
+              : 'Recurring Event'),
+          clientId: ev.raw.clientId || (isTaxDue ? 'TAX DUE' : 'RECURRING'),
+          refCode: recurrenceText,
+          formName: ev.cleanLabel,
+          deadlineType: isTaxDue ? 'Tax Due Date' : 'Recurring Due Date',
+          dueDate: leaveDateIso,
+          daysAfterLeave: 0,
+          severity: 'critical',
+          picName: ev.staffName || undefined,
+        });
+      }
+    }
+
+    if (isTaxDue) {
+      for (const shifted of shiftedWeekendMatches) {
+        if (!eventCoversDate(ev.raw, shifted.actualDate)) continue;
+        const dedupeKey = `${ev.raw.id}|${shifted.actualDate}`;
+        if (seenCalendarKeys.has(dedupeKey)) continue;
+        seenCalendarKeys.add(dedupeKey);
+        collisions.push({
+          source: 'calendar',
+          clientName: ev.raw.clientName || 'All Staff / Statutory Tax Due Date',
+          clientId: ev.raw.clientId || 'TAX DUE',
+          refCode: recurrenceText,
+          formName: ev.cleanLabel,
+          deadlineType: 'Tax Due Date',
+          dueDate: shifted.actualDate,
+          daysAfterLeave: 0,
+          severity: 'critical',
+          picName: ev.staffName || undefined,
+          shiftNote: shifted.shiftNote,
+        });
+      }
+    }
   }
 
-  // 4. Key recurring Malaysian LHDN statutory deadlines falling on this leave date
+  // 4. Key recurring Malaysian LHDN statutory deadlines falling directly on this leave date or shifted from a weekend
+  const seenStatutoryKeys = new Set<string>();
   const statutory = getMalaysianStatutoryDeadlinesForDate(leaveDateIso);
   for (const st of statutory) {
+    const key = `${st.code}|${leaveDateIso}`;
+    if (seenStatutoryKeys.has(key)) continue;
+    seenStatutoryKeys.add(key);
     collisions.push({
       source: 'statutory',
       clientName: 'LHDN Statutory Deadline',
@@ -1440,6 +1573,27 @@ export function computeStaffDeadlineCollisions(
       daysAfterLeave: 0,
       severity: 'critical',
     });
+  }
+
+  for (const shifted of shiftedWeekendMatches) {
+    const shiftedStat = getMalaysianStatutoryDeadlinesForDate(shifted.actualDate);
+    for (const st of shiftedStat) {
+      const key = `${st.code}|${shifted.actualDate}`;
+      if (seenStatutoryKeys.has(key)) continue;
+      seenStatutoryKeys.add(key);
+      collisions.push({
+        source: 'statutory',
+        clientName: 'LHDN Statutory Deadline',
+        clientId: 'LHDN',
+        refCode: st.code,
+        formName: st.name,
+        deadlineType: 'LHDN Statutory',
+        dueDate: shifted.actualDate,
+        daysAfterLeave: 0,
+        severity: 'critical',
+        shiftNote: shifted.shiftNote,
+      });
+    }
   }
 
   return collisions.sort((a, b) => {

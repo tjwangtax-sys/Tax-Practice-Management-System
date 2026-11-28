@@ -188,6 +188,14 @@ export const Cp204AdvancedModal: React.FC<Cp204AdvancedModalProps> = ({
     return { valid: true, error: null, years, missing, existing };
   }, [selectedBulkClient, yaFrom, yaTo, bulkClientExistingRecords]);
 
+  const instTotals = useMemo(() => {
+    const list = draft?.instalments || [];
+    const due = list.reduce((s, i) => s + safeNum(i.amountDue), 0);
+    const paid = list.reduce((s, i) => s + safeNum(i.amountPaid), 0);
+    const out = list.reduce((s, i) => s + Math.max(0, safeNum(i.amountDue) - safeNum(i.amountPaid)), 0);
+    return { due, paid, out };
+  }, [draft]);
+
   if (!open) return null;
 
   const liveCurrentTax = draft
@@ -361,14 +369,6 @@ export const Cp204AdvancedModal: React.FC<Cp204AdvancedModalProps> = ({
     if (!draft || isReadOnly) return;
     setDraft({ ...draft, instalments: draft.instalments.filter((_, i) => i !== idx) });
   };
-
-  const instTotals = useMemo(() => {
-    const list = draft?.instalments || [];
-    const due = list.reduce((s, i) => s + safeNum(i.amountDue), 0);
-    const paid = list.reduce((s, i) => s + safeNum(i.amountPaid), 0);
-    const out = list.reduce((s, i) => s + Math.max(0, safeNum(i.amountDue) - safeNum(i.amountPaid)), 0);
-    return { due, paid, out };
-  }, [draft]);
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-3 sm:p-4 bg-slate-900/50">

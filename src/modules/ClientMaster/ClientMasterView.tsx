@@ -17,6 +17,7 @@ import { RegisterToolbar } from '../../components/RegisterToolbar';
 import { StatusPill } from '../../components/StatusPill';
 import { RemarksPreviewCell } from '../../components/RemarksPreviewCell';
 import { exportToExcel, printRegisterHtml } from '../../lib/exportUtils';
+import { extractFyeMonth } from '../../lib/deadlineUtils';
 import { ClientModal } from './ClientModal';
 
 const CLIENT_COLUMNS: ColumnDef[] = [
@@ -127,12 +128,19 @@ export const ClientMasterView: React.FC<ClientMasterViewProps> = ({ initialFilte
 
   useEffect(() => {
     if (!initialFilter) return;
-    if (initialFilter.search) {
+    if (initialFilter.category) {
+      setActiveTab(initialFilter.category);
+    } else if (initialFilter.search) {
       setActiveTab('All');
+    }
+    if (initialFilter.search !== undefined) {
       setSearch(initialFilter.search);
     }
-    if (initialFilter.fye) {
+    if (initialFilter.fye !== undefined) {
       setFyeFilter(initialFilter.fye);
+    }
+    if (initialFilter.clientStatus !== undefined) {
+      setStatusFilter(initialFilter.clientStatus);
     }
   }, [initialFilter]);
 
@@ -194,8 +202,16 @@ export const ClientMasterView: React.FC<ClientMasterViewProps> = ({ initialFilte
       if (activeTab === 'Individual' && c.category !== 'Individual') return false;
       if (groupFilter && c.groupId !== groupFilter) return false;
       if (categoryFilter && c.category !== categoryFilter) return false;
-      if (fyeFilter && c.fye !== fyeFilter) return false;
-      if (statusFilter && c.clientStatus.toLowerCase() !== statusFilter.toLowerCase()) return false;
+      if (fyeFilter && extractFyeMonth(c.fye) !== extractFyeMonth(fyeFilter)) return false;
+      if (statusFilter) {
+        const targetStatus = statusFilter.trim().toLowerCase();
+        const clientStatusLower = (c.clientStatus || '').trim().toLowerCase();
+        if (targetStatus === 'active') {
+          if (clientStatusLower !== '' && clientStatusLower !== 'active') return false;
+        } else if (clientStatusLower !== targetStatus) {
+          return false;
+        }
+      }
 
       if (q) {
         const haystack = [

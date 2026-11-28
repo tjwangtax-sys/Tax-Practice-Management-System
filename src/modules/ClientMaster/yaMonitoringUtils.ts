@@ -42,7 +42,10 @@ export interface ConsolidatedYaRow {
   cp204Estimate: number | null;
   cp204Label: string; // e.g., "Original CP204", "CP204A (9th Mth)", "Manual"
   cp204Status: string;
-  // Final Tax & Section 107C variance check
+  // Balance Tax & Section 107C variance check
+  totalTax: number | null;
+  cp204Payment: number | null;
+  underEstimatePenalty: number | null;
   finalTaxPayable: number | null;
   hasSection107CVariance: boolean;
   variancePct: number | null;
@@ -402,29 +405,64 @@ export function buildConsolidatedYaSchedule(params: {
       cp204Label = 'SME 2-Yr Exempt';
     }
 
-    // Final Tax Payable & Section 107C >30% Variance Check
+    // Total Tax, Less CP204 Payment, Under Estimate Penalty, Balance Tax Payable & Section 107C(10) >30% Variance Check
+    let totalTax: number | null = null;
+    let cp204Payment: number | null = null;
+    let underEstimatePenalty: number | null = null;
     let finalTaxPayable: number | null = null;
+
     if (primaryJob) {
+      if (
+        primaryJob.totalTax !== undefined &&
+        primaryJob.totalTax !== null &&
+        Number.isFinite(Number(primaryJob.totalTax)) &&
+        Number(primaryJob.totalTax) > 0
+      ) {
+        totalTax = Number(primaryJob.totalTax);
+      }
+      if (
+        primaryJob.cp204Payment !== undefined &&
+        primaryJob.cp204Payment !== null &&
+        Number.isFinite(Number(primaryJob.cp204Payment)) &&
+        Number(primaryJob.cp204Payment) > 0
+      ) {
+        cp204Payment = Number(primaryJob.cp204Payment);
+      }
+      if (
+        primaryJob.underEstimatePenalty !== undefined &&
+        primaryJob.underEstimatePenalty !== null &&
+        Number.isFinite(Number(primaryJob.underEstimatePenalty)) &&
+        Number(primaryJob.underEstimatePenalty) > 0
+      ) {
+        underEstimatePenalty = Number(primaryJob.underEstimatePenalty);
+      }
       const rawTax = primaryJob.finalTaxPayable ?? primaryJob.taxPayable;
       if (rawTax !== undefined && rawTax !== null && Number.isFinite(Number(rawTax))) {
         finalTaxPayable = Number(rawTax);
       }
     } else if (manual) {
+      const parsedTotal = parseOptionalMoney(manual.totalTax);
+      if (parsedTotal !== null && parsedTotal > 0) totalTax = parsedTotal;
+      const parsedCp204Pay = parseOptionalMoney(manual.cp204Payment);
+      if (parsedCp204Pay !== null && parsedCp204Pay > 0) cp204Payment = parsedCp204Pay;
+      const parsedPenalty = parseOptionalMoney(manual.underEstimatePenalty);
+      if (parsedPenalty !== null && parsedPenalty > 0) underEstimatePenalty = parsedPenalty;
       finalTaxPayable = parseOptionalMoney(manual.taxPayable);
     }
 
+    // Section 107C(10) variance check compares Total Tax (RM) against CP204 / CP204A Estimate
     const hasSection107CVariance = Boolean(
       cp204Mode === 'amount' &&
         cp204Estimate !== null &&
         cp204Estimate > 0 &&
-        finalTaxPayable !== null &&
-        finalTaxPayable > 0 &&
-        (finalTaxPayable - cp204Estimate) / finalTaxPayable > 0.3
+        totalTax !== null &&
+        totalTax > 0 &&
+        (totalTax - cp204Estimate) / totalTax > 0.3
     );
 
     const variancePct =
-      hasSection107CVariance && cp204Estimate !== null && finalTaxPayable !== null && finalTaxPayable > 0
-        ? Math.round(((finalTaxPayable - cp204Estimate) / finalTaxPayable) * 1000) / 10
+      hasSection107CVariance && cp204Estimate !== null && totalTax !== null && totalTax > 0
+        ? Math.round(((totalTax - cp204Estimate) / totalTax) * 1000) / 10
         : null;
 
     // Form E (Employer Return)
@@ -490,6 +528,9 @@ export function buildConsolidatedYaSchedule(params: {
       cp204Estimate,
       cp204Label,
       cp204Status,
+      totalTax,
+      cp204Payment,
+      underEstimatePenalty,
       finalTaxPayable,
       hasSection107CVariance,
       variancePct,
@@ -528,6 +569,9 @@ export function buildConsolidatedYaSchedule(params: {
       cp204Estimate: parseOptionalMoney(m.cp204Estimate),
       cp204Label: m.cp204Exempt ? 'SME Exempt' : 'Prior Agent',
       cp204Status: '',
+      totalTax: parseOptionalMoney(m.totalTax),
+      cp204Payment: parseOptionalMoney(m.cp204Payment),
+      underEstimatePenalty: parseOptionalMoney(m.underEstimatePenalty),
       finalTaxPayable: parseOptionalMoney(m.taxPayable),
       hasSection107CVariance: false,
       variancePct: null,
@@ -678,25 +722,50 @@ export function printClientComplianceHistory(
               cp204Col = pillHtml('N/A', '#f1f5f9', '#cbd5e1', '#64748b');
             }
 
-            // Col 4: Final Tax & s.107C Check
-            const finalTaxCol =
-              row.finalTaxPayable !== null
-                ? `
-                  <div class="mono" style="font-weight:700;color:#0f172a;">${escapeHtml(
-                    formatCurrencyRM(row.finalTaxPayable)
-                  )}</div>
-                  ${
-                    row.hasSection107CVariance
-                      ? `<div style="margin-top:3px;">${pillHtml(
-                          `>30% Var${row.variancePct ? ` (${row.variancePct}%)` : ''}`,
-                          '#fef3c7',
-                          '#f59e0b',
-                          '#92400e'
-                        )}</div>`
-                      : ''
-                  }
-                `
-                : '<span style="color:#94a3b8;">—</span>';
+            // Col 4: Balance Tax & s.107C Check
+            const hasAnyTax =
+              row.finalTaxPayable !== null ||
+              (row.totalTax !== null && row.totalTax > 0) ||
+              (row.cp204Payment !== null && row.cp204Payment > 0) ||
+              (row.underEstimatePenalty !== null && row.underEstimatePenalty > 0);
+            const finalTaxCol = hasAnyTax
+              ? `
+                <div class="mono" style="font-weight:700;color:#0f172a;">${escapeHtml(
+                  row.finalTaxPayable !== null ? formatCurrencyRM(row.finalTaxPayable) : '—'
+                )}</div>
+                ${
+                  row.totalTax !== null && row.totalTax > 0
+                    ? `<div class="mono" style="font-size:8px;color:#475569;margin-top:2px;">Total Tax: ${escapeHtml(
+                        formatCurrencyRM(row.totalTax)
+                      )}</div>`
+                    : ''
+                }
+                ${
+                  row.cp204Payment !== null && row.cp204Payment > 0
+                    ? `<div class="mono" style="font-size:8px;color:#0f766e;margin-top:1px;">Less CP204: ${escapeHtml(
+                        formatCurrencyRM(row.cp204Payment)
+                      )}</div>`
+                    : ''
+                }
+                ${
+                  row.underEstimatePenalty !== null && row.underEstimatePenalty > 0
+                    ? `<div class="mono" style="font-size:8px;color:#b45309;margin-top:1px;">+ Penalty: ${escapeHtml(
+                        formatCurrencyRM(row.underEstimatePenalty)
+                      )}</div>`
+                    : ''
+                }
+                ${
+                  row.hasSection107CVariance
+                    ? `<div style="margin-top:3px;">${pillHtml(
+                        `>30% Var${row.variancePct ? ` (${row.variancePct}%)` : ''}`,
+                        '#fef3c7',
+                        '#f59e0b',
+                        '#92400e'
+                      )}</div>`
+                    : ''
+                }
+              `
+              : '<span style="color:#94a3b8;">—</span>';
 
             // Col 5: Form E
             let formECol = '<span style="color:#94a3b8;">—</span>';
@@ -874,7 +943,7 @@ export function printClientComplianceHistory(
         <th style="width:12%;">YA &amp; Source</th>
         <th style="width:27%;">Form C &amp; MITRS</th>
         <th style="width:15%;text-align:right;">CP204 / CP204A Est.</th>
-        <th style="width:15%;text-align:right;">Final Tax &amp; s.107C</th>
+        <th style="width:15%;text-align:right;">Balance Tax &amp; s.107C</th>
         <th style="width:13%;">Form E</th>
         <th style="width:18%;">Remarks</th>
       </tr>
@@ -885,7 +954,7 @@ export function printClientComplianceHistory(
   </table>
 
   <div class="footer-note">
-    <span>Section 107C(10) Variance Check flags YAs where (Final Tax − CP204 Estimate) / Final Tax &gt; 30%.</span>
+    <span>Section 107C(10) Variance Check flags YAs where (Total Tax − CP204 Estimate) / Total Tax &gt; 30%.</span>
     <span>Confidential — For Partner Review &amp; Client Compliance Meetings</span>
   </div>
 </body>

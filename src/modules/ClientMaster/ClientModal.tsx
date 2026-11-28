@@ -455,6 +455,8 @@ export const ClientModal: React.FC<ClientModalProps> = ({
       mitrsStatus: '',
       cp204Estimate: '',
       cp204Exempt: false,
+      totalTax: '',
+      underEstimatePenalty: '',
       formEStatus: '',
       formESubmissionDate: '',
     };
@@ -2172,7 +2174,67 @@ export const ClientModal: React.FC<ClientModalProps> = ({
                           </div>
 
                           <div>
-                            <label className={labelCls}>Final Tax Payable (RM)</label>
+                            <label className={labelCls}>Total Tax (RM)</label>
+                            <input
+                              type="text"
+                              value={editingItem.totalTax ?? ''}
+                              onChange={(e) => {
+                                const nextTotalStr = e.target.value;
+                                const t = Number(nextTotalStr.replace(/[^0-9.-]/g, '')) || 0;
+                                const c = Number((editingItem.cp204Payment ?? '').replace(/[^0-9.-]/g, '')) || 0;
+                                const p = Number((editingItem.underEstimatePenalty ?? '').replace(/[^0-9.-]/g, '')) || 0;
+                                updateManualYaItem(editingItem.id, {
+                                  totalTax: nextTotalStr,
+                                  taxPayable: String(Number((t - c + p).toFixed(2))),
+                                });
+                              }}
+                              placeholder="0.00"
+                              className={`${inputCls} font-mono text-right`}
+                            />
+                          </div>
+
+                          <div>
+                            <label className={labelCls}>Less: CP204 Payment (RM)</label>
+                            <input
+                              type="text"
+                              value={editingItem.cp204Payment ?? ''}
+                              onChange={(e) => {
+                                const nextCpStr = e.target.value;
+                                const t = Number((editingItem.totalTax ?? '').replace(/[^0-9.-]/g, '')) || 0;
+                                const c = Number(nextCpStr.replace(/[^0-9.-]/g, '')) || 0;
+                                const p = Number((editingItem.underEstimatePenalty ?? '').replace(/[^0-9.-]/g, '')) || 0;
+                                updateManualYaItem(editingItem.id, {
+                                  cp204Payment: nextCpStr,
+                                  taxPayable: String(Number((t - c + p).toFixed(2))),
+                                });
+                              }}
+                              placeholder="0.00"
+                              className={`${inputCls} font-mono text-right`}
+                            />
+                          </div>
+
+                          <div>
+                            <label className={labelCls}>Add: Under Estimate Penalty (RM)</label>
+                            <input
+                              type="text"
+                              value={editingItem.underEstimatePenalty ?? ''}
+                              onChange={(e) => {
+                                const nextPenStr = e.target.value;
+                                const t = Number((editingItem.totalTax ?? '').replace(/[^0-9.-]/g, '')) || 0;
+                                const c = Number((editingItem.cp204Payment ?? '').replace(/[^0-9.-]/g, '')) || 0;
+                                const p = Number(nextPenStr.replace(/[^0-9.-]/g, '')) || 0;
+                                updateManualYaItem(editingItem.id, {
+                                  underEstimatePenalty: nextPenStr,
+                                  taxPayable: String(Number((t - c + p).toFixed(2))),
+                                });
+                              }}
+                              placeholder="0.00"
+                              className={`${inputCls} font-mono text-right`}
+                            />
+                          </div>
+
+                          <div>
+                            <label className={labelCls}>Balance Tax Payable (RM)</label>
                             <input
                               type="text"
                               value={editingItem.taxPayable}
@@ -2180,7 +2242,7 @@ export const ClientModal: React.FC<ClientModalProps> = ({
                                 updateManualYaItem(editingItem.id, { taxPayable: e.target.value })
                               }
                               placeholder="0.00"
-                              className={`${inputCls} font-mono text-right`}
+                              className={`${inputCls} font-mono text-right font-semibold`}
                             />
                           </div>
 
@@ -2257,7 +2319,7 @@ export const ClientModal: React.FC<ClientModalProps> = ({
                             CP204 / CP204A Est.
                           </th>
                           <th className="px-3 py-2 text-right font-semibold whitespace-nowrap">
-                            Final Tax &amp; s.107C
+                            Balance Tax &amp; s.107C
                           </th>
                           <th className="px-3 py-2 text-left font-semibold whitespace-nowrap">
                             Form E (Employer)
@@ -2386,21 +2448,43 @@ export const ClientModal: React.FC<ClientModalProps> = ({
                                 )}
                               </td>
 
-                              {/* 4. Final Tax & Section 107C Variance Check */}
+                              {/* 4. Balance Tax & Section 107C Variance Check */}
                               <td className="px-3 py-2.5 text-right whitespace-nowrap">
-                                {row.finalTaxPayable !== null ? (
-                                  <div className="flex flex-col items-end gap-1">
+                                {row.finalTaxPayable !== null ||
+                                (row.totalTax !== null && row.totalTax > 0) ||
+                                (row.cp204Payment !== null && row.cp204Payment > 0) ||
+                                (row.underEstimatePenalty !== null &&
+                                  row.underEstimatePenalty > 0) ? (
+                                  <div className="flex flex-col items-end gap-0.5">
                                     <span className="font-mono tabular-nums font-semibold text-slate-900">
-                                      {formatCurrencyRM(row.finalTaxPayable)}
+                                      {row.finalTaxPayable !== null
+                                        ? formatCurrencyRM(row.finalTaxPayable)
+                                        : '—'}
                                     </span>
+                                    {row.totalTax !== null && row.totalTax > 0 && (
+                                      <span className="font-mono tabular-nums text-[10px] text-slate-500">
+                                        Total Tax: {formatCurrencyRM(row.totalTax)}
+                                      </span>
+                                    )}
+                                    {row.cp204Payment !== null && row.cp204Payment > 0 && (
+                                      <span className="font-mono tabular-nums text-[10px] text-teal-700">
+                                        Less CP204: {formatCurrencyRM(row.cp204Payment)}
+                                      </span>
+                                    )}
+                                    {row.underEstimatePenalty !== null &&
+                                      row.underEstimatePenalty > 0 && (
+                                        <span className="font-mono tabular-nums text-[10px] font-medium text-amber-700">
+                                          + Penalty: {formatCurrencyRM(row.underEstimatePenalty)}
+                                        </span>
+                                      )}
                                     {row.hasSection107CVariance && (
                                       <span
                                         title={`Section 107C(10) Underestimation Risk: CP204 Estimate ${formatCurrencyRM(
                                           row.cp204Estimate ?? 0
-                                        )} vs Final Tax ${formatCurrencyRM(
-                                          row.finalTaxPayable
+                                        )} vs Total Tax ${formatCurrencyRM(
+                                          row.totalTax ?? 0
                                         )} (${row.variancePct ?? '>30'}% variance)`}
-                                        className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded-full text-[10px] font-semibold bg-amber-100 text-amber-800 border border-amber-300 leading-none"
+                                        className="mt-0.5 inline-flex items-center gap-1 px-1.5 py-0.5 rounded-full text-[10px] font-semibold bg-amber-100 text-amber-800 border border-amber-300 leading-none"
                                       >
                                         <AlertTriangle className="w-2.5 h-2.5 shrink-0" />
                                         &gt;30% Var
@@ -2489,7 +2573,7 @@ export const ClientModal: React.FC<ClientModalProps> = ({
                 <div className="flex flex-wrap items-center justify-between gap-2 text-[11px] text-slate-500 px-0.5">
                   <span>
                     Section 107C(10) check flags amber <strong className="text-amber-700">&gt;30% Var</strong>{' '}
-                    when (Final Tax − CP204 Estimate) / Final Tax exceeds 30%.
+                    when (Total Tax − CP204 Estimate) / Total Tax exceeds 30%.
                   </span>
                   <span className="font-mono">
                     {consolidatedYaRows.filter((r) => r.source === 'Linked').length} linked ·{' '}

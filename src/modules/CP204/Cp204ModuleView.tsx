@@ -13,6 +13,7 @@ import {
   AlertTriangle,
 } from 'lucide-react';
 import {
+  CLIENT_STATUS_OPTIONS,
   ColumnDef,
   Cp204Record,
   Cp204Revision,
@@ -29,7 +30,8 @@ import { ExcelColumnFilter } from '../../components/ExcelColumnFilter';
 import { useColumnVisibility, usePinnedColumnOffsets } from '../../hooks/useColumnVisibility';
 import { useExcelTableFilters } from '../../hooks/useExcelTableFilters';
 import { exportToExcel, printRegisterHtml } from '../../lib/exportUtils';
-import { formatDateDDMMYYYY } from '../../lib/deadlineUtils';
+import { extractFyeMonth, formatDateDDMMYYYY } from '../../lib/deadlineUtils';
+import { normalizeClientIdKey } from '../../lib/jobUtils';
 import {
   classifyCp204SubmissionStatus,
   CP204_SUBMISSION_FILTERS,
@@ -46,6 +48,7 @@ const CP204_COLUMNS: ColumnDef[] = [
   { key: 'ya', label: 'YA', defaultVisible: true },
   { key: 'pic', label: 'PIC', defaultVisible: true },
   { key: 'initialEstimate', label: 'Initial Estimate', defaultVisible: true, align: 'right' },
+  { key: 'followUpStatus', label: 'Follow-Up Status', defaultVisible: true },
   { key: 'rev6', label: '6th Month Revision', defaultVisible: true, align: 'right' },
   { key: 'rev9', label: '9th Month Revision', defaultVisible: true, align: 'right' },
   { key: 'rev11', label: '11th Month Revision', defaultVisible: true, align: 'right' },
@@ -63,6 +66,7 @@ const CP204_COL_WIDTHS: Record<string, string> = {
   ya: 'min-w-[80px]',
   pic: 'min-w-[125px]',
   initialEstimate: 'min-w-[155px]',
+  followUpStatus: 'min-w-[165px]',
   rev6: 'min-w-[155px]',
   rev9: 'min-w-[155px]',
   rev11: 'min-w-[155px]',
@@ -80,6 +84,7 @@ const CP204_COL_FALLBACK_WIDTHS: Record<string, number> = {
   ya: 80,
   pic: 125,
   initialEstimate: 155,
+  followUpStatus: 165,
   rev6: 155,
   rev9: 155,
   rev11: 155,
@@ -89,6 +94,31 @@ const CP204_COL_FALLBACK_WIDTHS: Record<string, number> = {
   statutoryDueDate: 135,
   remarks: 220,
 };
+
+function matchesClientStatusFilter(clientStatus: string | undefined, filterValue: string): boolean {
+  if (!filterValue) return true;
+  const target = filterValue.trim().toLowerCase();
+  const actual = (clientStatus || '').trim().toLowerCase();
+  if (target === 'active') {
+    return actual === '' || actual === 'active';
+  }
+  return actual === target;
+}
+
+function getFollowUpStatusBadgeClass(status: string): string {
+  switch (status) {
+    case 'Follow-up required':
+      return 'bg-amber-50 text-amber-800 border-amber-200';
+    case 'Up to date':
+      return 'bg-emerald-50 text-emerald-800 border-emerald-200';
+    case 'CP204 submitted; revisions not recorded':
+      return 'bg-sky-50 text-sky-800 border-sky-200';
+    case 'On hold':
+      return 'bg-slate-100 text-slate-600 border-slate-200';
+    default:
+      return 'bg-slate-100 text-slate-700 border-slate-200';
+  }
+}
 
 function formatRevisionExport(rev?: Cp204Revision): string {
   if (!rev) return '—';
@@ -107,6 +137,7 @@ export const Cp204ModuleView: React.FC<Cp204ModuleViewProps> = ({ initialFilter 
   const [yaFilter, setYaFilter] = useState('');
   const [fyeFilter, setFyeFilter] = useState('');
   const [picFilter, setPicFilter] = useState('');
+  const [clientStatusFilter, setClientStatusFilter] = useState('');
   const [submissionFilter, setSubmissionFilter] = useState<'' | Cp204SubmissionFilter>('');
   const [showSpecialRemarks, setShowSpecialRemarks] = useState(false);
 
@@ -132,6 +163,7 @@ export const Cp204ModuleView: React.FC<Cp204ModuleViewProps> = ({ initialFilter 
     setFyeFilter(initialFilter.fye ?? '');
     setYaFilter(initialFilter.ya ?? '');
     setSearch(initialFilter.search ?? '');
+    setClientStatusFilter(initialFilter.clientStatus ?? '');
     setPicFilter('');
     setSubmissionFilter('');
   }, [initialFilter?.nonce]);
@@ -157,11 +189,15 @@ export const Cp204ModuleView: React.FC<Cp204ModuleViewProps> = ({ initialFilter 
   const todayStr = useMemo(() => new Date().toISOString().slice(0, 10), []);
   const currentYearStr = useMemo(() => String(new Date().getFullYear()), []);
 
-  // Client lookup for specialRemarks
+  // Normalized Client ID lookup ("C 233" === "C233") for Client Status filter & specialRemarks
   const clientByIdMap = useMemo(() => {
     const map = new Map<string, (typeof clients)[number]>();
     for (const c of clients) {
-      map.set(c.clientId, c);
+      if (c.clientId) {
+        map.set(c.clientId, c);
+        const norm = normalizeClientIdKey(c.clientId);
+        if (norm) map.set(norm, c);
+      }
     }
     return map;
   }, [clients]);
@@ -197,16 +233,22 @@ export const Cp204ModuleView: React.FC<Cp204ModuleViewProps> = ({ initialFilter 
     const existingSet = new Set(
       cp204Records
         .filter((r) => (r.ya || '').trim() === targetMissingYa)
-        .map((r) => r.clientId.trim().toLowerCase())
+        .map((r) => normalizeClientIdKey(r.clientId))
+        .filter(Boolean)
     );
     const q = search.trim().toLowerCase();
     return clients.filter((c) => {
       if (c.category !== 'Corporate') return false;
-      if ((c.clientStatus || '').toLowerCase() === 'inactive' || (c.clientStatus || '').toLowerCase() === 'dormant') {
-        return false;
+      if (clientStatusFilter) {
+        if (!matchesClientStatusFilter(c.clientStatus, clientStatusFilter)) return false;
+      } else {
+        const statusLower = (c.clientStatus || '').trim().toLowerCase();
+        if (statusLower === 'inactive' || statusLower === 'dormant' || statusLower === 'resigned') {
+          return false;
+        }
       }
-      if (existingSet.has(c.clientId.trim().toLowerCase())) return false;
-      if (fyeFilter && Number(c.fye) !== Number(fyeFilter)) return false;
+      if (existingSet.has(normalizeClientIdKey(c.clientId))) return false;
+      if (fyeFilter && extractFyeMonth(c.fye) !== extractFyeMonth(fyeFilter)) return false;
       if (picFilter && (c.taxPic || '').trim() !== picFilter) return false;
       if (q) {
         const hay = `${c.clientName} ${c.clientId} ${c.taxPic || ''} ${c.specialRemarks || ''}`.toLowerCase();
@@ -214,22 +256,35 @@ export const Cp204ModuleView: React.FC<Cp204ModuleViewProps> = ({ initialFilter 
       }
       return true;
     });
-  }, [isMissingMode, cp204Records, targetMissingYa, clients, fyeFilter, picFilter, search]);
+  }, [
+    isMissingMode,
+    cp204Records,
+    targetMissingYa,
+    clients,
+    clientStatusFilter,
+    fyeFilter,
+    picFilter,
+    search,
+  ]);
 
   // Normal filtered CP204 records
   const filteredRecords = useMemo(() => {
     if (isMissingMode) return [];
     const q = search.trim().toLowerCase();
     return cp204Records.filter((rec) => {
+      const client =
+        clientByIdMap.get(normalizeClientIdKey(rec.clientId)) || clientByIdMap.get(rec.clientId);
       if (yaFilter && (rec.ya || '').trim() !== yaFilter) return false;
-      if (fyeFilter && Number(rec.fye) !== Number(fyeFilter)) return false;
+      if (fyeFilter && extractFyeMonth(rec.fye) !== extractFyeMonth(fyeFilter)) return false;
       if (picFilter && (rec.pic || '').trim() !== picFilter) return false;
+      if (clientStatusFilter && !matchesClientStatusFilter(client?.clientStatus, clientStatusFilter)) {
+        return false;
+      }
       if (submissionFilter) {
         const bucket = classifyCp204SubmissionStatus(rec, todayStr);
         if (bucket !== submissionFilter) return false;
       }
       if (q) {
-        const client = clientByIdMap.get(rec.clientId);
         const hay = `${rec.cp204Id} ${rec.clientName} ${rec.clientId} ${rec.ya} ${rec.pic} ${rec.reviewer} ${rec.status} ${rec.remarks} ${client?.specialRemarks || ''}`.toLowerCase();
         if (!hay.includes(q)) return false;
       }
@@ -241,12 +296,14 @@ export const Cp204ModuleView: React.FC<Cp204ModuleViewProps> = ({ initialFilter 
     yaFilter,
     fyeFilter,
     picFilter,
+    clientStatusFilter,
     submissionFilter,
     todayStr,
     search,
     clientByIdMap,
   ]);
 
+  // Status-only column filter values for Initial Estimate, Follow-Up Status, and 6th/9th/11th Revisions
   const cp204ValueGetters = useMemo(
     () => ({
       clientName: (rec: Cp204Record) => rec.clientName,
@@ -254,18 +311,19 @@ export const Cp204ModuleView: React.FC<Cp204ModuleViewProps> = ({ initialFilter 
       fye: (rec: Cp204Record) => (rec.fye ? String(Number(rec.fye)) : ''),
       ya: (rec: Cp204Record) => rec.ya,
       pic: (rec: Cp204Record) => rec.pic || '',
-      initialEstimate: (rec: Cp204Record) => rec.originalEstimatedTax,
+      initialEstimate: (rec: Cp204Record) => (rec.status || 'No CP204 record').trim(),
+      followUpStatus: (rec: Cp204Record) => classifyCp204SubmissionStatus(rec, todayStr),
       rev6: (rec: Cp204Record) => {
         const rev = getRevisionForMonth(rec, '6');
-        return rev ? formatRevisionExport(rev) : '';
+        return rev ? (rev.reviewStatus || 'Pending Review').trim() : 'No CP204A revision';
       },
       rev9: (rec: Cp204Record) => {
         const rev = getRevisionForMonth(rec, '9');
-        return rev ? formatRevisionExport(rev) : '';
+        return rev ? (rev.reviewStatus || 'Pending Review').trim() : 'No CP204A revision';
       },
       rev11: (rec: Cp204Record) => {
         const rev = getRevisionForMonth(rec, '11');
-        return rev ? formatRevisionExport(rev) : '';
+        return rev ? (rev.reviewStatus || 'Pending Review').trim() : 'No CP204A revision';
       },
       currentEstimatedTax: (rec: Cp204Record) => rec.currentEstimatedTax,
       instalmentsSummary: (rec: Cp204Record) => {
@@ -278,7 +336,7 @@ export const Cp204ModuleView: React.FC<Cp204ModuleViewProps> = ({ initialFilter 
       statutoryDueDate: (rec: Cp204Record) => formatDateDDMMYYYY(rec.statutoryCp204DueDate),
       remarks: (rec: Cp204Record) => rec.remarks || '',
     }),
-    []
+    [todayStr]
   );
 
   const missingValueGetters = useMemo(
@@ -312,6 +370,7 @@ export const Cp204ModuleView: React.FC<Cp204ModuleViewProps> = ({ initialFilter 
       yaFilter ||
       fyeFilter ||
       picFilter ||
+      clientStatusFilter ||
       submissionFilter ||
       excel.hasActiveColumnFilters ||
       excelMissing.hasActiveColumnFilters
@@ -322,6 +381,7 @@ export const Cp204ModuleView: React.FC<Cp204ModuleViewProps> = ({ initialFilter 
     setYaFilter('');
     setFyeFilter('');
     setPicFilter('');
+    setClientStatusFilter('');
     setSubmissionFilter('');
     excel.resetColumnFilters();
     excelMissing.resetColumnFilters();
@@ -364,6 +424,7 @@ export const Cp204ModuleView: React.FC<Cp204ModuleViewProps> = ({ initialFilter 
         ya: rec.ya,
         pic: rec.pic || '—',
         initialEstimate: `${formatCurrencyRM(rec.originalEstimatedTax)} (${rec.status})`,
+        followUpStatus: classifyCp204SubmissionStatus(rec, todayStr),
         rev6: formatRevisionExport(rev6),
         rev9: formatRevisionExport(rev9),
         rev11: formatRevisionExport(rev11),
@@ -604,6 +665,19 @@ export const Cp204ModuleView: React.FC<Cp204ModuleViewProps> = ({ initialFilter 
             </select>
 
             <select
+              value={clientStatusFilter}
+              onChange={(e) => setClientStatusFilter(e.target.value)}
+              className="px-2.5 py-1.5 text-xs bg-white border border-slate-200 rounded-md text-slate-700"
+            >
+              <option value="">All Client Statuses</option>
+              {CLIENT_STATUS_OPTIONS.map((s) => (
+                <option key={s} value={s}>
+                  {s}
+                </option>
+              ))}
+            </select>
+
+            <select
               value={submissionFilter}
               onChange={(e) => setSubmissionFilter(e.target.value as '' | Cp204SubmissionFilter)}
               className="px-2.5 py-1.5 text-xs bg-white border border-slate-200 rounded-md text-slate-700"
@@ -788,10 +862,13 @@ export const Cp204ModuleView: React.FC<Cp204ModuleViewProps> = ({ initialFilter 
                   </tr>
                 ) : (
                   displayedRecords.map((rec: Cp204Record) => {
-                    const client = clientByIdMap.get(rec.clientId);
+                    const client =
+                      clientByIdMap.get(normalizeClientIdKey(rec.clientId)) ||
+                      clientByIdMap.get(rec.clientId);
                     const rev6 = getRevisionForMonth(rec, '6');
                     const rev9 = getRevisionForMonth(rec, '9');
                     const rev11 = getRevisionForMonth(rec, '11');
+                    const followUpBucket = classifyCp204SubmissionStatus(rec, todayStr);
                     const settledInstCount = rec.instalments.filter(
                       (i) => i.outstandingAmount === 0 && i.amountDue > 0
                     ).length;
@@ -866,6 +943,17 @@ export const Cp204ModuleView: React.FC<Cp204ModuleViewProps> = ({ initialFilter 
                                   </span>
                                   <StatusPill group="CP204_STATUS" value={rec.status} />
                                 </div>
+                              );
+                            case 'followUpStatus':
+                              return wrapTd(
+                                'px-3 py-2 whitespace-nowrap',
+                                <span
+                                  className={`inline-flex items-center px-2 py-0.5 rounded-full text-[11px] font-medium border ${getFollowUpStatusBadgeClass(
+                                    followUpBucket
+                                  )}`}
+                                >
+                                  {followUpBucket}
+                                </span>
                               );
                             case 'rev6':
                               return wrapTd(

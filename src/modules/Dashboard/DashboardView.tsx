@@ -1,6 +1,7 @@
 import React, { useMemo, useState } from 'react';
 import {
   Briefcase,
+  ClipboardList,
   AlertTriangle,
   CalendarClock,
   MailWarning,
@@ -19,27 +20,22 @@ import { useData } from '../../context/DataContext';
 import { extractFyeMonth, formatDateDDMMYYYY, isIsoDateString } from '../../lib/deadlineUtils';
 import {
   buildClientLookupMap,
+  buildLoggedInStaffMatchKeys,
   findMatchedClient,
+  getCurrentWeekRangeIso,
+  getEffectiveJobDeadline,
   isFormCSubmittedStatus,
+  isJobAssignedToLoggedInStaff,
+  isJobDueThisWeek,
+  isJobOpenForWork,
   isMitrsCompletedStatus,
+  normalizeClientIdKey,
   resolveJobDisplayFye,
 } from '../../lib/jobUtils';
 
 interface DashboardViewProps {
   onNavigate: (route: NavRoute, preset?: Omit<NavigationFilterPreset, 'nonce'>) => void;
 }
-
-const CLOSED_JOB_STATUSES = new Set([
-  'completed',
-  'submitted',
-  'filed',
-  'closed',
-  'cancelled',
-  'billed',
-  'paid',
-  'not applicable',
-  'n/a',
-]);
 
 const CLOSED_CORR_STATUSES = new Set(['completed', 'no action required', 'cancelled']);
 
@@ -69,19 +65,6 @@ function addMonthsToYearMonth(
   return { year: targetYear, month: targetMonth };
 }
 
-function isJobOpen(job: TaxJob): boolean {
-  const s = (job.status || '').trim().toLowerCase();
-  return !CLOSED_JOB_STATUSES.has(s);
-}
-
-function getEffectiveJobDeadline(job: TaxJob): string {
-  const candidates = [job.finalApplicableDeadline, job.dueDate, job.internalDeadline];
-  for (const c of candidates) {
-    if (isIsoDateString(c)) return c!.trim();
-  }
-  return '';
-}
-
 function daysBetweenIso(earlierIso: string, laterIso: string): number {
   const d1 = new Date(`${earlierIso}T00:00:00Z`).getTime();
   const d2 = new Date(`${laterIso}T00:00:00Z`).getTime();
@@ -92,7 +75,7 @@ function daysBetweenIso(earlierIso: string, laterIso: string): number {
 function isActiveCorporateClient(status: string | undefined, category: string | undefined): boolean {
   if (category !== 'Corporate') return false;
   const s = (status || '').trim().toLowerCase();
-  return s === '' || s === 'active' || s === 're-appoint';
+  return s === '' || s === 'active';
 }
 
 function isExcludedClientStatus(status: string | undefined): boolean {
@@ -108,7 +91,7 @@ function isSpecialIncludedStatus(status: string | undefined): boolean {
 type PanelKey = 'cp204' | 'formC' | 'overdueJobs' | 'overdueCorr';
 
 export const DashboardView: React.FC<DashboardViewProps> = ({ onNavigate }) => {
-  const { staffProfile } = useAuth();
+  const { user, staffProfile } = useAuth();
   const {
     clients,
     jobs,
@@ -136,10 +119,22 @@ export const DashboardView: React.FC<DashboardViewProps> = ({ onNavigate }) => {
     return `${y}-${m}-${d}`;
   }, [now]);
 
+  const weekRange = useMemo(() => getCurrentWeekRangeIso(now), [now]);
+
   const currentYear = now.getFullYear();
   const currentMonth = now.getMonth() + 1; // 1..12
   const currentMonthLabel = `${MONTH_SHORT_NAMES[currentMonth - 1]} ${currentYear}`;
-  const myStaffName = (staffProfile?.staffName || '').trim().toLowerCase();
+  const myStaffMatchKeys = useMemo(
+    () =>
+      buildLoggedInStaffMatchKeys({
+        staffId: staffProfile?.staffId,
+        staffName: staffProfile?.staffName,
+        email: staffProfile?.email,
+        userEmail: user?.email,
+        displayName: user?.displayName,
+      }),
+    [staffProfile, user]
+  );
 
   const allCollapsed = Object.values(openPanels).every((v) => !v);
   const togglePanel = (key: PanelKey) =>
@@ -152,37 +147,45 @@ export const DashboardView: React.FC<DashboardViewProps> = ({ onNavigate }) => {
     refreshAll();
   };
 
-  // Active Corporate clients list (used by CP204 timeline)
+  // Active Corporate clients list (strictly Active or blank status, used by CP204 timeline)
   const activeCorporateClients = useMemo(
     () => clients.filter((c) => isActiveCorporateClient(c.clientStatus, c.category)),
+    [clients]
+  );
+
+  // Non-active Corporate clients (WIP-Strike Off, Resigned, Inactive, etc.) for CP204 exclusion sub-note
+  const excludedCorporateClients = useMemo(
+    () =>
+      clients.filter(
+        (c) => c.category === 'Corporate' && !isActiveCorporateClient(c.clientStatus, c.category)
+      ),
     [clients]
   );
 
   // Normalized Client ID lookup matching JobsModuleView ("C 1085" === "C1085")
   const clientLookup = useMemo(() => buildClientLookupMap(clients), [clients]);
 
-  // Open jobs + Overdue + Due Today + My Work Today
+  // Open jobs + Overdue + Due Today + My Work This Week + My Incomplete Jobs
   const {
-    myWorkTodayCount,
+    myWorkThisWeekCount,
+    myIncompleteJobsCount,
     myOverdueCount,
     allOverdueJobs,
     dueTodayCount,
     overdueCorrespondence,
   } = useMemo(() => {
-    const openJobs = jobs.filter(isJobOpen);
+    const openJobs = jobs.filter(isJobOpenForWork);
     const overdue: Array<TaxJob & { effectiveDeadline: string; daysOverdue: number }> = [];
     let dueToday = 0;
-    let myWork = 0;
+    let myThisWeek = 0;
+    let myIncomplete = 0;
     let myOverdue = 0;
 
     for (const j of openJobs) {
       const dl = getEffectiveJobDeadline(j);
       const isOverdue = Boolean(dl && dl < todayStr);
       const isDueToday = Boolean(dl && dl === todayStr);
-      const isMine =
-        Boolean(myStaffName) &&
-        ((j.taxPic || '').trim().toLowerCase() === myStaffName ||
-          (j.reviewer || '').trim().toLowerCase() === myStaffName);
+      const isMine = isJobAssignedToLoggedInStaff(j, myStaffMatchKeys);
 
       if (isOverdue) {
         overdue.push({
@@ -193,8 +196,11 @@ export const DashboardView: React.FC<DashboardViewProps> = ({ onNavigate }) => {
       }
       if (isDueToday) dueToday += 1;
       if (isMine) {
-        myWork += 1;
+        myIncomplete += 1;
         if (isOverdue) myOverdue += 1;
+        if (isJobDueThisWeek(j, weekRange.weekStartIso, weekRange.weekEndIso)) {
+          myThisWeek += 1;
+        }
       }
     }
 
@@ -214,15 +220,16 @@ export const DashboardView: React.FC<DashboardViewProps> = ({ onNavigate }) => {
       .sort((a, b) => b.dueDate.localeCompare(a.dueDate));
 
     return {
-      myWorkTodayCount: myWork,
+      myWorkThisWeekCount: myThisWeek,
+      myIncompleteJobsCount: myIncomplete,
       myOverdueCount: myOverdue,
       allOverdueJobs: overdue,
       dueTodayCount: dueToday,
       overdueCorrespondence: overdueCorr,
     };
-  }, [jobs, correspondenceRecords, todayStr, myStaffName]);
+  }, [jobs, correspondenceRecords, todayStr, myStaffMatchKeys, weekRange]);
 
-  // 1. Current Month Focus — CP204 / CP204A Timeline
+  // 1. Current Month Focus — CP204 / CP204A Timeline (strictly Active corporate clients)
   const cp204TimelineRows = useMemo(() => {
     const defs = [
       { category: 'CP204 Initial', offsetMonths: 13 },
@@ -240,19 +247,40 @@ export const DashboardView: React.FC<DashboardViewProps> = ({ onNavigate }) => {
         (c) => extractFyeMonth(c.fye) === target.month
       );
 
-      // Match against cp204Records for targetYa & fyeMonth
+      const excludedForFye = excludedCorporateClients.filter(
+        (c) => extractFyeMonth(c.fye) === target.month
+      );
+      const excludedCounts = new Map<string, number>();
+      const excludedClientLines: string[] = [];
+      for (const ec of excludedForFye) {
+        const label = (ec.clientStatus || 'Other').trim() || 'Other';
+        excludedCounts.set(label, (excludedCounts.get(label) || 0) + 1);
+        excludedClientLines.push(`${ec.clientId ? `${ec.clientId} ` : ''}${ec.clientName} (${label})`);
+      }
+      const excludedStatusNote =
+        excludedCounts.size > 0
+          ? `excl. ${Array.from(excludedCounts.entries())
+              .map(([label, count]) => `${count} ${label}`)
+              .join(', ')}`
+          : '';
+      const excludedStatusTooltip =
+        excludedClientLines.length > 0 ? excludedClientLines.join('\n') : undefined;
+
+      // Match against cp204Records for targetYa & fyeMonth using normalized Client ID
       const trackedClientIds = new Set<string>();
       for (const rec of cp204Records) {
         const recFye = extractFyeMonth(rec.fye);
-        if (rec.ya.trim() === targetYa && recFye === target.month) {
-          trackedClientIds.add(rec.clientId.trim().toLowerCase());
+        if ((rec.ya || '').trim() === targetYa && recFye === target.month) {
+          const normKey = normalizeClientIdKey(rec.clientId);
+          if (normKey) trackedClientIds.add(normKey);
         }
       }
 
       const companiesCount = matchingClients.length;
-      const foundCount = matchingClients.filter((c) =>
-        trackedClientIds.has(c.clientId.trim().toLowerCase())
-      ).length;
+      const foundCount = matchingClients.filter((c) => {
+        const normKey = normalizeClientIdKey(c.clientId);
+        return Boolean(normKey && trackedClientIds.has(normKey));
+      }).length;
 
       let trackerStatus: 'Tracker records found' | 'Some tracker records missing' | 'No tracker records';
       if (companiesCount === 0 || foundCount === 0) {
@@ -272,9 +300,18 @@ export const DashboardView: React.FC<DashboardViewProps> = ({ onNavigate }) => {
         companiesCount,
         foundCount,
         trackerStatus,
+        excludedStatusNote,
+        excludedStatusTooltip,
       };
     });
-  }, [activeCorporateClients, cp204Records, currentYear, currentMonth, currentMonthLabel]);
+  }, [
+    activeCorporateClients,
+    excludedCorporateClients,
+    cp204Records,
+    currentYear,
+    currentMonth,
+    currentMonthLabel,
+  ]);
 
   // 2. Current Month Focus — Form C & MITRS Timeline
   const formCMitrsTimelineRows = useMemo(() => {
@@ -461,26 +498,55 @@ export const DashboardView: React.FC<DashboardViewProps> = ({ onNavigate }) => {
         </div>
       </div>
 
-      {/* Top 4 Summary Cards */}
-      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
+      {/* Top 5 Summary Cards */}
+      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-3">
         <button
           type="button"
           onClick={() =>
-            onNavigate('all-jobs', staffProfile?.staffName ? { search: staffProfile.staffName } : undefined)
+            onNavigate('all-jobs', {
+              assignedToMe: true,
+              dueThisWeek: true,
+              openOnly: true,
+            })
           }
           className="text-left bg-white border border-slate-200 rounded-lg p-4 hover:border-teal-400 transition-colors"
         >
           <div className="flex items-center justify-between">
             <span className="text-[11px] font-semibold uppercase tracking-wider text-slate-500">
-              My Work Today
+              My Work This Week
             </span>
             <Briefcase className="w-4 h-4 text-teal-700" />
           </div>
           <div className="mt-1.5 text-2xl font-bold font-mono tabular-nums text-slate-900">
-            {myWorkTodayCount}
+            {myWorkThisWeekCount}
           </div>
           <div className="mt-1 text-[11px] text-slate-500">
-            Open jobs assigned to you
+            Open jobs due Mon–Sun ({formatDateDDMMYYYY(weekRange.weekStartIso).slice(0, 5)} –{' '}
+            {formatDateDDMMYYYY(weekRange.weekEndIso).slice(0, 5)})
+          </div>
+        </button>
+
+        <button
+          type="button"
+          onClick={() =>
+            onNavigate('all-jobs', {
+              assignedToMe: true,
+              openOnly: true,
+            })
+          }
+          className="text-left bg-white border border-slate-200 rounded-lg p-4 hover:border-teal-400 transition-colors"
+        >
+          <div className="flex items-center justify-between">
+            <span className="text-[11px] font-semibold uppercase tracking-wider text-slate-500">
+              My Incomplete Jobs
+            </span>
+            <ClipboardList className="w-4 h-4 text-indigo-700" />
+          </div>
+          <div className="mt-1.5 text-2xl font-bold font-mono tabular-nums text-slate-900">
+            {myIncompleteJobsCount}
+          </div>
+          <div className="mt-1 text-[11px] text-slate-500">
+            All open jobs assigned to you
             {myOverdueCount > 0 ? (
               <span className="text-rose-700 font-medium"> • {myOverdueCount} overdue</span>
             ) : null}
@@ -489,7 +555,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({ onNavigate }) => {
 
         <button
           type="button"
-          onClick={() => onNavigate('all-jobs')}
+          onClick={() => onNavigate('all-jobs', { overdueOnly: true, openOnly: true })}
           className="text-left bg-white border border-slate-200 rounded-lg p-4 hover:border-rose-300 transition-colors"
         >
           <div className="flex items-center justify-between">
@@ -508,7 +574,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({ onNavigate }) => {
 
         <button
           type="button"
-          onClick={() => onNavigate('all-jobs')}
+          onClick={() => onNavigate('all-jobs', { dueTodayOnly: true, openOnly: true })}
           className="text-left bg-white border border-slate-200 rounded-lg p-4 hover:border-amber-300 transition-colors"
         >
           <div className="flex items-center justify-between">
@@ -621,11 +687,21 @@ export const DashboardView: React.FC<DashboardViewProps> = ({ onNavigate }) => {
                         {row.dueMonth}
                       </td>
                       <td className="py-2.5 px-4 text-right font-mono tabular-nums font-semibold text-slate-900 whitespace-nowrap">
-                        {row.companiesCount}
-                        {row.companiesCount > 0 && (
-                          <span className="text-[10px] font-normal text-slate-400 ml-1">
-                            ({row.foundCount} tracked)
-                          </span>
+                        <div>
+                          {row.companiesCount}
+                          {row.companiesCount > 0 && (
+                            <span className="text-[10px] font-normal text-slate-400 ml-1">
+                              ({row.foundCount} tracked)
+                            </span>
+                          )}
+                        </div>
+                        {row.excludedStatusNote && (
+                          <div
+                            className="text-[10px] font-normal font-sans text-slate-400 mt-0.5"
+                            title={row.excludedStatusTooltip}
+                          >
+                            {row.excludedStatusNote}
+                          </div>
                         )}
                       </td>
                       <td className="py-2.5 px-4 whitespace-nowrap">
@@ -638,9 +714,21 @@ export const DashboardView: React.FC<DashboardViewProps> = ({ onNavigate }) => {
                       <td className="py-2.5 px-4 text-right whitespace-nowrap">
                         <button
                           type="button"
-                          onClick={() =>
-                            onNavigate('cp204', { fye: row.fyeMonthStr, ya: row.targetYa })
-                          }
+                          onClick={() => {
+                            if (row.foundCount >= row.companiesCount && row.companiesCount > 0) {
+                              onNavigate('cp204', {
+                                fye: row.fyeMonthStr,
+                                ya: row.targetYa,
+                                clientStatus: 'Active',
+                              });
+                            } else {
+                              onNavigate('client-master', {
+                                category: 'Corporate',
+                                fye: row.fyeMonthStr,
+                                clientStatus: 'Active',
+                              });
+                            }
+                          }}
                           className="inline-flex items-center gap-1 text-xs font-medium text-teal-700 hover:text-teal-900 hover:underline"
                         >
                           View companies

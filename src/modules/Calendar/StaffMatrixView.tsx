@@ -22,6 +22,7 @@ import {
 } from '../../types/tpms';
 import { formatDateDDMMYYYY } from '../../lib/deadlineUtils';
 import {
+  addDaysIso,
   computeHolidayDeadlineCollisions,
   computeOpenJobsByStaff,
   computeStaffDeadlineCollisions,
@@ -41,6 +42,8 @@ import {
   ParsedCalendarEvent,
   PeakCoverageAlert,
   PublicHolidayRef,
+  ShiftedDueDateInfo,
+  shiftToLastWorkingWeekday,
   StaffMatrixRowSummary,
   StatutoryDeadlineRef,
   toIsoDate,
@@ -142,6 +145,19 @@ export const StaffMatrixView: React.FC<StaffMatrixViewProps> = ({
   // All Mon-Fri weekdays in the selected month (always used for Work Days capacity calculation)
   const monthWeekdays = useMemo(() => getMonthDays(year, monthIndex, false), [year, monthIndex]);
 
+  // All calendar dates in the selected month (including Sat/Sun) plus 4 spillover days into next month
+  // so weekend Tax Due Dates always shift onto their last working weekday even when Include Weekends is unchecked
+  const dueDateScanIsos = useMemo(() => {
+    const allMonthDays = getMonthDays(year, monthIndex, true).map((d) => toIsoDate(d));
+    const lastDayIso = allMonthDays[allMonthDays.length - 1];
+    if (lastDayIso) {
+      for (let i = 1; i <= 4; i++) {
+        allMonthDays.push(addDaysIso(lastDayIso, i));
+      }
+    }
+    return allMonthDays;
+  }, [year, monthIndex]);
+
   const clientsById = useMemo(() => {
     const map = new Map<string, ClientRecord>();
     for (const c of clients) {
@@ -155,15 +171,19 @@ export const StaffMatrixView: React.FC<StaffMatrixViewProps> = ({
   // Identify Company Holiday & Firm-Wide Internal Events per date
   const companyHolidayByDate = useMemo(() => {
     const map = new Map<string, ParsedCalendarEvent>();
-    for (const d of days) {
-      const iso = toIsoDate(d);
+    for (const iso of dueDateScanIsos) {
       const found = parsedEvents.find(
         (e) => e.canonicalType === 'Company Holiday' && eventCoversDate(e.raw, iso)
       );
       if (found) map.set(iso, found);
     }
     return map;
-  }, [days, parsedEvents]);
+  }, [dueDateScanIsos, parsedEvents]);
+
+  const companyHolidayDates = useMemo(
+    () => new Set(companyHolidayByDate.keys()),
+    [companyHolidayByDate]
+  );
 
   const firmWideEventsByDate = useMemo(() => {
     const map = new Map<string, ParsedCalendarEvent[]>();
@@ -177,18 +197,43 @@ export const StaffMatrixView: React.FC<StaffMatrixViewProps> = ({
     return map;
   }, [days, parsedEvents]);
 
-  // Tax Due Date events indexed by date (kept OUT of staff cells; marked in date header + Monthly Event Notes + collision alerts)
-  const taxDueDatesByDate = useMemo(() => {
-    const map = new Map<string, ParsedCalendarEvent[]>();
-    for (const d of days) {
-      const iso = toIsoDate(d);
+  // Tax Due Date events shifted to last working weekday whenever an actual due date falls on Sat/Sun
+  const { shiftedTaxDueByDate, weekendOriginalTaxDueByDate } = useMemo(() => {
+    const shiftedMap = new Map<
+      string,
+      Array<{ event: ParsedCalendarEvent; shift: ShiftedDueDateInfo }>
+    >();
+    const weekendOrigMap = new Map<
+      string,
+      Array<{ event: ParsedCalendarEvent; shift: ShiftedDueDateInfo }>
+    >();
+    const seenKeys = new Set<string>();
+
+    for (const iso of dueDateScanIsos) {
       const list = parsedEvents.filter(
         (e) => e.canonicalType === 'Tax Due Date' && eventCoversDate(e.raw, iso)
       );
-      if (list.length > 0) map.set(iso, list);
+      if (list.length === 0) continue;
+      const shift = shiftToLastWorkingWeekday(iso, holidaysByDate, companyHolidayDates);
+
+      for (const ev of list) {
+        const dedupeKey = `${ev.raw.id}|${shift.effectiveDate}|${iso}`;
+        if (seenKeys.has(dedupeKey)) continue;
+        seenKeys.add(dedupeKey);
+
+        const targetArr = shiftedMap.get(shift.effectiveDate) ?? [];
+        targetArr.push({ event: ev, shift });
+        shiftedMap.set(shift.effectiveDate, targetArr);
+
+        if (shift.shifted) {
+          const origArr = weekendOrigMap.get(iso) ?? [];
+          origArr.push({ event: ev, shift });
+          weekendOrigMap.set(iso, origArr);
+        }
+      }
     }
-    return map;
-  }, [days, parsedEvents]);
+    return { shiftedTaxDueByDate: shiftedMap, weekendOriginalTaxDueByDate: weekendOrigMap };
+  }, [dueDateScanIsos, parsedEvents, holidaysByDate, companyHolidayDates]);
 
   // All events indexed by staffLower -> isoDate -> ParsedCalendarEvent[]
   const staffDayEventsMap = useMemo(() => {
@@ -230,16 +275,41 @@ export const StaffMatrixView: React.FC<StaffMatrixViewProps> = ({
     }).rowSummaries;
   }, [activeStaff, monthWeekdays, holidaysByDate, parsedEvents, openJobsByStaff]);
 
-  // Statutory Malaysian LHDN deadlines per visible date
-  const statutoryByDate = useMemo(() => {
-    const map = new Map<string, StatutoryDeadlineRef[]>();
-    for (const d of days) {
-      const iso = toIsoDate(d);
+  // Statutory Malaysian LHDN deadlines (shifted to last working weekday whenever falling on Sat/Sun)
+  const { shiftedStatutoryByDate, weekendOriginalStatutoryByDate } = useMemo(() => {
+    const shiftedMap = new Map<
+      string,
+      Array<{ statutory: StatutoryDeadlineRef; shift: ShiftedDueDateInfo }>
+    >();
+    const weekendOrigMap = new Map<
+      string,
+      Array<{ statutory: StatutoryDeadlineRef; shift: ShiftedDueDateInfo }>
+    >();
+    const seenKeys = new Set<string>();
+
+    for (const iso of dueDateScanIsos) {
       const list = getMalaysianStatutoryDeadlinesForDate(iso);
-      if (list.length > 0) map.set(iso, list);
+      if (list.length === 0) continue;
+      const shift = shiftToLastWorkingWeekday(iso, holidaysByDate, companyHolidayDates);
+
+      for (const st of list) {
+        const dedupeKey = `${st.code}|${shift.effectiveDate}|${iso}`;
+        if (seenKeys.has(dedupeKey)) continue;
+        seenKeys.add(dedupeKey);
+
+        const targetArr = shiftedMap.get(shift.effectiveDate) ?? [];
+        targetArr.push({ statutory: st, shift });
+        shiftedMap.set(shift.effectiveDate, targetArr);
+
+        if (shift.shifted) {
+          const origArr = weekendOrigMap.get(iso) ?? [];
+          origArr.push({ statutory: st, shift });
+          weekendOrigMap.set(iso, origArr);
+        }
+      }
     }
-    return map;
-  }, [days]);
+    return { shiftedStatutoryByDate: shiftedMap, weekendOriginalStatutoryByDate: weekendOrigMap };
+  }, [dueDateScanIsos, holidaysByDate, companyHolidayDates]);
 
   // Tax Deadline Collision map for staff leave cells: `${staffLower}|${iso}` -> DeadlineCollisionItem[]
   const collisionMap = useMemo(() => {
@@ -260,7 +330,9 @@ export const StaffMatrixView: React.FC<StaffMatrixViewProps> = ({
           iso,
           jobs,
           cp204Records,
-          parsedEvents
+          parsedEvents,
+          holidaysByDate,
+          companyHolidayDates
         );
         if (collisions.length > 0) {
           map.set(`${staffKey}|${iso}`, collisions);
@@ -268,7 +340,7 @@ export const StaffMatrixView: React.FC<StaffMatrixViewProps> = ({
       }
     }
     return map;
-  }, [activeStaff, staffDayEventsMap, jobs, cp204Records, parsedEvents]);
+  }, [activeStaff, staffDayEventsMap, jobs, cp204Records, parsedEvents, holidaysByDate, companyHolidayDates]);
 
   // Tax Deadline Collision map for Public Holidays & Company Holidays: `iso` -> DeadlineCollisionItem[]
   const holidayCollisionMap = useMemo(() => {
@@ -595,21 +667,46 @@ export const StaffMatrixView: React.FC<StaffMatrixViewProps> = ({
                     const isToday = iso === todayIso;
                     const weekEndDivider = isEndOfWeek(d, idx);
                     const isPeak = isPeakFilingDate(iso);
-                    const statList = statutoryByDate.get(iso) ?? [];
-                    const dueList = taxDueDatesByDate.get(iso) ?? [];
+                    const dueEntries = shiftedTaxDueByDate.get(iso) ?? [];
+                    const statEntries = shiftedStatutoryByDate.get(iso) ?? [];
+                    const origWeekendDue = weekendOriginalTaxDueByDate.get(iso) ?? [];
+                    const origWeekendStat = weekendOriginalStatutoryByDate.get(iso) ?? [];
+
+                    const hasRedDueDot =
+                      dueEntries.length > 0 || statEntries.some((entry) => entry.shift.shifted);
+                    const hasAmberStatDot = !hasRedDueDot && statEntries.length > 0;
+
                     const headerParts = [formatDateDDMMYYYY(iso)];
-                    if (dueList.length > 0) {
-                      headerParts.push(
-                        `Tax Due Date: ${dueList.map((ev) => ev.cleanLabel).join(', ')}`
-                      );
+                    if (dueEntries.length > 0) {
+                      for (const { event, shift } of dueEntries) {
+                        headerParts.push(
+                          shift.shifted
+                            ? `Tax Due Date: ${event.cleanLabel} (${shift.shiftNote})`
+                            : `Tax Due Date: ${event.cleanLabel}`
+                        );
+                      }
                     }
-                    if (statList.length > 0) {
-                      headerParts.push(
-                        `LHDN Statutory: ${statList.map((st) => st.name).join(', ')}`
-                      );
-                    } else if (isPeak && dueList.length === 0) {
+                    if (statEntries.length > 0) {
+                      for (const { statutory, shift } of statEntries) {
+                        headerParts.push(
+                          shift.shifted
+                            ? `LHDN Statutory: ${statutory.name} (${shift.shiftNote})`
+                            : `LHDN Statutory: ${statutory.name}`
+                        );
+                      }
+                    } else if (isPeak && dueEntries.length === 0 && !isWeekend) {
                       headerParts.push('Peak LHDN filing date');
                     }
+
+                    if (isWeekend && (origWeekendDue.length > 0 || origWeekendStat.length > 0)) {
+                      for (const { event, shift } of origWeekendDue) {
+                        headerParts.push(`Tax Due Date: ${event.cleanLabel} (${shift.shiftNote})`);
+                      }
+                      for (const { statutory, shift } of origWeekendStat) {
+                        headerParts.push(`LHDN Statutory: ${statutory.name} (${shift.shiftNote})`);
+                      }
+                    }
+
                     const headerTitle = headerParts.join(' — ');
                     return (
                       <th
@@ -627,16 +724,18 @@ export const StaffMatrixView: React.FC<StaffMatrixViewProps> = ({
                       >
                         <span className="inline-flex items-center justify-center gap-0.5">
                           {d.getDate()}
-                          {dueList.length > 0 && (
+                          {hasRedDueDot && (
                             <span
                               className="inline-block w-1.5 h-1.5 rounded-full bg-[#ef4444] ring-1 ring-white/90 shrink-0"
                               aria-label="Tax Due Date"
+                              title={headerTitle}
                             />
                           )}
-                          {statList.length > 0 && dueList.length === 0 && (
+                          {hasAmberStatDot && (
                             <span
                               className="inline-block w-1.5 h-1.5 rounded-full bg-amber-300 shrink-0"
                               aria-label="LHDN Statutory Deadline"
+                              title={headerTitle}
                             />
                           )}
                         </span>
@@ -1179,52 +1278,64 @@ export const StaffMatrixView: React.FC<StaffMatrixViewProps> = ({
           </div>
         ) : (
           <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-2">
-            {monthlyNotes.taxDueEvents.map((ev) => (
-              <button
-                key={ev.raw.id}
-                type="button"
-                onClick={() => onCellSelectModal('', ev.raw.startDate, ev)}
-                className="text-left p-2 rounded-md border border-rose-300 bg-rose-50/50 hover:border-rose-500 transition-colors flex items-start gap-2"
-              >
-                <span
-                  className="w-2.5 h-2.5 rounded-xs mt-1 shrink-0 border border-rose-700/30"
-                  style={{ backgroundColor: ev.color || '#ef4444' }}
-                />
-                <div className="min-w-0 flex-1 space-y-0.5">
-                  <div className="flex items-center justify-between gap-1.5">
-                    <div className="text-xs font-semibold text-rose-950 truncate">
-                      {ev.cleanLabel}
-                    </div>
-                    <span className="px-1.5 py-0.5 rounded bg-rose-100 text-rose-800 border border-rose-300 text-[9px] font-semibold whitespace-nowrap shrink-0">
-                      Tax Due Date
-                    </span>
-                  </div>
-                  <div className="text-[11px] font-mono tabular-nums text-rose-800/80 flex items-center gap-1.5 flex-wrap">
-                    <span>
-                      {formatDateDDMMYYYY(ev.raw.startDate)}
-                      {ev.raw.endDate && ev.raw.endDate !== ev.raw.startDate
-                        ? ` – ${formatDateDDMMYYYY(ev.raw.endDate)}`
-                        : ''}
-                    </span>
-                    {ev.raw.recurrenceGroupId && (
-                      <span className="inline-flex items-center gap-0.5 font-sans text-[10px] text-rose-700">
-                        · <Repeat2 className="w-2.5 h-2.5" />
-                        {formatRecurrenceRuleLabel(
-                          ev.raw.recurrenceRule,
-                          ev.raw.startDate,
-                          ev.raw.recurrenceLabel
-                        )}
+            {monthlyNotes.taxDueEvents.map((ev) => {
+              const dueShift = shiftToLastWorkingWeekday(
+                ev.raw.startDate,
+                holidaysByDate,
+                companyHolidayDates
+              );
+              return (
+                <button
+                  key={ev.raw.id}
+                  type="button"
+                  onClick={() => onCellSelectModal('', ev.raw.startDate, ev)}
+                  className="text-left p-2 rounded-md border border-rose-300 bg-rose-50/50 hover:border-rose-500 transition-colors flex items-start gap-2"
+                >
+                  <span
+                    className="w-2.5 h-2.5 rounded-xs mt-1 shrink-0 border border-rose-700/30"
+                    style={{ backgroundColor: ev.color || '#ef4444' }}
+                  />
+                  <div className="min-w-0 flex-1 space-y-0.5">
+                    <div className="flex items-center justify-between gap-1.5">
+                      <div className="text-xs font-semibold text-rose-950 truncate">
+                        {ev.cleanLabel}
+                      </div>
+                      <span className="px-1.5 py-0.5 rounded bg-rose-100 text-rose-800 border border-rose-300 text-[9px] font-semibold whitespace-nowrap shrink-0">
+                        Tax Due Date
                       </span>
+                    </div>
+                    <div className="text-[11px] font-mono tabular-nums text-rose-800/80 flex items-center gap-1.5 flex-wrap">
+                      <span>
+                        {formatDateDDMMYYYY(ev.raw.startDate)}
+                        {ev.raw.endDate && ev.raw.endDate !== ev.raw.startDate
+                          ? ` – ${formatDateDDMMYYYY(ev.raw.endDate)}`
+                          : ''}
+                      </span>
+                      {ev.raw.recurrenceGroupId && (
+                        <span className="inline-flex items-center gap-0.5 font-sans text-[10px] text-rose-700">
+                          · <Repeat2 className="w-2.5 h-2.5" />
+                          {formatRecurrenceRuleLabel(
+                            ev.raw.recurrenceRule,
+                            ev.raw.startDate,
+                            ev.raw.recurrenceLabel
+                          )}
+                        </span>
+                      )}
+                    </div>
+                    {dueShift.shifted && (
+                      <div className="text-[10px] font-medium text-amber-800 bg-amber-50 border border-amber-200 rounded px-1.5 py-0.5 inline-block">
+                        {dueShift.shiftNote}
+                      </div>
+                    )}
+                    {ev.raw.notes && (
+                      <div className="text-[11px] text-slate-600 mt-0.5 line-clamp-2">
+                        {ev.raw.notes}
+                      </div>
                     )}
                   </div>
-                  {ev.raw.notes && (
-                    <div className="text-[11px] text-slate-600 mt-0.5 line-clamp-2">
-                      {ev.raw.notes}
-                    </div>
-                  )}
-                </div>
-              </button>
-            ))}
+                </button>
+              );
+            })}
 
             {monthlyNotes.firmEvents.map((ev) => (
               <button
@@ -1394,7 +1505,12 @@ export const StaffMatrixView: React.FC<StaffMatrixViewProps> = ({
 
                       {c.source === 'statutory' ? (
                         <div className="text-[11px] text-slate-600">
-                          Malaysian LHDN Statutory Deadline ({formatDateDDMMYYYY(c.dueDate)})
+                          <div>Malaysian LHDN Statutory Deadline ({formatDateDDMMYYYY(c.dueDate)})</div>
+                          {c.shiftNote && (
+                            <div className="text-[10px] text-amber-800 font-medium mt-0.5">
+                              {c.shiftNote}
+                            </div>
+                          )}
                         </div>
                       ) : c.source === 'calendar' ? (
                         <div className="text-[11px] text-slate-700 leading-snug">
@@ -1412,6 +1528,11 @@ export const StaffMatrixView: React.FC<StaffMatrixViewProps> = ({
                             {c.refCode} · Due {formatDateDDMMYYYY(c.dueDate)}
                             {c.picName ? ` · PIC: ${c.picName}` : ''}
                           </div>
+                          {c.shiftNote && (
+                            <div className="text-[10px] text-amber-800 font-medium mt-0.5">
+                              {c.shiftNote}
+                            </div>
+                          )}
                         </div>
                       ) : (
                         <div className="text-[11px] text-slate-700 leading-snug">

@@ -355,6 +355,9 @@ function buildSanitizedJobDocument(
     submissionReference: clampStr(computed.submissionReference, 80),
     personNo: clampStr(computed.personNo, 60),
     yaSequence: clampStr(computed.yaSequence, 40),
+    totalTax: safeNum(computed.totalTax),
+    cp204Payment: safeNum(computed.cp204Payment),
+    underEstimatePenalty: safeNum(computed.underEstimatePenalty),
     finalTaxPayable: safeNum(computed.finalTaxPayable),
     finalTaxPayableDate: clampStr(computed.finalTaxPayableDate, 20),
     // Form E sub-statuses

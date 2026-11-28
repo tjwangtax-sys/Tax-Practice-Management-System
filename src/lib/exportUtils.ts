@@ -83,6 +83,9 @@ function resolvePdfPillStyle(rawLine: string): PdfPillStyle | null {
   if (lower === 'epc') {
     return { fill: [243, 232, 255], border: [216, 180, 254], text: [126, 34, 206] };
   }
+  if (/^>30%\s*var/i.test(s)) {
+    return { fill: [254, 243, 199], border: [245, 158, 11], text: [146, 64, 14] };
+  }
   return null;
 }
 

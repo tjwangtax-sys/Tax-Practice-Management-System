@@ -36,12 +36,15 @@ import {
   addCalendarDays,
   analyzeJobDeadlines,
   buildClientLookupMap,
+  buildLoggedInStaffMatchKeys,
   extractFyeMonth,
   findMatchedClient,
   formatDateDDMMYYYY,
   formatOverdueLabel,
   getAuditTypePillClasses,
+  getCurrentWeekRangeIso,
   getDeadlineStageBadge,
+  getEffectiveJobDeadline,
   getLatestSsmEot,
   getOverdueDays,
   getShortDeadlineRule,
@@ -50,6 +53,9 @@ import {
   getSubmissionStatusPillClasses,
   getYaSequencePillClasses,
   isIsoDateString,
+  isJobAssignedToLoggedInStaff,
+  isJobDueThisWeek,
+  isJobOpenForWork,
   latestIsoDate,
   recomputeJobDeadlinesAndStatus,
   resolveJobDisplayFye,
@@ -93,6 +99,9 @@ const JOB_PDF_COLUMN_WEIGHTS: Record<string, number> = {
   workDoneStatus: 14,
   billingStatus: 14,
   remarks: 24,
+  totalTax: 13,
+  cp204Payment: 13,
+  underEstimatePenalty: 13,
   finalTaxPayable: 13,
   feeAmount: 12,
   checklistProgress: 10,
@@ -155,6 +164,9 @@ function getJobColumnMinWidth(key: string): string {
     case 'responseDueDate':
     case 'responseSentDate':
       return 'min-w-[135px]';
+    case 'totalTax':
+    case 'cp204Payment':
+    case 'underEstimatePenalty':
     case 'finalTaxPayable':
     case 'feeAmount':
     case 'cp204Estimate':
@@ -212,7 +224,10 @@ const JOB_COL_FALLBACK_WIDTHS: Record<string, number> = {
   letterDate: 135,
   responseDueDate: 135,
   responseSentDate: 135,
-  finalTaxPayable: 130,
+  totalTax: 130,
+  cp204Payment: 140,
+  underEstimatePenalty: 145,
+  finalTaxPayable: 140,
   feeAmount: 130,
   cp204Estimate: 130,
   cp204Revised6th: 130,
@@ -267,8 +282,29 @@ function getColumnsForMode(mode: 'ALL' | JobModule): ColumnDef[] {
         optional: true,
       },
       {
+        key: 'totalTax',
+        label: 'Total Tax (RM)',
+        defaultVisible: false,
+        optional: true,
+        align: 'right',
+      },
+      {
+        key: 'cp204Payment',
+        label: 'Less: CP204 Payment (RM)',
+        defaultVisible: false,
+        optional: true,
+        align: 'right',
+      },
+      {
+        key: 'underEstimatePenalty',
+        label: 'Under Estimate Penalty (RM)',
+        defaultVisible: false,
+        optional: true,
+        align: 'right',
+      },
+      {
         key: 'finalTaxPayable',
-        label: 'Final Tax Payable',
+        label: 'Balance Tax Payable (RM)',
         defaultVisible: false,
         optional: true,
         align: 'right',
@@ -316,7 +352,22 @@ function getColumnsForMode(mode: 'ALL' | JobModule): ColumnDef[] {
       { key: 'finalApplicableDeadline', label: 'Final Deadline', defaultVisible: true },
       { key: 'submissionStatus', label: 'Submission Status', defaultVisible: true },
       { key: 'submissionDate', label: 'Submission Date', defaultVisible: true },
-      { key: 'finalTaxPayable', label: 'Final Tax Payable', defaultVisible: true, align: 'right' },
+      { key: 'totalTax', label: 'Total Tax (RM)', defaultVisible: false, optional: true, align: 'right' },
+      {
+        key: 'cp204Payment',
+        label: 'Less: CP204 Payment (RM)',
+        defaultVisible: false,
+        optional: true,
+        align: 'right',
+      },
+      {
+        key: 'underEstimatePenalty',
+        label: 'Under Estimate Penalty (RM)',
+        defaultVisible: false,
+        optional: true,
+        align: 'right',
+      },
+      { key: 'finalTaxPayable', label: 'Balance Tax Payable (RM)', defaultVisible: true, align: 'right' },
       { key: 'checklistProgress', label: 'Checklist', defaultVisible: true },
       { key: 'remarks', label: 'Remarks', defaultVisible: false },
     ];
@@ -385,7 +436,22 @@ function getColumnsForMode(mode: 'ALL' | JobModule): ColumnDef[] {
     { key: 'mitrsStatus', label: 'MITRS', defaultVisible: false },
     { key: 'formEStatus', label: 'Form E', defaultVisible: false },
     { key: 'submissionStatus', label: 'Submission Status', defaultVisible: true },
-    { key: 'finalTaxPayable', label: 'Final Tax Payable', defaultVisible: true, align: 'right' },
+    { key: 'totalTax', label: 'Total Tax (RM)', defaultVisible: false, optional: true, align: 'right' },
+    {
+      key: 'cp204Payment',
+      label: 'Less: CP204 Payment (RM)',
+      defaultVisible: false,
+      optional: true,
+      align: 'right',
+    },
+    {
+      key: 'underEstimatePenalty',
+      label: 'Under Estimate Penalty (RM)',
+      defaultVisible: false,
+      optional: true,
+      align: 'right',
+    },
+    { key: 'finalTaxPayable', label: 'Balance Tax Payable (RM)', defaultVisible: true, align: 'right' },
     { key: 'checklistProgress', label: 'Checklist', defaultVisible: true },
     {
       key: 'auditBookInDate',
@@ -525,7 +591,7 @@ function getStatusEffectiveDate(
 }
 
 export const JobsModuleView: React.FC<JobsModuleViewProps> = ({ mode, initialFilter }) => {
-  const { isReadOnly, isManagerOrAdmin } = useAuth();
+  const { user, staffProfile, isReadOnly, isManagerOrAdmin } = useAuth();
   const { jobs, clients, history, loading, batchUpdateJobs, deleteJob, getSettingsByGroup } =
     useData();
 
@@ -563,8 +629,18 @@ export const JobsModuleView: React.FC<JobsModuleViewProps> = ({ mode, initialFil
   const [picFilter, setPicFilter] = useState('');
   const [statusFilter, setStatusFilter] = useState('');
   const [auditTypeFilter, setAuditTypeFilter] = useState('');
-  const [finalDeadlineFilter, setFinalDeadlineFilter] = useState('');
+  const [finalDeadlineFilter, setFinalDeadlineFilter] = useState(() =>
+    initialFilter?.overdueOnly ? 'OVERDUE' : ''
+  );
   const [deadlineMonthFilter, setDeadlineMonthFilter] = useState('');
+  const [assignedToMeOnly, setAssignedToMeOnly] = useState(() =>
+    Boolean(initialFilter?.assignedToMe)
+  );
+  const [openOnly, setOpenOnly] = useState(() => Boolean(initialFilter?.openOnly));
+  const [dueThisWeekOnly, setDueThisWeekOnly] = useState(() =>
+    Boolean(initialFilter?.dueThisWeek)
+  );
+  const [dueTodayOnly, setDueTodayOnly] = useState(() => Boolean(initialFilter?.dueTodayOnly));
   const [monthPopoverOpen, setMonthPopoverOpen] = useState(false);
   const [monthPickerYear, setMonthPickerYear] = useState<string>('2026');
   const monthPopoverRef = useRef<HTMLDivElement>(null);
@@ -604,8 +680,12 @@ export const JobsModuleView: React.FC<JobsModuleViewProps> = ({ mode, initialFil
     setPicFilter('');
     setStatusFilter('');
     setAuditTypeFilter('');
-    setFinalDeadlineFilter('');
+    setFinalDeadlineFilter(initialFilter.overdueOnly ? 'OVERDUE' : '');
     setDeadlineMonthFilter('');
+    setAssignedToMeOnly(Boolean(initialFilter.assignedToMe));
+    setOpenOnly(Boolean(initialFilter.openOnly));
+    setDueThisWeekOnly(Boolean(initialFilter.dueThisWeek));
+    setDueTodayOnly(Boolean(initialFilter.dueTodayOnly));
   }, [initialFilter?.nonce]);
 
   // Reset pagination when filters or mode change
@@ -623,6 +703,10 @@ export const JobsModuleView: React.FC<JobsModuleViewProps> = ({ mode, initialFil
     auditTypeFilter,
     finalDeadlineFilter,
     deadlineMonthFilter,
+    assignedToMeOnly,
+    openOnly,
+    dueThisWeekOnly,
+    dueTodayOnly,
   ]);
 
   const scopedJobs = useMemo(() => jobs.filter((j) => matchesJobView(j, mode)), [jobs, mode]);
@@ -724,6 +808,18 @@ export const JobsModuleView: React.FC<JobsModuleViewProps> = ({ mode, initialFil
   const todayStr = new Date().toISOString().slice(0, 10);
   const in30DaysStr = addCalendarDays(todayStr, 30);
   const thisMonthStr = todayStr.slice(0, 7);
+  const { weekStartIso, weekEndIso } = useMemo(() => getCurrentWeekRangeIso(new Date()), []);
+  const myStaffMatchKeys = useMemo(
+    () =>
+      buildLoggedInStaffMatchKeys({
+        staffId: staffProfile?.staffId,
+        staffName: staffProfile?.staffName,
+        email: staffProfile?.email,
+        userEmail: user?.email,
+        displayName: user?.displayName,
+      }),
+    [staffProfile?.staffId, staffProfile?.staffName, staffProfile?.email, user?.email, user?.displayName]
+  );
 
   const filteredJobs = useMemo(() => {
     const q = search.trim().toLowerCase();
@@ -739,6 +835,13 @@ export const JobsModuleView: React.FC<JobsModuleViewProps> = ({ mode, initialFil
       }
       if (picFilter && j.taxPic !== picFilter) return false;
       if (statusFilter && j.status !== statusFilter) return false;
+      if (assignedToMeOnly && !isJobAssignedToLoggedInStaff(j, myStaffMatchKeys)) return false;
+      if (openOnly && !isJobOpenForWork(j)) return false;
+      if (dueThisWeekOnly && !isJobDueThisWeek(j, weekStartIso, weekEndIso)) return false;
+      if (dueTodayOnly) {
+        const effDl = getEffectiveJobDeadline(j);
+        if (!effDl || effDl !== todayStr) return false;
+      }
       if (auditTypeFilter) {
         const at = (j.auditType || '').trim();
         if (auditTypeFilter === '__BLANK__') {
@@ -825,6 +928,13 @@ export const JobsModuleView: React.FC<JobsModuleViewProps> = ({ mode, initialFil
     auditTypeFilter,
     finalDeadlineFilter,
     deadlineMonthFilter,
+    assignedToMeOnly,
+    openOnly,
+    dueThisWeekOnly,
+    dueTodayOnly,
+    myStaffMatchKeys,
+    weekStartIso,
+    weekEndIso,
     search,
     todayStr,
     in30DaysStr,
@@ -908,6 +1018,9 @@ export const JobsModuleView: React.FC<JobsModuleViewProps> = ({ mode, initialFil
       submissionReference: (j: TaxJob) => j.submissionReference ?? '',
       submissionDate: (j: TaxJob) => formatDateDDMMYYYY(j.submissionDate),
       personNo: (j: TaxJob) => j.personNo ?? '',
+      totalTax: (j: TaxJob) => j.totalTax ?? 0,
+      cp204Payment: (j: TaxJob) => j.cp204Payment ?? 0,
+      underEstimatePenalty: (j: TaxJob) => j.underEstimatePenalty ?? 0,
       finalTaxPayable: (j: TaxJob) => j.finalTaxPayable ?? j.taxPayable ?? 0,
       checklistProgress: (j: TaxJob) => getChecklistSummary(j),
       dueDate: (j: TaxJob) => formatDateDDMMYYYY(j.dueDate),
@@ -973,6 +1086,10 @@ export const JobsModuleView: React.FC<JobsModuleViewProps> = ({ mode, initialFil
       auditTypeFilter ||
       finalDeadlineFilter ||
       deadlineMonthFilter ||
+      assignedToMeOnly ||
+      openOnly ||
+      dueThisWeekOnly ||
+      dueTodayOnly ||
       excel.hasActiveColumnFilters
   );
 
@@ -1161,6 +1278,9 @@ export const JobsModuleView: React.FC<JobsModuleViewProps> = ({ mode, initialFil
         submissionReference: j.submissionReference ?? '',
         submissionDate: formatDateDDMMYYYY(j.submissionDate),
         personNo: j.personNo ?? '',
+        totalTax: j.totalTax ?? 0,
+        cp204Payment: j.cp204Payment ?? 0,
+        underEstimatePenalty: j.underEstimatePenalty ?? 0,
         finalTaxPayable: j.finalTaxPayable ?? j.taxPayable ?? 0,
         checklistProgress: getChecklistSummary(j),
         dueDate: formatDateDDMMYYYY(j.dueDate),
@@ -1217,6 +1337,10 @@ export const JobsModuleView: React.FC<JobsModuleViewProps> = ({ mode, initialFil
           setAuditTypeFilter('');
           setFinalDeadlineFilter('');
           setDeadlineMonthFilter('');
+          setAssignedToMeOnly(false);
+          setOpenOnly(false);
+          setDueThisWeekOnly(false);
+          setDueTodayOnly(false);
           excel.resetColumnFilters();
         }}
         columns={orderedColumns}
@@ -1567,6 +1691,52 @@ export const JobsModuleView: React.FC<JobsModuleViewProps> = ({ mode, initialFil
           ) : undefined
         }
       />
+
+      {(assignedToMeOnly || openOnly || dueThisWeekOnly || dueTodayOnly) && (
+        <div className="flex flex-wrap items-center gap-1.5 px-3 py-2 bg-teal-50/70 border border-teal-200 rounded-lg text-xs">
+          <span className="text-[11px] font-semibold text-teal-900 mr-1">Active Preset:</span>
+          {assignedToMeOnly && (
+            <button
+              type="button"
+              onClick={() => setAssignedToMeOnly(false)}
+              className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-white border border-teal-300 text-teal-800 text-[11px] font-medium hover:bg-teal-100"
+            >
+              PIC / Reviewer = {staffProfile?.staffId || staffProfile?.staffName || 'Me'}
+              <X className="w-3 h-3" />
+            </button>
+          )}
+          {openOnly && (
+            <button
+              type="button"
+              onClick={() => setOpenOnly(false)}
+              className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-white border border-teal-300 text-teal-800 text-[11px] font-medium hover:bg-teal-100"
+            >
+              Status ≠ Completed
+              <X className="w-3 h-3" />
+            </button>
+          )}
+          {dueThisWeekOnly && (
+            <button
+              type="button"
+              onClick={() => setDueThisWeekOnly(false)}
+              className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-white border border-teal-300 text-teal-800 text-[11px] font-medium hover:bg-teal-100"
+            >
+              Due This Week ({formatDateDDMMYYYY(weekStartIso)} – {formatDateDDMMYYYY(weekEndIso)})
+              <X className="w-3 h-3" />
+            </button>
+          )}
+          {dueTodayOnly && (
+            <button
+              type="button"
+              onClick={() => setDueTodayOnly(false)}
+              className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-white border border-amber-300 text-amber-800 text-[11px] font-medium hover:bg-amber-100"
+            >
+              Due Today ({formatDateDDMMYYYY(todayStr)})
+              <X className="w-3 h-3" />
+            </button>
+          )}
+        </div>
+      )}
 
       <div className="max-h-[calc(100vh-64px)] overflow-auto relative bg-white border border-slate-200 rounded-lg">
         <table className="w-full text-xs border-collapse">
@@ -1944,6 +2114,9 @@ export const JobsModuleView: React.FC<JobsModuleViewProps> = ({ mode, initialFil
                           key === 'cp204Revised9th' ||
                           key === 'cp204Revised11th' ||
                           key === 'taxPayable' ||
+                          key === 'totalTax' ||
+                          key === 'cp204Payment' ||
+                          key === 'underEstimatePenalty' ||
                           key === 'finalTaxPayable' ||
                           key === 'feeAmount' ||
                           key === 'amountDue' ||

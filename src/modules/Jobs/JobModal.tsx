@@ -16,6 +16,8 @@ import {
   JobModule,
   JobType,
   TaxJob,
+  formatCurrencyRM,
+  safeNum,
 } from '../../types/tpms';
 import {
   AUDIT_TYPE_OPTIONS,
@@ -24,6 +26,7 @@ import {
   buildClientLookupMap,
   createDefaultComplianceChecklist,
   extractFyeMonth,
+  extractYaYear,
   findMatchedClient,
   formatDateDDMMYYYY,
   formatDisplayDate,
@@ -33,10 +36,12 @@ import {
   getStagePillClasses,
   inferModuleFromJobType,
   isFormCJob,
+  normalizeClientIdKey,
   normalizeComplianceChecklist,
   normalizeFyeMonthString,
   resolveJobDisplayFye,
 } from '../../lib/jobUtils';
+import { computeCp204CurrentEstimatedTax } from '../CP204/cp204Utils';
 import { useAuth } from '../../context/AuthContext';
 import { JobSavePayload, useData } from '../../context/DataContext';
 import { StatusPill } from '../../components/StatusPill';
@@ -181,6 +186,9 @@ function createEmptyJob(module: JobModule): JobSavePayload {
     submissionReference: '',
     personNo: '',
     yaSequence: '',
+    totalTax: 0,
+    cp204Payment: 0,
+    underEstimatePenalty: 0,
     finalTaxPayable: 0,
     finalTaxPayableDate: '',
     formEStatus: safeModule === 'Form E' ? 'Pending' : '',
@@ -210,7 +218,7 @@ export const JobModal: React.FC<JobModalProps> = ({
   onClose,
 }) => {
   const { isReadOnly, isManagerOrAdmin, role } = useAuth();
-  const { clients, staff, saveJob, getSettingsByGroup, getHistoryForJob } = useData();
+  const { clients, jobs, staff, cp204Records, saveJob, getSettingsByGroup, getHistoryForJob } = useData();
 
   const [tab, setTab] = useState<JobModalTab>(initialTab);
   const [form, setForm] = useState<JobSavePayload>(() => createEmptyJob(defaultModule));
@@ -280,6 +288,9 @@ export const JobModal: React.FC<JobModalProps> = ({
           submissionReference: job.submissionReference ?? '',
           personNo: job.personNo ?? '',
           yaSequence: job.yaSequence ?? '',
+          totalTax: job.totalTax ?? 0,
+          cp204Payment: job.cp204Payment ?? 0,
+          underEstimatePenalty: job.underEstimatePenalty ?? 0,
           finalTaxPayable: job.finalTaxPayable ?? job.taxPayable ?? 0,
           finalTaxPayableDate: job.finalTaxPayableDate ?? '',
           formEStatus: job.formEStatus ?? '',
@@ -347,6 +358,158 @@ export const JobModal: React.FC<JobModalProps> = ({
     [deadlineAnalysis.finalApplicableDeadline, liveForm.status]
   );
   const jobAuditLog = useMemo(() => (job ? getHistoryForJob(job.id) : []), [job, getHistoryForJob]);
+
+  // Section 107C(10) helper: check matching CP204/CP204A estimate for this Client ID + YA
+  const s107cPenaltyHint = useMemo(() => {
+    const totalTaxVal = safeNum(liveForm.totalTax);
+    if (totalTaxVal <= 0) return null;
+
+    const normClient = normalizeClientIdKey(liveForm.clientId);
+    const yaYr = extractYaYear(liveForm.ya);
+    const yaStr = yaYr !== null ? String(yaYr) : (liveForm.ya || '').trim();
+    if (!normClient || !yaStr) return null;
+
+    const matchingRecs = cp204Records.filter((rec) => {
+      if (normalizeClientIdKey(rec.clientId) !== normClient) return false;
+      const recYaYr = extractYaYear(rec.ya);
+      const recYaStr = recYaYr !== null ? String(recYaYr) : (rec.ya || '').trim();
+      return recYaStr === yaStr;
+    });
+    if (matchingRecs.length === 0) return null;
+
+    const latestRec = [...matchingRecs].sort((a, b) => {
+      const aSec = a.updatedAt?.seconds ?? a.createdAt?.seconds ?? 0;
+      const bSec = b.updatedAt?.seconds ?? b.createdAt?.seconds ?? 0;
+      return bSec - aSec;
+    })[0];
+
+    const computedEst = computeCp204CurrentEstimatedTax(
+      latestRec.originalEstimatedTax,
+      latestRec.revisions
+    );
+    const cp204Est =
+      safeNum(latestRec.currentEstimatedTax) > 0
+        ? safeNum(latestRec.currentEstimatedTax)
+        : computedEst;
+
+    if (cp204Est <= 0) return null;
+
+    const diff = totalTaxVal - cp204Est;
+    const varianceRatio = diff / totalTaxVal;
+    if (varianceRatio <= 0.3) return null;
+
+    // ITA 1967 s.107C(10): 10% penalty on the understatement exceeding 30% of actual tax payable
+    const excessOver30 = diff - 0.3 * totalTaxVal;
+    const estimatedPenalty = Math.max(0, Math.round(excessOver30 * 0.1 * 100) / 100);
+    const variancePct = Math.round(varianceRatio * 1000) / 10;
+
+    return {
+      cp204Est,
+      estimatedPenalty,
+      variancePct,
+    };
+  }, [liveForm.totalTax, liveForm.clientId, liveForm.ya, cp204Records]);
+
+  // CP204 paid instalments helper for matching Client ID + YA
+  const cp204PaidHint = useMemo(() => {
+    const normClient = normalizeClientIdKey(liveForm.clientId);
+    const yaYr = extractYaYear(liveForm.ya);
+    const yaStr = yaYr !== null ? String(yaYr) : (liveForm.ya || '').trim();
+    if (!normClient || !yaStr) return null;
+
+    const matchingRecs = cp204Records.filter((rec) => {
+      if (normalizeClientIdKey(rec.clientId) !== normClient) return false;
+      const recYaYr = extractYaYear(rec.ya);
+      const recYaStr = recYaYr !== null ? String(recYaYr) : (rec.ya || '').trim();
+      return recYaStr === yaStr;
+    });
+    if (matchingRecs.length === 0) return null;
+
+    const latestRec = [...matchingRecs].sort((a, b) => {
+      const aSec = a.updatedAt?.seconds ?? a.createdAt?.seconds ?? 0;
+      const bSec = b.updatedAt?.seconds ?? b.createdAt?.seconds ?? 0;
+      return bSec - aSec;
+    })[0];
+
+    const instList = Array.isArray(latestRec.instalments) ? latestRec.instalments : [];
+    const totalPaid =
+      Math.round(instList.reduce((sum, inst) => sum + Math.max(0, safeNum(inst.amountPaid)), 0) * 100) /
+      100;
+    if (totalPaid <= 0) return null;
+
+    const paidCount = instList.filter((inst) => safeNum(inst.amountPaid) > 0).length;
+    return {
+      totalPaid,
+      paidCount,
+      totalCount: instList.length,
+    };
+  }, [liveForm.clientId, liveForm.ya, cp204Records]);
+
+  // Merged PIC & Reviewer dropdown list: active staffDirectory (CODE — Name), distinct job PIC/Reviewer codes (e.g. WCH (2), SARAH (2)), TO ASSIGN, and -
+  const staffAssignOptions = useMemo(() => {
+    const seenValues = new Set<string>();
+    const activeStaffOpts: Array<{ value: string; label: string }> = [];
+    const extraJobOpts: Array<{ value: string; label: string }> = [];
+
+    const addActive = (codeRaw?: string, nameRaw?: string) => {
+      const code = (codeRaw ?? '').trim();
+      const name = (nameRaw ?? '').trim();
+      const value = code || name;
+      if (!value) return;
+      const key = value.toLowerCase();
+      if (key === '-' || key === 'to assign' || seenValues.has(key)) return;
+      seenValues.add(key);
+      const label =
+        code && name && code.toLowerCase() !== name.toLowerCase()
+          ? `${code} — ${name}`
+          : value;
+      activeStaffOpts.push({ value, label });
+    };
+
+    for (const s of staff) {
+      if (!s.active) continue;
+      addActive(s.staffId, s.staffName);
+    }
+    activeStaffOpts.sort((a, b) => a.label.localeCompare(b.label));
+
+    const activeNameToStaff = new Map<string, { code: string; name: string }>();
+    for (const s of staff) {
+      if (!s.active) continue;
+      const nm = (s.staffName || '').trim();
+      const cd = (s.staffId || '').trim();
+      if (nm) activeNameToStaff.set(nm.toLowerCase(), { code: cd, name: nm });
+    }
+
+    const pushExtraCode = (raw?: string) => {
+      const val = (raw ?? '').trim();
+      if (!val) return;
+      const key = val.toLowerCase();
+      if (key === '-' || key === 'to assign' || seenValues.has(key)) return;
+      seenValues.add(key);
+      const matchedActive = activeNameToStaff.get(key);
+      const label =
+        matchedActive && matchedActive.code && matchedActive.code.toLowerCase() !== key
+          ? `${matchedActive.code} — ${matchedActive.name}`
+          : val;
+      extraJobOpts.push({ value: val, label });
+    };
+
+    for (const j of jobs) {
+      pushExtraCode(j.taxPic);
+      pushExtraCode(j.reviewer);
+    }
+    pushExtraCode(liveForm.taxPic);
+    pushExtraCode(liveForm.reviewer);
+
+    extraJobOpts.sort((a, b) => a.label.localeCompare(b.label));
+
+    return [
+      { value: '', label: '-' },
+      { value: 'TO ASSIGN', label: 'TO ASSIGN' },
+      ...activeStaffOpts,
+      ...extraJobOpts,
+    ];
+  }, [staff, jobs, liveForm.taxPic, liveForm.reviewer]);
 
   if (!open) return null;
 
@@ -422,10 +585,6 @@ export const JobModal: React.FC<JobModalProps> = ({
     liveForm.mitrsStatus
   );
 
-  const activeStaffNames = Array.from(
-    new Set(staff.filter((s) => s.active).map((s) => s.staffName.trim()).filter(Boolean))
-  );
-
   const patchForm = (
     partial: Partial<JobSavePayload>,
     recomputeBaseDeadlines = false,
@@ -440,6 +599,30 @@ export const JobModal: React.FC<JobModalProps> = ({
         }
       )
     );
+  };
+
+  const patchTaxReconciliation = (
+    partial: Partial<Pick<JobSavePayload, 'totalTax' | 'cp204Payment' | 'underEstimatePenalty'>>
+  ) => {
+    setForm((prev) => {
+      const nextTotal =
+        partial.totalTax !== undefined ? safeNum(partial.totalTax) : safeNum(prev.totalTax);
+      const nextCp204 =
+        partial.cp204Payment !== undefined
+          ? safeNum(partial.cp204Payment)
+          : safeNum(prev.cp204Payment);
+      const nextPenalty =
+        partial.underEstimatePenalty !== undefined
+          ? safeNum(partial.underEstimatePenalty)
+          : safeNum(prev.underEstimatePenalty);
+      const nextBalance = Number((nextTotal - nextCp204 + nextPenalty).toFixed(2));
+      return applyMalaysianJobRules({
+        ...prev,
+        ...partial,
+        finalTaxPayable: nextBalance,
+        taxPayable: nextBalance,
+      });
+    });
   };
 
   const handleRecomputeDeadlines = () => {
@@ -580,11 +763,6 @@ export const JobModal: React.FC<JobModalProps> = ({
               </div>
             )}
 
-            <datalist id="job-staff-list">
-              {activeStaffNames.map((n) => (
-                <option key={n} value={n} />
-              ))}
-            </datalist>
             <datalist id="job-ya-seq-list">
               {YA_SEQUENCE_SUGGESTIONS.map((seq) => (
                 <option key={seq} value={seq} />
@@ -700,27 +878,33 @@ export const JobModal: React.FC<JobModalProps> = ({
                   </div>
                   <div>
                     <label className={labelCls}>PIC</label>
-                    <input
-                      list="job-staff-list"
-                      maxLength={120}
+                    <select
                       disabled={effectiveReadOnly}
-                      value={liveForm.taxPic}
+                      value={(liveForm.taxPic || '').trim() === '-' ? '' : liveForm.taxPic || ''}
                       onChange={(e) => patchForm({ taxPic: e.target.value })}
-                      placeholder="Assign Tax PIC"
                       className={inputCls}
-                    />
+                    >
+                      {staffAssignOptions.map((opt) => (
+                        <option key={`pic-${opt.value || '__blank__'}`} value={opt.value}>
+                          {opt.label}
+                        </option>
+                      ))}
+                    </select>
                   </div>
                   <div>
                     <label className={labelCls}>Reviewer</label>
-                    <input
-                      list="job-staff-list"
-                      maxLength={120}
+                    <select
                       disabled={effectiveReadOnly}
-                      value={liveForm.reviewer}
+                      value={(liveForm.reviewer || '').trim() === '-' ? '' : liveForm.reviewer || ''}
                       onChange={(e) => patchForm({ reviewer: e.target.value })}
-                      placeholder="Assign Manager / HOD"
                       className={inputCls}
-                    />
+                    >
+                      {staffAssignOptions.map((opt) => (
+                        <option key={`rev-${opt.value || '__blank__'}`} value={opt.value}>
+                          {opt.label}
+                        </option>
+                      ))}
+                    </select>
                   </div>
 
                   <div>
@@ -1345,24 +1529,129 @@ export const JobModal: React.FC<JobModalProps> = ({
                     />
                   </div>
 
-                  <div className="sm:col-span-2">
-                    <label className={labelCls}>Final Tax Payable (RM)</label>
-                    <input
-                      type="number"
-                      step="0.01"
-                      disabled={effectiveReadOnly}
-                      value={liveForm.finalTaxPayable}
-                      onChange={(e) =>
-                        patchForm({
-                          finalTaxPayable: Number(e.target.value),
-                          taxPayable: Number(e.target.value),
-                        })
-                      }
-                      className={`${inputCls} font-mono tabular-nums text-right`}
-                    />
+                  {/* 4-Column Form C Tax Reconciliation Grid above Balance Tax Due Date */}
+                  <div className="sm:col-span-2 lg:col-span-4 pt-2 border-t border-slate-100">
+                    <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
+                      <div>
+                        <label className={labelCls}>Total Tax (RM)</label>
+                        <input
+                          type="number"
+                          step="0.01"
+                          disabled={effectiveReadOnly}
+                          value={liveForm.totalTax ?? 0}
+                          onChange={(e) =>
+                            patchTaxReconciliation({
+                              totalTax: Number(e.target.value),
+                            })
+                          }
+                          className={`${inputCls} font-mono tabular-nums text-right`}
+                        />
+                      </div>
+
+                      <div>
+                        <label className={labelCls}>Less: CP204 Payment (RM)</label>
+                        <input
+                          type="number"
+                          step="0.01"
+                          disabled={effectiveReadOnly}
+                          value={liveForm.cp204Payment ?? 0}
+                          onChange={(e) =>
+                            patchTaxReconciliation({
+                              cp204Payment: Number(e.target.value),
+                            })
+                          }
+                          className={`${inputCls} font-mono tabular-nums text-right`}
+                        />
+                        {cp204PaidHint && (
+                          <div
+                            className="mt-1 flex items-center justify-between gap-1.5 text-[11px] text-teal-800 bg-teal-50 border border-teal-200 rounded px-2 py-0.5"
+                            title={`Sum of ${cp204PaidHint.paidCount} paid CP204 instalment(s) in CP204 Monitoring for YA ${liveForm.ya}`}
+                          >
+                            <span className="truncate font-mono">
+                              CP204 paid: {formatCurrencyRM(cp204PaidHint.totalPaid)}
+                            </span>
+                            {!effectiveReadOnly && (
+                              <button
+                                type="button"
+                                onClick={() =>
+                                  patchTaxReconciliation({
+                                    cp204Payment: cp204PaidHint.totalPaid,
+                                  })
+                                }
+                                className="font-semibold text-teal-700 hover:text-teal-900 hover:underline shrink-0"
+                              >
+                                Apply
+                              </button>
+                            )}
+                          </div>
+                        )}
+                      </div>
+
+                      <div>
+                        <label className={labelCls}>Add: Under Estimate Penalty (RM)</label>
+                        <input
+                          type="number"
+                          step="0.01"
+                          disabled={effectiveReadOnly}
+                          value={liveForm.underEstimatePenalty ?? 0}
+                          onChange={(e) =>
+                            patchTaxReconciliation({
+                              underEstimatePenalty: Number(e.target.value),
+                            })
+                          }
+                          className={`${inputCls} font-mono tabular-nums text-right`}
+                        />
+                        {s107cPenaltyHint && (
+                          <div
+                            className="mt-1 flex items-center justify-between gap-1.5 text-[11px] text-amber-800 bg-amber-50 border border-amber-200 rounded px-2 py-0.5"
+                            title={`CP204 Est: ${formatCurrencyRM(
+                              s107cPenaltyHint.cp204Est
+                            )} (${s107cPenaltyHint.variancePct}% variance > 30%). Formula: 10% × [(Total Tax − CP204 Est) − 30% × Total Tax]`}
+                          >
+                            <span className="truncate font-mono">
+                              s.107C 10% est: {formatCurrencyRM(s107cPenaltyHint.estimatedPenalty)}
+                            </span>
+                            {!effectiveReadOnly && (
+                              <button
+                                type="button"
+                                onClick={() =>
+                                  patchTaxReconciliation({
+                                    underEstimatePenalty: s107cPenaltyHint.estimatedPenalty,
+                                  })
+                                }
+                                className="font-semibold text-teal-700 hover:text-teal-900 hover:underline shrink-0"
+                              >
+                                Apply
+                              </button>
+                            )}
+                          </div>
+                        )}
+                      </div>
+
+                      <div>
+                        <label className={labelCls}>Balance Tax Payable (RM)</label>
+                        <input
+                          type="number"
+                          step="0.01"
+                          disabled={effectiveReadOnly}
+                          value={liveForm.finalTaxPayable}
+                          onChange={(e) =>
+                            patchForm({
+                              finalTaxPayable: Number(e.target.value),
+                              taxPayable: Number(e.target.value),
+                            })
+                          }
+                          className={`${inputCls} font-mono tabular-nums text-right font-semibold`}
+                        />
+                        <div className="mt-1 text-[10px] text-slate-400 text-right">
+                          Auto: Total − CP204 + Penalty
+                        </div>
+                      </div>
+                    </div>
                   </div>
+
                   <div className="sm:col-span-2">
-                    <label className={labelCls}>Final Tax Payable Date</label>
+                    <label className={labelCls}>Balance Tax Due Date</label>
                     <input
                       type="date"
                       disabled={effectiveReadOnly}

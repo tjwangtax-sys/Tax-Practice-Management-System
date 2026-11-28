@@ -530,3 +530,149 @@ export function recomputeJobDeadlinesAndStatus(
         : 'Batch Re-compute Deadlines & Status',
   };
 }
+
+export const CLOSED_JOB_WORK_STATUSES = new Set([
+  'completed',
+  'submitted',
+  'filed',
+  'closed',
+  'cancelled',
+  'billed',
+  'paid',
+  'not applicable',
+  'n/a',
+]);
+
+/**
+ * Returns true if a job is still open (not Completed / Closed / Cancelled / N/A).
+ */
+export function isJobOpenForWork(job: Pick<TaxJob, 'status'>): boolean {
+  const s = (job.status || '').trim().toLowerCase();
+  return !CLOSED_JOB_WORK_STATUSES.has(s);
+}
+
+/**
+ * Returns the primary ISO deadline date for workload scheduling (Final Applicable -> Due -> Internal).
+ */
+export function getEffectiveJobDeadline(
+  job: Pick<TaxJob, 'finalApplicableDeadline' | 'dueDate' | 'internalDeadline'>
+): string {
+  const candidates = [job.finalApplicableDeadline, job.dueDate, job.internalDeadline];
+  for (const c of candidates) {
+    if (isIsoDateString(c)) return c!.trim();
+  }
+  return '';
+}
+
+function formatLocalIso(d: Date): string {
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, '0');
+  const day = String(d.getDate()).padStart(2, '0');
+  return `${y}-${m}-${day}`;
+}
+
+/**
+ * Returns the Monday–Sunday ISO date bounds (YYYY-MM-DD) for the week containing referenceDate.
+ */
+export function getCurrentWeekRangeIso(referenceDate: Date = new Date()): {
+  weekStartIso: string;
+  weekEndIso: string;
+} {
+  const base = new Date(
+    referenceDate.getFullYear(),
+    referenceDate.getMonth(),
+    referenceDate.getDate()
+  );
+  const dow = base.getDay(); // 0=Sun, 1=Mon, ..., 6=Sat
+  const diffToMonday = dow === 0 ? -6 : 1 - dow;
+  const monday = new Date(base);
+  monday.setDate(base.getDate() + diffToMonday);
+  const sunday = new Date(monday);
+  sunday.setDate(monday.getDate() + 6);
+  return {
+    weekStartIso: formatLocalIso(monday),
+    weekEndIso: formatLocalIso(sunday),
+  };
+}
+
+/**
+ * Returns true if a job is due or scheduled within the given Monday–Sunday week bounds.
+ */
+export function isJobDueThisWeek(
+  job: Pick<TaxJob, 'finalApplicableDeadline' | 'dueDate' | 'internalDeadline'>,
+  weekStartIso: string,
+  weekEndIso: string
+): boolean {
+  const datesToCheck = [
+    getEffectiveJobDeadline(job),
+    isIsoDateString(job.internalDeadline) ? job.internalDeadline!.trim() : '',
+  ].filter(Boolean);
+  return datesToCheck.some((d) => d >= weekStartIso && d <= weekEndIso);
+}
+
+export interface StaffIdentityMatcherInput {
+  staffId?: string | null;
+  staffName?: string | null;
+  email?: string | null;
+  userEmail?: string | null;
+  displayName?: string | null;
+}
+
+/**
+ * Builds normalized lowercase identity keys for the logged-in staff member:
+ * staffCode (e.g. "ec"), displayName (e.g. "elaine"), and email prefix (before "@").
+ */
+export function buildLoggedInStaffMatchKeys(identity: StaffIdentityMatcherInput): Set<string> {
+  const keys = new Set<string>();
+  const add = (raw?: string | null) => {
+    const clean = (raw ?? '').trim().toLowerCase();
+    if (clean) keys.add(clean);
+  };
+  add(identity.staffId);
+  add(identity.staffName);
+  add(identity.displayName);
+  for (const em of [identity.email, identity.userEmail]) {
+    const cleanEmail = (em ?? '').trim().toLowerCase();
+    if (cleanEmail.includes('@')) {
+      add(cleanEmail.split('@')[0]);
+    }
+  }
+  return keys;
+}
+
+/**
+ * Matches a job PIC / Reviewer string against the logged-in user's staffCode, displayName, or email prefix.
+ */
+export function matchesLoggedInStaff(
+  assignee: string | undefined | null,
+  matchKeys: Set<string>
+): boolean {
+  if (matchKeys.size === 0) return false;
+  const raw = (assignee ?? '').trim().toLowerCase();
+  if (!raw || raw === '-' || raw === 'to assign') return false;
+  if (matchKeys.has(raw)) return true;
+
+  // Support "CODE — Name" or "CODE - Name" combined labels if stored
+  const parts = raw
+    .split(/\s*[—–-]\s*/)
+    .map((p) => p.trim())
+    .filter(Boolean);
+  if (parts.length > 1 && parts.some((p) => matchKeys.has(p))) {
+    return true;
+  }
+  return false;
+}
+
+/**
+ * Returns true if the job's PIC or Reviewer matches the logged-in staff member.
+ */
+export function isJobAssignedToLoggedInStaff(
+  job: Pick<TaxJob, 'taxPic' | 'reviewer'>,
+  matchKeys: Set<string>
+): boolean {
+  return (
+    matchesLoggedInStaff(job.taxPic, matchKeys) ||
+    matchesLoggedInStaff(job.reviewer, matchKeys)
+  );
+}
+

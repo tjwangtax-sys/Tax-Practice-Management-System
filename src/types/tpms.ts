@@ -216,6 +216,9 @@ export interface YaMonitoringItem {
   mitrsStatus?: string;
   cp204Estimate?: string;
   cp204Exempt?: boolean;
+  totalTax?: string;
+  cp204Payment?: string;
+  underEstimatePenalty?: string;
   formEStatus?: string;
   formESubmissionDate?: string;
 }
@@ -352,6 +355,9 @@ export interface TaxJob {
   submissionReference?: string;
   personNo?: string;
   yaSequence?: string;
+  totalTax?: number;
+  cp204Payment?: number;
+  underEstimatePenalty?: number;
   finalTaxPayable?: number;
   finalTaxPayableDate?: string;
   // Form E sub-statuses
@@ -691,6 +697,13 @@ export interface NavigationFilterPreset {
   ya?: string;
   search?: string;
   jobId?: string;
+  assignedToMe?: boolean;
+  openOnly?: boolean;
+  dueThisWeek?: boolean;
+  overdueOnly?: boolean;
+  dueTodayOnly?: boolean;
+  clientStatus?: string;
+  category?: 'Corporate' | 'Individual' | 'All';
   nonce: number;
 }
 

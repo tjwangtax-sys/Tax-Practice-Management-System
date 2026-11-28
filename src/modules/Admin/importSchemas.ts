@@ -144,7 +144,8 @@ export const IMPORT_TARGETS: ImportTargetDefinition[] = [
       'Date Documents Requested', 'Date Documents Received', 'Draft Date', 'Review Date',
       'Client Confirmation Date', 'YA Status', 'Auditor', 'Accounts Status', 'Account Book-In Date',
       'Account Return Date', 'Account Return Status', 'Submission Status', 'Submission Reference',
-      'Person No', 'YA Sequence', 'Final Tax Payable', 'Final Tax Payable Date', 'Form E Status',
+      'Person No', 'YA Sequence', 'Total Tax', 'Less: CP204 Payment', 'Under Estimate Penalty',
+      'Balance Tax Payable', 'Balance Tax Due Date', 'Form E Status',
       'CP8D Status', 'Form EA Status', 'Completed Date', 'Remarks',
     ],
     previewColumns: [
@@ -933,7 +934,7 @@ export function parseAndValidateRow(
         personNo: pickStr(m, ['Person No', 'personNo'], 60),
         yaSequence: pickStr(m, ['YA Sequence', 'yaSequence'], 40),
         finalTaxPayableDate: normalizeImportDate(
-          pickRaw(m, ['Final Tax Payable Date', 'finalTaxPayableDate'])
+          pickRaw(m, ['Balance Tax Due Date', 'Final Tax Payable Date', 'finalTaxPayableDate'])
         ),
         formEStatus: pickStr(m, ['Form E Status', 'formEStatus'], 60),
         cp8dStatus: pickStr(m, ['CP8D Status', 'cp8dStatus'], 60),
@@ -943,7 +944,19 @@ export function parseAndValidateRow(
       };
 
       const numFields: Array<[string, string[]]> = [
-        ['finalTaxPayable', ['Final Tax Payable', 'finalTaxPayable']],
+        ['totalTax', ['Total Tax', 'Total Tax (RM)', 'totalTax']],
+        [
+          'cp204Payment',
+          ['Less: CP204 Payment', 'Less: CP204 Payment (RM)', 'CP204 Payment', 'CP204 Paid', 'cp204Payment'],
+        ],
+        [
+          'underEstimatePenalty',
+          ['Under Estimate Penalty', 'Add: Under Estimate Penalty (RM)', 'underEstimatePenalty'],
+        ],
+        [
+          'finalTaxPayable',
+          ['Balance Tax Payable', 'Balance Tax Payable (RM)', 'Final Tax Payable', 'Final Tax Payable (RM)', 'finalTaxPayable'],
+        ],
         ['feeAmount', ['Fee Amount', 'feeAmount']],
         ['billedAmount', ['Billed Amount', 'billedAmount']],
         ['hoursSpent', ['Hours Spent', 'hoursSpent']],
