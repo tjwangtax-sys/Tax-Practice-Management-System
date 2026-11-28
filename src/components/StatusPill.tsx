@@ -32,7 +32,7 @@ export const StatusPill: React.FC<StatusPillProps> = ({ group, value, customColo
 
   const normalized = value.trim().toLowerCase();
 
-  // Explicit corporate workflow styling: Pending MITRS (light-blue) & Completed (bright yellow #fef08a / #ca8a04)
+  // Explicit corporate workflow styling: Pending MITRS (light-blue), SME Exempted (soft green/teal), & Completed (bright yellow)
   if (!customColor && normalized === 'pending mitrs') {
     return (
       <span
@@ -49,6 +49,27 @@ export const StatusPill: React.FC<StatusPillProps> = ({ group, value, customColo
     );
   }
 
+  if (
+    !customColor &&
+    (normalized === 'sme exempted' ||
+      normalized === 'sme exempt' ||
+      normalized === 'sme 2-yr exempt')
+  ) {
+    return (
+      <span
+        className="inline-flex items-center px-2 py-0.5 rounded-full text-[11px] font-semibold leading-tight whitespace-nowrap"
+        style={{
+          backgroundColor: '#ecfdf5',
+          borderColor: '#a7f3d0',
+          borderWidth: '1px',
+          color: '#047857',
+        }}
+      >
+        {resolved.label || value}
+      </span>
+    );
+  }
+
   const normalizedGroup = normalizeSettingGroup(group);
 
   if (
@@ -58,7 +79,9 @@ export const StatusPill: React.FC<StatusPillProps> = ({ group, value, customColo
       normalizedGroup === 'CORP STATUS' ||
       normalizedGroup === 'INDIV STATUS' ||
       normalizedGroup === 'FORM E STATUS' ||
-      normalizedGroup === 'CP204 STATUS')
+      normalizedGroup === 'CP204 STATUS' ||
+      normalizedGroup === 'CP204 SUBMISSION STATUS' ||
+      normalizedGroup === 'CP204A REVISIONS SUBMISSION STATUS')
   ) {
     return (
       <span

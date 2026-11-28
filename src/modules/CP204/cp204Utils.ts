@@ -1,11 +1,18 @@
 import {
+  ClientRecord,
+  CP204_REVISION_STATUS_OPTIONS,
+  CP204_SUBMISSION_STATUS_FALLBACK,
   Cp204Instalment,
   Cp204Record,
   Cp204Revision,
   Cp204RevisionMonth,
+  Cp204RevisionStatus,
+  Cp204Status,
   safeNum,
+  TaxJob,
 } from '../../types/tpms';
 import { addCalendarDays, extractFyeMonth, extractYaYear } from '../../lib/deadlineUtils';
+import { normalizeClientIdKey } from '../../lib/jobUtils';
 
 export const CP204_SUBMISSION_FILTERS = [
   'Follow-up required',
@@ -40,6 +47,112 @@ export function generateNextSequentialId(prefix: string, existingIds: string[]):
 }
 
 /**
+ * Normalizes a CP204 initial submission status string while preserving all custom
+ * Controlled Values (e.g. "SME Exempted", "NSME -Follow Up", "NSME -Inactive",
+ * "NSME -Over Due", "Pending Submission", "Self-submit by Client", "Resigned").
+ * Never coerces unrecognized non-empty statuses to "In Progress".
+ */
+export function normalizeCp204Status(
+  raw: unknown,
+  fallback: Cp204Status = 'In Progress'
+): Cp204Status {
+  const s = String(raw ?? '').trim();
+  if (!s) return fallback;
+  const lower = s.toLowerCase().replace(/\s+/g, ' ');
+
+  const exact = CP204_SUBMISSION_STATUS_FALLBACK.find((opt) => opt.toLowerCase() === lower);
+  if (exact) return exact;
+
+  if (
+    lower === 'client self-submit' ||
+    lower === 'client self submit' ||
+    lower === 'self-submit' ||
+    lower === 'self submit' ||
+    lower === 'self-submit by client' ||
+    lower === 'self submit by client' ||
+    lower.includes('self-submit') ||
+    lower.includes('self submit')
+  ) {
+    return 'Self-submit by Client';
+  }
+  if (lower === 'sme exempted' || lower === 'sme exempt') return 'SME Exempted';
+  if (lower === 'pending submission') return 'Pending Submission';
+  if (lower === 'submitted' || lower === 'filed') return 'Submitted';
+  if (lower === 'in progress') return 'In Progress';
+  if (lower === 'resigned') return 'Resigned';
+
+  return s.slice(0, 100);
+}
+
+/**
+ * Normalizes a CP204A revision status string (preserving "Self-submit by Client",
+ * "SME Exempted", "NSME -*", "Reviewed - No Revision Required", "Pending", "Not Required",
+ * and any custom Controlled Values verbatim without coercing to "In Progress").
+ */
+export function normalizeCp204RevisionStatus(
+  raw: unknown,
+  fallback: Cp204RevisionStatus = 'In Progress'
+): Cp204RevisionStatus {
+  const s = String(raw ?? '').trim();
+  if (!s) return fallback;
+  const lower = s.toLowerCase().replace(/\s+/g, ' ');
+
+  const exact = CP204_REVISION_STATUS_OPTIONS.find((opt) => opt.toLowerCase() === lower);
+  if (exact) return exact;
+
+  if (
+    lower === 'client self-submit' ||
+    lower === 'client self submit' ||
+    lower === 'self-submit' ||
+    lower === 'self submit' ||
+    lower === 'self-submit by client' ||
+    lower === 'self submit by client' ||
+    lower.includes('self-submit') ||
+    lower.includes('self submit')
+  ) {
+    return 'Self-submit by Client';
+  }
+  if (
+    lower.includes('no revision') ||
+    lower === 'reviewed - no revision required' ||
+    lower === 'reviewed - no revision'
+  ) {
+    return 'Reviewed - No Revision Required';
+  }
+  if (lower === 'not required' || lower === 'n/a' || lower === 'na' || lower === 'not applicable') {
+    return 'Not Required';
+  }
+  if (lower === 'sme exempted' || lower === 'sme exempt') return 'SME Exempted';
+  if (lower === 'pending submission') return 'Pending Submission';
+  if (lower === 'pending') return 'Pending';
+  if (lower === 'pending review') return 'Pending Review';
+  if (lower === 'submitted' || lower === 'filed') return 'Submitted';
+  if (lower === 'approved') return 'Approved';
+  if (lower === 'completed') return 'Completed';
+  if (lower === 'on hold') return 'On Hold';
+  if (lower === 'in progress') return 'In Progress';
+  if (lower === 'resigned') return 'Resigned';
+
+  return s.slice(0, 100);
+}
+
+/**
+ * Returns true if a CP204A revision status is effective for deriving Current Estimated Tax
+ * (Submitted, Approved, or Self-submit by Client).
+ */
+export function isEffectiveRevisionStatus(status?: string | null): boolean {
+  const norm = (status || '').trim().toLowerCase();
+  return (
+    norm === 'submitted' ||
+    norm === 'approved' ||
+    norm === 'self-submit by client' ||
+    norm === 'client self-submit' ||
+    norm === 'self-submit' ||
+    norm === 'self submit'
+  );
+}
+
+/**
  * Normalizes CP204A revisions and deterministically computes variance = proposedEstimatedTax - previousEstimatedTax.
  */
 export function normalizeCp204Revisions(revisions?: Cp204Revision[]): Cp204Revision[] {
@@ -56,7 +169,7 @@ export function normalizeCp204Revisions(revisions?: Cp204Revision[]): Cp204Revis
       proposedEstimatedTax: prop,
       variance: Math.round((prop - prev) * 100) / 100,
       reason: (r.reason || '').trim().slice(0, 500),
-      reviewStatus: r.reviewStatus || 'In Progress',
+      reviewStatus: normalizeCp204RevisionStatus(r.reviewStatus, 'In Progress'),
       pic: (r.pic || '').trim().slice(0, 120),
       reviewer: (r.reviewer || '').trim().slice(0, 120),
       submissionDeadline: (r.submissionDeadline || '').trim().slice(0, 20),
@@ -69,7 +182,7 @@ export function normalizeCp204Revisions(revisions?: Cp204Revision[]): Cp204Revis
 
 /**
  * Derives currentEstimatedTax from originalEstimatedTax plus revisions ONLY when
- * reviewStatus is 'Approved' or 'Submitted'.
+ * reviewStatus is 'Submitted', 'Approved', or 'Self-submit by Client'.
  */
 export function computeCp204CurrentEstimatedTax(
   originalEstimatedTax: number,
@@ -80,7 +193,7 @@ export function computeCp204CurrentEstimatedTax(
     (a, b) => REVISION_MONTH_ORDER[a.revisionMonth] - REVISION_MONTH_ORDER[b.revisionMonth]
   );
   for (const rev of sorted) {
-    if (rev.reviewStatus === 'Approved' || rev.reviewStatus === 'Submitted') {
+    if (isEffectiveRevisionStatus(rev.reviewStatus)) {
       current = safeNum(rev.proposedEstimatedTax);
     }
   }
@@ -237,18 +350,40 @@ export function classifyCp204SubmissionStatus(
   record: Cp204Record,
   todayStr: string
 ): Exclude<Cp204SubmissionFilter, 'CP204 record missing'> {
-  if (record.status === 'On Hold') return 'On hold';
+  const statusNorm = (record.status || '').trim().toLowerCase();
+  if (statusNorm === 'on hold') return 'On hold';
 
-  const hasRevisionPending = (record.revisions || []).some(
-    (r) => r.reviewStatus === 'In Progress' || r.reviewStatus === 'Pending Review'
-  );
+  if (
+    statusNorm.includes('sme exempt') ||
+    statusNorm.includes('inactive') ||
+    statusNorm === 'resigned'
+  ) {
+    return 'Up to date';
+  }
+
+  const hasRevisionPending = (record.revisions || []).some((r) => {
+    const revNorm = (r.reviewStatus || '').trim().toLowerCase();
+    return (
+      revNorm === 'in progress' ||
+      revNorm === 'pending review' ||
+      revNorm === 'pending submission' ||
+      revNorm === 'pending' ||
+      revNorm.includes('follow up') ||
+      revNorm.includes('over due') ||
+      revNorm.includes('overdue')
+    );
+  });
   const hasOverdueInstalment = (record.instalments || []).some(
     (inst) => inst.outstandingAmount > 0 && Boolean(inst.dueDate) && inst.dueDate < todayStr
   );
 
   if (
-    record.status === 'In Progress' ||
-    record.status === 'Pending Review' ||
+    statusNorm === 'in progress' ||
+    statusNorm === 'pending review' ||
+    statusNorm === 'pending submission' ||
+    statusNorm.includes('follow up') ||
+    statusNorm.includes('over due') ||
+    statusNorm.includes('overdue') ||
     hasRevisionPending ||
     hasOverdueInstalment
   ) {
@@ -256,13 +391,92 @@ export function classifyCp204SubmissionStatus(
   }
 
   if (
-    (record.status === 'Submitted' ||
-      record.status === 'Self-submit by Client' ||
-      record.status === 'Completed') &&
+    (statusNorm === 'submitted' ||
+      statusNorm === 'self-submit by client' ||
+      statusNorm === 'client self-submit' ||
+      statusNorm === 'completed') &&
     (record.revisions || []).length === 0
   ) {
     return 'CP204 submitted; revisions not recorded';
   }
 
   return 'Up to date';
+}
+
+export type Cp204YaSequence = '1st' | '2nd' | '';
+
+function normalizeFirstSecondSequence(raw?: string | null): Cp204YaSequence {
+  const norm = (raw ?? '').trim().toLowerCase();
+  if (!norm) return '';
+  if (norm === '1' || norm.startsWith('1st') || norm.startsWith('first')) return '1st';
+  if (norm === '2' || norm.startsWith('2nd') || norm.startsWith('second')) return '2nd';
+  return '';
+}
+
+/**
+ * Builds a fast lookup map of `normalizedClientId::yaYear` -> `'1st' | '2nd'`
+ * from Corporate / Form C jobs that already have `yaSequence` recorded.
+ */
+export function buildCorporateJobYaSequenceMap(jobs: TaxJob[]): Map<string, '1st' | '2nd'> {
+  const map = new Map<string, '1st' | '2nd'>();
+  for (const job of jobs) {
+    const seq = normalizeFirstSecondSequence(job.yaSequence);
+    if (!seq) continue;
+    const isCorp =
+      job.module === 'Corporate' ||
+      job.jobType === 'Form C' ||
+      job.jobType === 'MITRS';
+    const clientKey = normalizeClientIdKey(job.clientId);
+    const yaYear = extractYaYear(job.ya);
+    if (!clientKey || yaYear === null) continue;
+    const mapKey = `${clientKey}::${yaYear}`;
+    // Corporate / Form C jobs take priority over any other module
+    if (isCorp || !map.has(mapKey)) {
+      map.set(mapKey, seq);
+    }
+  }
+  return map;
+}
+
+/**
+ * Resolves whether a CP204 row (`clientId` + `ya`) is the company's 1st or 2nd YA by checking:
+ *  1. The linked Client Master record (`firstYa` / `firstYA` and `secondYa`, or `firstYa + 1` for 2nd), and
+ *  2. Any matching Corporate Job (`clientId` + `ya`) with `yaSequence` (`1st` or `2nd`) recorded.
+ */
+export function resolveCp204YaSequence(
+  rowYa: string | undefined | null,
+  matchedClient?: ClientRecord | null,
+  corporateJobYaSeqMap?: Map<string, '1st' | '2nd'>,
+  clientId?: string | null
+): Cp204YaSequence {
+  const yaYear = extractYaYear(rowYa);
+  if (yaYear === null) return '';
+
+  // 1. Check linked Client Master (firstYa / firstYA & secondYa)
+  if (matchedClient) {
+    const firstYaNum = extractYaYear(matchedClient.firstYa || matchedClient.firstYA);
+    const secondYaNum = extractYaYear(matchedClient.secondYa);
+
+    if (firstYaNum !== null && yaYear === firstYaNum) {
+      return '1st';
+    }
+    if (
+      (secondYaNum !== null && yaYear === secondYaNum) ||
+      (firstYaNum !== null && yaYear === firstYaNum + 1)
+    ) {
+      return '2nd';
+    }
+  }
+
+  // 2. Fallback to matching Corporate Job yaSequence (1st or 2nd)
+  if (corporateJobYaSeqMap) {
+    const effectiveClientId = clientId || matchedClient?.clientId || '';
+    const clientKey = normalizeClientIdKey(effectiveClientId);
+    if (clientKey) {
+      const fromJob = corporateJobYaSeqMap.get(`${clientKey}::${yaYear}`);
+      if (fromJob) return fromJob;
+    }
+  }
+
+  return '';
 }

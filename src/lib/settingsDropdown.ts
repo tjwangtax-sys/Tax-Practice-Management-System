@@ -1,4 +1,8 @@
-import { SettingValue, StaffMember } from '../types/tpms';
+import {
+  CP204_SUBMISSION_STATUS_FALLBACK,
+  SettingValue,
+  StaffMember,
+} from '../types/tpms';
 
 export interface DynamicOption {
   value: string;
@@ -106,6 +110,119 @@ export function buildDynamicSelectOptions(
   }
 
   return options;
+}
+
+function buildPreservingStatusOptions(
+  activeSettings: SettingValue[],
+  fallbackList: readonly string[],
+  currentValue?: string | null
+): DynamicOption[] {
+  const options: DynamicOption[] = [];
+  const seenDisplay = new Set<string>();
+  const lookupToIndex = new Map<string, number>();
+
+  const registerLookup = (rawValue: string, idx: number) => {
+    const lower = rawValue.trim().toLowerCase();
+    if (lower && !lookupToIndex.has(lower)) lookupToIndex.set(lower, idx);
+    const norm = normalizeToken(rawValue);
+    if (norm && !lookupToIndex.has(norm)) lookupToIndex.set(norm, idx);
+  };
+
+  const sortedActive = [...activeSettings].sort(
+    (a, b) => (a.sortOrder ?? 0) - (b.sortOrder ?? 0)
+  );
+
+  if (sortedActive.length > 0) {
+    for (const item of sortedActive) {
+      const display = (item.displayName || '').trim();
+      const code = (item.code || '').trim();
+      const label = display || code;
+      if (!label) continue;
+      const dedupeKey = label.toLowerCase();
+      let idx = seenDisplay.has(dedupeKey) ? lookupToIndex.get(dedupeKey) : undefined;
+      if (idx === undefined) {
+        seenDisplay.add(dedupeKey);
+        idx = options.length;
+        options.push({ value: label, label });
+      }
+      if (display) registerLookup(display, idx);
+      if (code) registerLookup(code, idx);
+    }
+  } else {
+    for (const val of fallbackList) {
+      const clean = (val || '').trim();
+      if (!clean) continue;
+      const dedupeKey = clean.toLowerCase();
+      if (seenDisplay.has(dedupeKey)) continue;
+      seenDisplay.add(dedupeKey);
+      const idx = options.length;
+      options.push({ value: clean, label: clean });
+      registerLookup(clean, idx);
+    }
+  }
+
+  const cur = (currentValue || '').trim();
+  if (cur) {
+    const exact = options.find((o) => o.value === cur);
+    if (!exact) {
+      const matchedIdx =
+        lookupToIndex.get(cur.toLowerCase()) ?? lookupToIndex.get(normalizeToken(cur));
+      if (matchedIdx !== undefined) {
+        options[matchedIdx] = { ...options[matchedIdx], value: cur };
+      } else {
+        options.push({ value: cur, label: cur });
+      }
+    }
+  }
+
+  return options;
+}
+
+/**
+ * Builds Initial CP204 Status dropdown options strictly from Controlled Values group
+ * `CP204 SUBMISSION STATUS` (NOT `CP204 STATUS`), sorted by `sortOrder`, with the
+ * 9-item fallback list and preservation of any existing saved status.
+ */
+export function buildCp204SubmissionStatusOptions(
+  getSettingsByGroup: (group: string) => SettingValue[],
+  currentValue?: string | null
+): DynamicOption[] {
+  const activeItems = getSettingsByGroup('CP204 SUBMISSION STATUS');
+  return buildPreservingStatusOptions(activeItems, CP204_SUBMISSION_STATUS_FALLBACK, currentValue);
+}
+
+/**
+ * Builds CP204A Revision Submission Status dropdown options from Controlled Values group
+ * `CP204A REVISIONS SUBMISSION STATUS` (falling back to `CP204 SUBMISSION STATUS` items +
+ * `Reviewed - No Revision Required` + `Not Required`), preserving any existing saved status.
+ */
+export function buildCp204aRevisionStatusOptions(
+  getSettingsByGroup: (group: string) => SettingValue[],
+  currentValue?: string | null
+): DynamicOption[] {
+  const directItems = getSettingsByGroup('CP204A REVISIONS SUBMISSION STATUS');
+  const singularItems =
+    directItems.length > 0 ? directItems : getSettingsByGroup('CP204A REVISION SUBMISSION STATUS');
+
+  if (singularItems.length > 0) {
+    return buildPreservingStatusOptions(singularItems, [], currentValue);
+  }
+
+  const baseSubmissionItems = getSettingsByGroup('CP204 SUBMISSION STATUS');
+  const baseLabels =
+    baseSubmissionItems.length > 0
+      ? [...baseSubmissionItems]
+          .sort((a, b) => (a.sortOrder ?? 0) - (b.sortOrder ?? 0))
+          .map((item) => (item.displayName || item.code || '').trim())
+          .filter(Boolean)
+      : [...CP204_SUBMISSION_STATUS_FALLBACK];
+
+  const fallbackWithRevisionExtras = [
+    ...baseLabels,
+    'Reviewed - No Revision Required',
+    'Not Required',
+  ];
+  return buildPreservingStatusOptions([], fallbackWithRevisionExtras, currentValue);
 }
 
 export interface StaffDropdownOption {

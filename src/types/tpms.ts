@@ -418,31 +418,34 @@ export interface TaxJob {
 // =============================================================================
 // CP204 Monitoring (cp204 collection)
 // =============================================================================
-export const CP204_STATUS_OPTIONS = [
+export const CP204_SUBMISSION_STATUS_FALLBACK = [
   'In Progress',
-  'Pending Review',
+  'NSME -Follow Up',
+  'NSME -Inactive',
+  'NSME -Over Due',
+  'SME Exempted',
+  'Pending Submission',
   'Submitted',
   'Self-submit by Client',
-  'Completed',
-  'On Hold',
+  'Resigned',
 ] as const;
 
-export type Cp204Status = (typeof CP204_STATUS_OPTIONS)[number];
+export const CP204_STATUS_OPTIONS = CP204_SUBMISSION_STATUS_FALLBACK;
+
+export type Cp204Status = string;
 
 export const CP204_REVISION_MONTHS = ['6', '9', '11'] as const;
 export type Cp204RevisionMonth = (typeof CP204_REVISION_MONTHS)[number];
 
-export const CP204_REVISION_STATUS_OPTIONS = [
-  'In Progress',
-  'Pending Review',
-  'Approved',
-  'Submitted',
-  'Completed',
-  'On Hold',
-  'Client Self-Submit',
+export const CP204A_REVISION_STATUS_FALLBACK = [
+  ...CP204_SUBMISSION_STATUS_FALLBACK,
+  'Reviewed - No Revision Required',
+  'Not Required',
 ] as const;
 
-export type Cp204RevisionStatus = (typeof CP204_REVISION_STATUS_OPTIONS)[number];
+export const CP204_REVISION_STATUS_OPTIONS = CP204A_REVISION_STATUS_FALLBACK;
+
+export type Cp204RevisionStatus = string;
 
 export interface Cp204Revision {
   revisionId: string;

@@ -1,7 +1,9 @@
 import * as XLSX from 'xlsx';
 import { triggerBlobDownload } from '../../lib/exportUtils';
+import { normalizeClientIdKey } from '../../lib/jobUtils';
 import { normalizeSettingGroup } from '../../lib/settingsDropdown';
 import { showToast } from '../../lib/toast';
+import { normalizeCp204RevisionStatus, normalizeCp204Status } from '../CP204/cp204Utils';
 import {
   ClientCategory,
   CorrespondenceActionStatus,
@@ -11,9 +13,7 @@ import {
   Cp204Instalment,
   Cp204Revision,
   Cp204RevisionMonth,
-  Cp204RevisionStatus,
   Cp204Status,
-  CP204_REVISION_STATUS_OPTIONS,
   FinanceInvoiceStatus,
   JobModule,
   JobType,
@@ -98,6 +98,31 @@ export interface ParsedImportRow {
   preview: Record<string, string | number>;
   /** For child merge imports (cp204_revisions, cp204_instalments, workDone_allocations) */
   parentDocId?: string;
+  /** Optional reconciliation metadata (e.g. CP204 ID / Client ID + YA upsert matching) */
+  matchMeta?: {
+    hasExplicitCp204Id: boolean;
+    clientYaKey: string;
+    hasExplicitRevisionId?: boolean;
+    presentFields?: string[];
+  };
+}
+
+/**
+ * Normalizes a Client ID + YA pair into a canonical lookup key for CP204 upsert fallback matching
+ * (e.g. "C 233" + "YA 2026" -> "C233::2026").
+ */
+export function buildCp204ClientYaKey(
+  clientId: string | undefined | null,
+  ya: string | undefined | null
+): string {
+  const normClient = normalizeClientIdKey(clientId);
+  const normYa = String(ya ?? '')
+    .trim()
+    .toUpperCase()
+    .replace(/^YA\s*/i, '')
+    .replace(/\s+/g, '');
+  if (!normClient || !normYa) return '';
+  return `${normClient}::${normYa}`;
 }
 
 export const IMPORT_TARGETS: ImportTargetDefinition[] = [
@@ -163,7 +188,8 @@ export const IMPORT_TARGETS: ImportTargetDefinition[] = [
     key: 'cp204',
     label: 'CP204 Master (cp204)',
     collection: 'cp204',
-    description: 'Initial CP204 tax estimates, basis periods, statutory due dates, and PIC assignments.',
+    description:
+      'Initial CP204 tax estimates, basis periods, statutory due dates, and PIC assignments. Matches by CP204 ID first, then falls back to normalized Client ID + YA when CP204 ID is blank.',
     sampleFilenames: ['cp204_master.json', 'cp204.xlsx'],
     templateHeaders: [
       'CP204 ID', 'Client ID', 'Client Name', 'YA', 'FYE', 'Basis Period Start', 'Basis Period End',
@@ -185,11 +211,12 @@ export const IMPORT_TARGETS: ImportTargetDefinition[] = [
     collection: 'cp204',
     isChildMerge: true,
     parentCollection: 'cp204',
-    description: 'Merges CP204A 6th/9th/11th Month revision rows onto matching parent CP204 ID documents.',
+    description:
+      'Merges CP204A 6th/9th/11th Month revision rows onto matching parent CP204 records (by CP204 ID first, or normalized Client ID + YA when CP204 ID is blank).',
     sampleFilenames: ['cp204_revisions.json', 'cp204_revisions.xlsx'],
     templateHeaders: [
-      'CP204 ID', 'Revision Month', 'Previous Estimated Tax', 'Proposed Estimated Tax',
-      'Reason', 'Review Status', 'PIC', 'Reviewer', 'Submission Deadline', 'Submission Date',
+      'CP204 ID', 'Client ID', 'YA', 'Revision Month', 'Previous Estimated Tax', 'Proposed Estimated Tax',
+      'Reason', 'Submission Status', 'PIC', 'Reviewer', 'Submission Deadline', 'Submission Date',
       'Acknowledgement URL', 'Remarks',
     ],
     previewColumns: [
@@ -206,10 +233,11 @@ export const IMPORT_TARGETS: ImportTargetDefinition[] = [
     collection: 'cp204',
     isChildMerge: true,
     parentCollection: 'cp204',
-    description: 'Merges monthly CP204 instalment rows (1–12) onto matching parent CP204 ID documents.',
+    description:
+      'Merges monthly CP204 instalment rows (1–12) onto matching parent CP204 records (by CP204 ID first, or normalized Client ID + YA when CP204 ID is blank).',
     sampleFilenames: ['cp204_instalments.json', 'cp204_instalments.xlsx'],
     templateHeaders: [
-      'CP204 ID', 'Instalment No', 'Due Date', 'Amount Due', 'Amount Paid', 'Payment Date',
+      'CP204 ID', 'Client ID', 'YA', 'Instalment No', 'Due Date', 'Amount Due', 'Amount Paid', 'Payment Date',
       'Payment Reference', 'Payment Verified', 'Follow-Up Status', 'Remarks',
     ],
     previewColumns: [
@@ -655,9 +683,6 @@ const JOB_TYPES: readonly JobType[] = [
   'CP204', 'CP204A', 'CP204B', 'MITRS', 'Tax Audit',
   'RPGT / CKHT', 'Tax Appeal', 'Tax Refund', 'Tax Residency', 'Other',
 ];
-const CP204_STATUSES: readonly Cp204Status[] = [
-  'In Progress', 'Pending Review', 'Submitted', 'Self-submit by Client', 'Completed', 'On Hold',
-];
 const CP204_REV_MONTHS: readonly Cp204RevisionMonth[] = ['6', '9', '11'];
 const PAYMENT_TYPES: readonly TaxPaymentType[] = [
   'CP204 Instalment', 'Final Tax', 'Form C Balance', 'Tax Audit Settlement',
@@ -989,41 +1014,82 @@ export function parseAndValidateRow(
     case 'cp204': {
       const cp204Id = pickStr(m, ['CP204 ID', 'cp204Id', 'ID'], 40);
       const clientId = pickStr(m, ['Client ID', 'clientId'], 40);
-      const clientName = pickStr(m, ['Client Name', 'clientName'], 200);
+      const clientName = pickStr(m, ['Client Name', 'clientName', 'Company Name'], 200);
       const ya = pickStr(m, ['YA', 'Year of Assessment'], 16);
-      if (!cp204Id || !clientId || !clientName || !ya) {
+      const clientYaKey = buildCp204ClientYaKey(clientId, ya);
+
+      if (!cp204Id && !clientYaKey) {
         return {
           rowNumber,
           docId: '',
           valid: false,
-          reason: 'Requires CP204 ID, Client ID, Client Name, and YA',
+          reason: 'Requires CP204 ID, or Client ID + YA to match/create a CP204 record',
           payload: {},
-          preview: { cp204Id: cp204Id || '—', clientName: clientName || '—', ya: ya || '—' },
+          preview: {
+            cp204Id: cp204Id || '—',
+            clientName: clientName || clientId || '—',
+            ya: ya || '—',
+          },
         };
       }
-      const origEst = safeNum(pickRaw(m, ['Original Estimated Tax', 'originalEstimatedTax', 'Original Estimate']), 0);
-      const currEst = safeNum(pickRaw(m, ['Current Estimated Tax', 'currentEstimatedTax', 'Current Estimate']), origEst);
-      const status = matchEnum<Cp204Status>(pickRaw(m, ['Status', 'CP204 Status']), CP204_STATUSES, 'In Progress');
+
+      const rawOrigEst = pickRaw(m, ['Original Estimated Tax', 'originalEstimatedTax', 'Original Estimate']);
+      const rawCurrEst = pickRaw(m, ['Current Estimated Tax', 'currentEstimatedTax', 'Current Estimate']);
+      const origEst = safeNum(rawOrigEst, 0);
+      const currEst = safeNum(rawCurrEst, origEst);
+      const rawStatus = pickRaw(m, [
+        'Status',
+        'CP204 Status',
+        'Submission Status',
+        'CP204 Submission Status',
+      ]);
+      const status: Cp204Status = normalizeCp204Status(rawStatus, 'In Progress');
+
+      const fye = normalizeFyeMonth(pickRaw(m, ['FYE', 'FYE Month']));
+      const basisPeriodStart = normalizeImportDate(pickRaw(m, ['Basis Period Start', 'basisPeriodStart']));
+      const basisPeriodEnd = normalizeImportDate(pickRaw(m, ['Basis Period End', 'basisPeriodEnd']));
+      const originalSubmissionDate = normalizeImportDate(
+        pickRaw(m, ['Original Submission Date', 'originalSubmissionDate'])
+      );
+      const statutoryCp204DueDate = normalizeImportDate(
+        pickRaw(m, ['Statutory CP204 Due Date', 'Statutory Due Date', 'statutoryCp204DueDate'])
+      );
+      const pic = pickStr(m, ['PIC', 'Tax PIC'], 120);
+      const reviewer = pickStr(m, ['Reviewer'], 120);
+      const acknowledgementUrl = pickStr(m, ['Acknowledgement URL', 'acknowledgementUrl'], 500);
+      const remarks = pickStr(m, ['Remarks', 'Notes'], 2000);
+
+      const presentFields: string[] = [];
+      if (rawOrigEst !== undefined) presentFields.push('originalEstimatedTax');
+      if (rawCurrEst !== undefined) presentFields.push('currentEstimatedTax');
+      if (rawStatus !== undefined) presentFields.push('status');
+      if (fye) presentFields.push('fye');
+      if (basisPeriodStart) presentFields.push('basisPeriodStart');
+      if (basisPeriodEnd) presentFields.push('basisPeriodEnd');
+      if (originalSubmissionDate) presentFields.push('originalSubmissionDate');
+      if (statutoryCp204DueDate) presentFields.push('statutoryCp204DueDate');
+      if (pic) presentFields.push('pic');
+      if (reviewer) presentFields.push('reviewer');
+      if (acknowledgementUrl) presentFields.push('acknowledgementUrl');
+      if (remarks) presentFields.push('remarks');
 
       const payload: Record<string, unknown> = {
         cp204Id,
         clientId,
         clientName,
         ya,
-        fye: normalizeFyeMonth(pickRaw(m, ['FYE', 'FYE Month'])),
-        basisPeriodStart: normalizeImportDate(pickRaw(m, ['Basis Period Start', 'basisPeriodStart'])),
-        basisPeriodEnd: normalizeImportDate(pickRaw(m, ['Basis Period End', 'basisPeriodEnd'])),
+        fye,
+        basisPeriodStart,
+        basisPeriodEnd,
         originalEstimatedTax: origEst,
-        originalSubmissionDate: normalizeImportDate(pickRaw(m, ['Original Submission Date', 'originalSubmissionDate'])),
+        originalSubmissionDate,
         currentEstimatedTax: currEst,
-        statutoryCp204DueDate: normalizeImportDate(
-          pickRaw(m, ['Statutory CP204 Due Date', 'Statutory Due Date', 'statutoryCp204DueDate'])
-        ),
-        pic: pickStr(m, ['PIC', 'Tax PIC'], 120),
-        reviewer: pickStr(m, ['Reviewer'], 120),
+        statutoryCp204DueDate,
+        pic,
+        reviewer,
         status,
-        acknowledgementUrl: pickStr(m, ['Acknowledgement URL', 'acknowledgementUrl'], 500),
-        remarks: pickStr(m, ['Remarks', 'Notes'], 2000),
+        acknowledgementUrl,
+        remarks,
       };
 
       const rawRev = pickRaw(m, ['revisions']);
@@ -1041,85 +1107,154 @@ export function parseAndValidateRow(
           .map((item) => sanitizeFirestorePayload(item));
       }
 
+      const provisionalDocId = cp204Id
+        ? sanitizeDocId(cp204Id, 'CP204')
+        : sanitizeDocId(`CP204_${clientYaKey.replace('::', '_')}`, 'CP204');
+
       return {
         rowNumber,
-        docId: sanitizeDocId(cp204Id, 'CP204'),
+        docId: provisionalDocId,
         valid: true,
         payload,
         preview: {
-          cp204Id,
-          clientName,
-          ya,
+          cp204Id: cp204Id || '(Match by Client ID + YA)',
+          clientName: clientName || clientId || '—',
+          ya: ya || '—',
           originalEstimatedTax: origEst,
           currentEstimatedTax: currEst,
           status,
+        },
+        matchMeta: {
+          hasExplicitCp204Id: Boolean(cp204Id),
+          clientYaKey,
+          presentFields,
         },
       };
     }
 
     case 'cp204_revisions': {
       const cp204Id = pickStr(m, ['CP204 ID', 'cp204Id', 'Parent CP204 ID'], 40);
-      if (!cp204Id) {
-        return { rowNumber, docId: '', valid: false, reason: 'Missing parent CP204 ID', payload: {}, preview: {} };
+      const clientId = pickStr(m, ['Client ID', 'clientId'], 40);
+      const clientName = pickStr(m, ['Client Name', 'clientName', 'Company Name'], 200);
+      const ya = pickStr(m, ['YA', 'Year of Assessment'], 16);
+      const clientYaKey = buildCp204ClientYaKey(clientId, ya);
+
+      if (!cp204Id && !clientYaKey) {
+        return {
+          rowNumber,
+          docId: '',
+          valid: false,
+          reason: 'Requires CP204 ID, or Client ID + YA to match parent CP204 record',
+          payload: {},
+          preview: {},
+        };
       }
-      const rawMonth = pickStr(m, ['Revision Month', 'revisionMonth', 'Month'], 30, '6');
+
+      const rawMonth = pickStr(m, ['Revision Month', 'revisionMonth', 'Month', 'CP204A Month'], 30, '6');
       let revMonth: Cp204RevisionMonth = '6';
       if (rawMonth.includes('11')) revMonth = '11';
       else if (rawMonth.includes('9')) revMonth = '9';
+      else if (rawMonth.includes('6')) revMonth = '6';
       else revMonth = matchEnum<Cp204RevisionMonth>(rawMonth, CP204_REV_MONTHS, '6');
 
-      const previousEstimatedTax = safeNum(
-        pickRaw(m, ['Previous Estimated Tax', 'previousEstimatedTax', 'Previous Estimate']),
-        0
-      );
-      const proposedEstimatedTax = safeNum(
-        pickRaw(m, ['Proposed Estimated Tax', 'proposedEstimatedTax', 'Revised Estimate', 'revisedEstimate', 'Revised Tax']),
-        0
-      );
+      const rawPrevEst = pickRaw(m, ['Previous Estimated Tax', 'previousEstimatedTax', 'Previous Estimate']);
+      const rawPropEst = pickRaw(m, [
+        'Proposed Estimated Tax',
+        'proposedEstimatedTax',
+        'Revised Estimate',
+        'revisedEstimate',
+        'Revised Tax',
+      ]);
+      const previousEstimatedTax = safeNum(rawPrevEst, 0);
+      const proposedEstimatedTax = safeNum(rawPropEst, 0);
       const submissionDate = normalizeImportDate(pickRaw(m, ['Submission Date', 'submissionDate']));
-      const reviewStatus = matchEnum<Cp204RevisionStatus>(
-        pickRaw(m, ['Review Status', 'reviewStatus', 'Status']),
-        CP204_REVISION_STATUS_OPTIONS,
+      const rawRevStatus = pickRaw(m, [
+        'Submission Status',
+        'submissionStatus',
+        'Review Status',
+        'reviewStatus',
+        'Status',
+      ]);
+      const reviewStatus = normalizeCp204RevisionStatus(
+        rawRevStatus,
         submissionDate ? 'Submitted' : 'In Progress'
       );
-      const parentDocId = sanitizeDocId(cp204Id, 'CP204');
-      const revisionId =
-        pickStr(m, ['Revision ID', 'revisionId'], 40) || `${parentDocId}-R${revMonth}`;
+      const parentDocId = cp204Id ? sanitizeDocId(cp204Id, 'CP204') : '';
+      const explicitRevisionId = pickStr(m, ['Revision ID', 'revisionId'], 40);
+      const revisionId = explicitRevisionId || `${parentDocId || 'CP204'}-R${revMonth}`;
+      const reason = pickStr(m, ['Reason', 'Revision Reason'], 300);
+      const pic = pickStr(m, ['PIC', 'Tax PIC'], 120);
+      const reviewer = pickStr(m, ['Reviewer'], 120);
+      const submissionDeadline = normalizeImportDate(
+        pickRaw(m, ['Submission Deadline', 'submissionDeadline'])
+      );
+      const acknowledgementUrl = pickStr(m, ['Acknowledgement URL', 'acknowledgementUrl'], 500);
+      const remarks = pickStr(m, ['Remarks', 'Notes'], 500);
+
+      const presentFields: string[] = [];
+      if (rawPrevEst !== undefined) presentFields.push('previousEstimatedTax');
+      if (rawPropEst !== undefined) presentFields.push('proposedEstimatedTax');
+      if (rawRevStatus !== undefined) presentFields.push('reviewStatus');
+      if (reason) presentFields.push('reason');
+      if (pic) presentFields.push('pic');
+      if (reviewer) presentFields.push('reviewer');
+      if (submissionDeadline) presentFields.push('submissionDeadline');
+      if (submissionDate) presentFields.push('submissionDate');
+      if (acknowledgementUrl) presentFields.push('acknowledgementUrl');
+      if (remarks) presentFields.push('remarks');
+
       const revObj: Cp204Revision = {
         revisionId,
         revisionMonth: revMonth,
         previousEstimatedTax,
         proposedEstimatedTax,
         variance: Math.round((proposedEstimatedTax - previousEstimatedTax) * 100) / 100,
-        reason: pickStr(m, ['Reason', 'Revision Reason'], 300),
+        reason,
         reviewStatus,
-        pic: pickStr(m, ['PIC', 'Tax PIC'], 120),
-        reviewer: pickStr(m, ['Reviewer'], 120),
-        submissionDeadline: normalizeImportDate(pickRaw(m, ['Submission Deadline', 'submissionDeadline'])),
+        pic,
+        reviewer,
+        submissionDeadline,
         submissionDate,
-        acknowledgementUrl: pickStr(m, ['Acknowledgement URL', 'acknowledgementUrl'], 500),
-        remarks: pickStr(m, ['Remarks', 'Notes'], 500),
+        acknowledgementUrl,
+        remarks,
       };
       return {
         rowNumber,
-        docId: `${parentDocId}_M${revMonth}`,
+        docId: parentDocId ? `${parentDocId}_M${revMonth}` : `PENDING_${clientYaKey}_M${revMonth}`,
         parentDocId,
         valid: true,
-        payload: { cp204Id, revision: revObj },
+        payload: { cp204Id, clientId, clientName, ya, revision: revObj },
         preview: {
-          cp204Id,
+          cp204Id: cp204Id || `${clientId} · YA ${ya}`,
           revisionMonth: `${revMonth}th Month`,
           proposedEstimatedTax,
           submissionDate: submissionDate || '—',
           reviewStatus,
+        },
+        matchMeta: {
+          hasExplicitCp204Id: Boolean(cp204Id),
+          clientYaKey,
+          hasExplicitRevisionId: Boolean(explicitRevisionId),
+          presentFields,
         },
       };
     }
 
     case 'cp204_instalments': {
       const cp204Id = pickStr(m, ['CP204 ID', 'cp204Id', 'Parent CP204 ID'], 40);
-      if (!cp204Id) {
-        return { rowNumber, docId: '', valid: false, reason: 'Missing parent CP204 ID', payload: {}, preview: {} };
+      const clientId = pickStr(m, ['Client ID', 'clientId'], 40);
+      const ya = pickStr(m, ['YA', 'Year of Assessment'], 16);
+      const clientYaKey = buildCp204ClientYaKey(clientId, ya);
+
+      if (!cp204Id && !clientYaKey) {
+        return {
+          rowNumber,
+          docId: '',
+          valid: false,
+          reason: 'Requires CP204 ID, or Client ID + YA to match parent CP204 record',
+          payload: {},
+          preview: {},
+        };
       }
       const instalmentNo = Math.max(
         1,
@@ -1144,10 +1279,10 @@ export function parseAndValidateRow(
           ? 'Partially Paid'
           : 'Pending'
       );
-      const parentDocId = sanitizeDocId(cp204Id, 'CP204');
+      const parentDocId = cp204Id ? sanitizeDocId(cp204Id, 'CP204') : '';
       const instalmentId =
         pickStr(m, ['Instalment ID', 'instalmentId'], 40) ||
-        `${parentDocId}-I${String(instalmentNo).padStart(2, '0')}`;
+        `${parentDocId || 'CP204'}-I${String(instalmentNo).padStart(2, '0')}`;
       const instObj: Cp204Instalment = {
         instalmentId,
         instalmentNo,
@@ -1163,17 +1298,23 @@ export function parseAndValidateRow(
       };
       return {
         rowNumber,
-        docId: `${parentDocId}_I${instalmentNo}`,
+        docId: parentDocId
+          ? `${parentDocId}_I${instalmentNo}`
+          : `PENDING_${clientYaKey}_I${instalmentNo}`,
         parentDocId,
         valid: true,
-        payload: { cp204Id, instalment: instObj },
+        payload: { cp204Id, clientId, ya, instalment: instObj },
         preview: {
-          cp204Id,
+          cp204Id: cp204Id || `${clientId} · YA ${ya}`,
           instalmentNo,
           dueDate: dueDate || '—',
           amountDue,
           amountPaid,
           followUpStatus,
+        },
+        matchMeta: {
+          hasExplicitCp204Id: Boolean(cp204Id),
+          clientYaKey,
         },
       };
     }

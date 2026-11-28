@@ -1072,21 +1072,19 @@ export const DataProvider: React.FC<{ children: React.ReactNode }> = ({ children
         return { label: raw, color: '#CA8A04' };
       }
 
-      if (
-        key.includes('active') ||
-        key.includes('completed') ||
-        key.includes('paid') ||
-        key.includes('filed') ||
-        key.includes('submitted') ||
-        key.includes('appointed') ||
-        key.includes('collected') ||
-        key.includes('received')
-      ) {
-        return { label: raw, color: '#15803D' };
+      if (key.includes('self-submit') || key.includes('self submit')) {
+        return { label: raw, color: '#0F766E' };
+      }
+      if (key.includes('exempt')) {
+        return { label: raw, color: '#047857' };
+      }
+      if (key.includes('inactive')) {
+        return { label: raw, color: '#64748B' };
       }
       if (
         key.includes('resigned') ||
         key.includes('overdue') ||
+        key.includes('over due') ||
         key.includes('urgent') ||
         key.includes('cancel') ||
         key.includes('revoked') ||
@@ -1095,7 +1093,21 @@ export const DataProvider: React.FC<{ children: React.ReactNode }> = ({ children
         return { label: raw, color: '#B91C1C' };
       }
       if (
+        key.includes('active') ||
+        key.includes('completed') ||
+        key.includes('paid') ||
+        key.includes('filed') ||
+        key.includes('submitted') ||
+        key.includes('approved') ||
+        key.includes('appointed') ||
+        key.includes('collected') ||
+        key.includes('received')
+      ) {
+        return { label: raw, color: '#15803D' };
+      }
+      if (
         key.includes('pending') ||
+        key.includes('follow up') ||
         key.includes('winding') ||
         key.includes('unpaid') ||
         key.includes('open') ||

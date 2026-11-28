@@ -9,11 +9,11 @@ import {
   Layers,
   CalendarPlus,
   ExternalLink,
+  Pencil,
+  RotateCcw,
 } from 'lucide-react';
 import {
   CP204_REVISION_MONTHS,
-  CP204_REVISION_STATUS_OPTIONS,
-  CP204_STATUS_OPTIONS,
   Cp204Instalment,
   Cp204Record,
   Cp204Revision,
@@ -30,12 +30,17 @@ import { StatusPill } from '../../components/StatusPill';
 import { ClientSelectorField } from '../../components/ClientSelectorField';
 import { formatDateDDMMYYYY } from '../../lib/deadlineUtils';
 import { findClientRecordForRow, normalizeFyeMonthString } from '../../lib/jobUtils';
+import {
+  buildCp204aRevisionStatusOptions,
+  buildCp204SubmissionStatusOptions,
+} from '../../lib/settingsDropdown';
 import { useStaffOptions } from '../../hooks/useStaffOptions';
 import {
   computeCp204BasisDates,
   computeCp204CurrentEstimatedTax,
   computeRevisionDeadline,
   generateTwelveCp204Instalments,
+  isEffectiveRevisionStatus,
   validateCp204Instalments,
 } from './cp204Utils';
 
@@ -59,7 +64,7 @@ export const Cp204AdvancedModal: React.FC<Cp204AdvancedModalProps> = ({
   onClose,
 }) => {
   const { isReadOnly } = useAuth();
-  const { clients, staff, cp204Records, saveCp204, batchCreateCp204 } = useData();
+  const { clients, cp204Records, saveCp204, batchCreateCp204, getSettingsByGroup } = useData();
 
   const [tab, setTab] = useState<Cp204AdvancedTab>(initialTab);
   const [selectedRecordId, setSelectedRecordId] = useState<string>('');
@@ -71,6 +76,7 @@ export const Cp204AdvancedModal: React.FC<Cp204AdvancedModalProps> = ({
   const [bulkClientId, setBulkClientId] = useState('');
   const [yaFrom, setYaFrom] = useState(String(new Date().getFullYear()));
   const [yaTo, setYaTo] = useState(String(new Date().getFullYear() + 2));
+  const [bulkStatus, setBulkStatus] = useState<Cp204Status>('In Progress');
 
   // Tab 2/3/4: Working copy of selected CP204 record
   const [draft, setDraft] = useState<Cp204SavePayload | null>(null);
@@ -79,27 +85,124 @@ export const Cp204AdvancedModal: React.FC<Cp204AdvancedModalProps> = ({
     fye: false,
   });
 
+  // Tab 3: Single Add / Edit Revision Form state
+  const [editingRevIdx, setEditingRevIdx] = useState<number | null>(null);
+  const [revFormDirty, setRevFormDirty] = useState(false);
+  const [revPicInherited, setRevPicInherited] = useState(false);
+  const [revForm, setRevForm] = useState<Cp204Revision>({
+    revisionId: '',
+    revisionMonth: '6',
+    previousEstimatedTax: 0,
+    proposedEstimatedTax: 0,
+    variance: 0,
+    reason: '',
+    reviewStatus: 'In Progress',
+    pic: '',
+    reviewer: '',
+    submissionDeadline: '',
+    submissionDate: '',
+    acknowledgementUrl: '',
+    remarks: '',
+  });
+
   const corporateClients = useMemo(
     () => clients.filter((c) => c.category === 'Corporate' || c.category === 'Other'),
     [clients]
   );
 
-  const currentDraftStaffValues = useMemo(() => {
-    if (!draft) return [] as string[];
-    const vals: string[] = [draft.pic, draft.reviewer];
-    for (const r of draft.revisions) {
-      if (r.pic) vals.push(r.pic);
-      if (r.reviewer) vals.push(r.reviewer);
-    }
-    return vals;
-  }, [draft]);
+  // Per-field active staff dropdown options (excludes Inactive staff unless currently stored on that field)
+  const initialPicOptions = useStaffOptions(draft?.pic);
+  const initialReviewerOptions = useStaffOptions(draft?.reviewer);
+  const revPicOptions = useStaffOptions(revForm.pic);
+  const revReviewerOptions = useStaffOptions(revForm.reviewer);
 
-  const staffOptions = useStaffOptions(currentDraftStaffValues);
+  // Controlled Values dropdown options for CP204 SUBMISSION STATUS & CP204A REVISIONS SUBMISSION STATUS
+  const bulkStatusOptions = useMemo(
+    () => buildCp204SubmissionStatusOptions(getSettingsByGroup, bulkStatus),
+    [getSettingsByGroup, bulkStatus]
+  );
+  const initialStatusOptions = useMemo(
+    () => buildCp204SubmissionStatusOptions(getSettingsByGroup, draft?.status),
+    [getSettingsByGroup, draft?.status]
+  );
+  const revisionStatusOptions = useMemo(
+    () => buildCp204aRevisionStatusOptions(getSettingsByGroup, revForm.reviewStatus),
+    [getSettingsByGroup, revForm.reviewStatus]
+  );
+
+  const computePriorEstimateForMonth = (
+    draftData: Cp204SavePayload,
+    targetMonth: Cp204RevisionMonth,
+    excludeIdx: number | null = null
+  ): number => {
+    const targetNum = Number(targetMonth);
+    const earlierRevs = draftData.revisions.filter(
+      (r, idx) => idx !== excludeIdx && Number(r.revisionMonth) < targetNum
+    );
+    return computeCp204CurrentEstimatedTax(draftData.originalEstimatedTax, earlierRevs);
+  };
+
+  const makeFreshRevisionForm = (
+    draftData: Cp204SavePayload | null,
+    clientFallbackPic = '',
+    parentPicInherited = false
+  ): { rev: Cp204Revision; picInherited: boolean } => {
+    if (!draftData) {
+      return {
+        rev: {
+          revisionId: '',
+          revisionMonth: '6',
+          previousEstimatedTax: 0,
+          proposedEstimatedTax: 0,
+          variance: 0,
+          reason: '',
+          reviewStatus: 'In Progress',
+          pic: '',
+          reviewer: '',
+          submissionDeadline: '',
+          submissionDate: '',
+          acknowledgementUrl: '',
+          remarks: '',
+        },
+        picInherited: false,
+      };
+    }
+    const used = new Set(draftData.revisions.map((r) => r.revisionMonth));
+    const nextMonth: Cp204RevisionMonth = !used.has('6') ? '6' : !used.has('9') ? '9' : '11';
+    const prevTax = computePriorEstimateForMonth(draftData, nextMonth, null);
+    const ownDraftPic = (draftData.pic || '').trim();
+    const fallbackPic = (clientFallbackPic || '').trim();
+    const resolvedPic = ownDraftPic || fallbackPic;
+    const isInherited = (!ownDraftPic && Boolean(fallbackPic)) || (Boolean(ownDraftPic) && parentPicInherited);
+
+    return {
+      rev: {
+        revisionId: `REV-${nextMonth}-${Date.now().toString(36).slice(-4).toUpperCase()}`,
+        revisionMonth: nextMonth,
+        previousEstimatedTax: prevTax,
+        proposedEstimatedTax: prevTax,
+        variance: 0,
+        reason: '',
+        reviewStatus: 'In Progress',
+        pic: resolvedPic,
+        reviewer: draftData.reviewer || '',
+        submissionDeadline: computeRevisionDeadline(draftData.basisPeriodStart, nextMonth),
+        submissionDate: '',
+        acknowledgementUrl: '',
+        remarks: '',
+      },
+      picInherited: isInherited,
+    };
+  };
 
   const loadRecordIntoDraft = (rec: Cp204Record | undefined) => {
     if (!rec) {
       setDraft(null);
       setInheritedFlags({ pic: false, fye: false });
+      setEditingRevIdx(null);
+      setRevFormDirty(false);
+      setRevPicInherited(false);
+      setRevForm(makeFreshRevisionForm(null).rev);
       return;
     }
 
@@ -121,8 +224,7 @@ export const Cp204AdvancedModal: React.FC<Cp204AdvancedModalProps> = ({
 
     const computedDates = resolvedFye ? computeCp204BasisDates(rec.ya, resolvedFye) : null;
 
-    setInheritedFlags({ pic: picInherited, fye: fyeInherited });
-    setDraft({
+    const nextDraft: Cp204SavePayload = {
       cp204Id: rec.cp204Id,
       clientId: rec.clientId,
       clientName: rec.clientName,
@@ -132,7 +234,7 @@ export const Cp204AdvancedModal: React.FC<Cp204AdvancedModalProps> = ({
       basisPeriodEnd: rec.basisPeriodEnd || computedDates?.basisPeriodEnd || '',
       originalEstimatedTax: rec.originalEstimatedTax,
       originalSubmissionDate: rec.originalSubmissionDate,
-      currentEstimatedTax: rec.currentEstimatedTax,
+      currentEstimatedTax: computeCp204CurrentEstimatedTax(rec.originalEstimatedTax, rec.revisions),
       statutoryCp204DueDate: rec.statutoryCp204DueDate || computedDates?.statutoryCp204DueDate || '',
       pic: resolvedPic,
       reviewer: rec.reviewer,
@@ -141,7 +243,15 @@ export const Cp204AdvancedModal: React.FC<Cp204AdvancedModalProps> = ({
       remarks: rec.remarks,
       revisions: rec.revisions.map((r) => ({ ...r })),
       instalments: rec.instalments.map((i) => ({ ...i })),
-    });
+    };
+
+    setInheritedFlags({ pic: picInherited, fye: fyeInherited });
+    setDraft(nextDraft);
+    setEditingRevIdx(null);
+    setRevFormDirty(false);
+    const fresh = makeFreshRevisionForm(nextDraft, clientPic, picInherited);
+    setRevForm(fresh.rev);
+    setRevPicInherited(fresh.picInherited);
   };
 
   useEffect(() => {
@@ -149,6 +259,7 @@ export const Cp204AdvancedModal: React.FC<Cp204AdvancedModalProps> = ({
     setTab(initialTab);
     setError(null);
     setSuccessMsg(null);
+    setBulkStatus('In Progress');
     const recId = initialRecordId || cp204Records[0]?.id || '';
     setSelectedRecordId(recId);
     const rec = cp204Records.find((r) => r.id === recId);
@@ -178,6 +289,7 @@ export const Cp204AdvancedModal: React.FC<Cp204AdvancedModalProps> = ({
       ? normalizeFyeMonthString(matchedClient.fye) || matchedClient.fye.trim()
       : draft.fye;
     const computedDates = needsFye && nextFye ? computeCp204BasisDates(draft.ya, nextFye) : null;
+    const nextBasisStart = draft.basisPeriodStart || computedDates?.basisPeriodStart || '';
 
     setDraft((prev) =>
       prev
@@ -185,7 +297,7 @@ export const Cp204AdvancedModal: React.FC<Cp204AdvancedModalProps> = ({
             ...prev,
             pic: needsPic ? matchedClient.taxPic.trim() : prev.pic,
             fye: nextFye,
-            basisPeriodStart: prev.basisPeriodStart || computedDates?.basisPeriodStart || '',
+            basisPeriodStart: nextBasisStart,
             basisPeriodEnd: prev.basisPeriodEnd || computedDates?.basisPeriodEnd || '',
             statutoryCp204DueDate:
               prev.statutoryCp204DueDate || computedDates?.statutoryCp204DueDate || '',
@@ -196,7 +308,17 @@ export const Cp204AdvancedModal: React.FC<Cp204AdvancedModalProps> = ({
       pic: prev.pic || needsPic,
       fye: prev.fye || needsFye,
     }));
-  }, [open, clients, draft]);
+    if (editingRevIdx === null) {
+      setRevForm((prev) => ({
+        ...prev,
+        pic: !prev.pic && needsPic ? matchedClient.taxPic.trim() : prev.pic,
+        submissionDeadline:
+          prev.submissionDeadline ||
+          (nextBasisStart ? computeRevisionDeadline(nextBasisStart, prev.revisionMonth) : ''),
+      }));
+      if (needsPic) setRevPicInherited(true);
+    }
+  }, [open, clients, draft, editingRevIdx]);
 
   // Keep selected record in sync when user switches record dropdown
   const handleSwitchRecord = (recId: string) => {
@@ -296,7 +418,7 @@ export const Cp204AdvancedModal: React.FC<Cp204AdvancedModalProps> = ({
           statutoryCp204DueDate: dates.statutoryCp204DueDate,
           pic: selectedBulkClient.taxPic || '',
           reviewer: '',
-          status: 'In Progress',
+          status: bulkStatus || 'In Progress',
           acknowledgementUrl: '',
           remarks: '',
           revisions: [],
@@ -329,16 +451,44 @@ export const Cp204AdvancedModal: React.FC<Cp204AdvancedModalProps> = ({
       return;
     }
 
+    // If user filled in a new revision in Tab 3 and clicked footer Save directly, include it cleanly
+    let finalRevisions = draft.revisions;
+    if (tab === 'revisions' && editingRevIdx === null && revFormDirty) {
+      const prev = safeNum(revForm.previousEstimatedTax);
+      const prop = safeNum(revForm.proposedEstimatedTax);
+      const committed: Cp204Revision = {
+        ...revForm,
+        revisionId:
+          revForm.revisionId ||
+          `REV-${revForm.revisionMonth}-${Date.now().toString(36).slice(-4).toUpperCase()}`,
+        previousEstimatedTax: prev,
+        proposedEstimatedTax: prop,
+        variance: Math.round((prop - prev) * 100) / 100,
+      };
+      finalRevisions = [...draft.revisions, committed];
+    }
+
+    const finalCurrentTax = computeCp204CurrentEstimatedTax(
+      draft.originalEstimatedTax,
+      finalRevisions
+    );
+
     setSaving(true);
     try {
-      await saveCp204(
-        {
-          ...draft,
-          currentEstimatedTax: liveCurrentTax,
-        },
-        selectedRecordId
-      );
+      const updatedDraft: Cp204SavePayload = {
+        ...draft,
+        revisions: finalRevisions,
+        currentEstimatedTax: finalCurrentTax,
+      };
+      await saveCp204(updatedDraft, selectedRecordId);
+      setDraft(updatedDraft);
       setInheritedFlags({ pic: false, fye: false });
+      if (editingRevIdx === null && revFormDirty) {
+        setRevFormDirty(false);
+        const fresh = makeFreshRevisionForm(updatedDraft, updatedDraft.pic, false);
+        setRevForm(fresh.rev);
+        setRevPicInherited(false);
+      }
       setSuccessMsg(`Saved ${draft.cp204Id || ''} (${draft.clientName} · YA ${draft.ya}).`);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to save CP204 record.');
@@ -347,48 +497,146 @@ export const Cp204AdvancedModal: React.FC<Cp204AdvancedModalProps> = ({
     }
   };
 
-  // Revision helpers
-  const addRevisionRow = () => {
-    if (!draft || isReadOnly) return;
-    const used = new Set(draft.revisions.map((r) => r.revisionMonth));
-    const nextMonth: Cp204RevisionMonth = !used.has('6') ? '6' : !used.has('9') ? '9' : '11';
-    const prevTax = liveCurrentTax > 0 ? liveCurrentTax : safeNum(draft.originalEstimatedTax);
-    const newRev: Cp204Revision = {
-      revisionId: `REV-${nextMonth}-${Date.now().toString(36).slice(-4).toUpperCase()}`,
-      revisionMonth: nextMonth,
-      previousEstimatedTax: prevTax,
-      proposedEstimatedTax: prevTax,
-      variance: 0,
-      reason: '',
-      reviewStatus: 'In Progress',
-      pic: draft.pic || '',
-      reviewer: draft.reviewer || '',
-      submissionDeadline: computeRevisionDeadline(draft.basisPeriodStart, nextMonth),
-      submissionDate: '',
-      acknowledgementUrl: '',
-      remarks: '',
-    };
-    setDraft({ ...draft, revisions: [...draft.revisions, newRev] });
+  // Single Add / Edit Revision Form helpers
+  const getMatchedClientForDraft = () =>
+    draft
+      ? findClientRecordForRow(clients, {
+          clientId: draft.clientId,
+          clientName: draft.clientName,
+        })
+      : undefined;
+
+  const handleResetToNewRevision = (overrideDraft?: Cp204SavePayload) => {
+    const targetDraft = overrideDraft ?? draft;
+    if (!targetDraft) return;
+    const matchedClient = findClientRecordForRow(clients, {
+      clientId: targetDraft.clientId,
+      clientName: targetDraft.clientName,
+    });
+    const fresh = makeFreshRevisionForm(
+      targetDraft,
+      matchedClient?.taxPic || '',
+      inheritedFlags.pic
+    );
+    setEditingRevIdx(null);
+    setRevForm(fresh.rev);
+    setRevPicInherited(fresh.picInherited);
+    setRevFormDirty(false);
+    setError(null);
   };
 
-  const updateRevision = (idx: number, patch: Partial<Cp204Revision>) => {
+  const handleEditRevisionRow = (idx: number) => {
     if (!draft) return;
-    const next = draft.revisions.map((r, i) => {
-      if (i !== idx) return r;
-      const merged = { ...r, ...patch };
-      const prev = safeNum(merged.previousEstimatedTax);
-      const prop = safeNum(merged.proposedEstimatedTax);
-      return {
-        ...merged,
-        variance: Math.round((prop - prev) * 100) / 100,
-      };
+    const target = draft.revisions[idx];
+    if (!target) return;
+    const matchedClient = getMatchedClientForDraft();
+    const ownRevPic = (target.pic || '').trim();
+    const fallbackPic = (draft.pic || '').trim() || (matchedClient?.taxPic || '').trim();
+    const resolvedPic = ownRevPic || fallbackPic;
+    const isInheritedFromClient =
+      !ownRevPic && !(draft.pic || '').trim() && Boolean((matchedClient?.taxPic || '').trim());
+
+    setEditingRevIdx(idx);
+    setRevForm({
+      ...target,
+      pic: resolvedPic,
+      submissionDeadline:
+        target.submissionDeadline ||
+        computeRevisionDeadline(draft.basisPeriodStart, target.revisionMonth),
     });
-    setDraft({ ...draft, revisions: next });
+    setRevPicInherited(isInheritedFromClient);
+    setRevFormDirty(false);
+    setError(null);
+  };
+
+  const handlePatchRevForm = (
+    patch: Partial<Cp204Revision>,
+    options?: { manualPic?: boolean; monthChanged?: boolean }
+  ) => {
+    if (!draft) return;
+    if (options?.manualPic) {
+      setRevPicInherited(false);
+    }
+
+    const merged: Cp204Revision = { ...revForm, ...patch };
+    if (options?.monthChanged && editingRevIdx === null) {
+      const autoPrev = computePriorEstimateForMonth(draft, merged.revisionMonth, null);
+      merged.previousEstimatedTax = autoPrev;
+      if (!revFormDirty) {
+        merged.proposedEstimatedTax = autoPrev;
+      }
+      merged.submissionDeadline = computeRevisionDeadline(
+        draft.basisPeriodStart,
+        merged.revisionMonth
+      );
+    } else if (options?.monthChanged && !merged.submissionDeadline) {
+      merged.submissionDeadline = computeRevisionDeadline(
+        draft.basisPeriodStart,
+        merged.revisionMonth
+      );
+    }
+
+    const prev = safeNum(merged.previousEstimatedTax);
+    const prop = safeNum(merged.proposedEstimatedTax);
+    const nextRev: Cp204Revision = {
+      ...merged,
+      variance: Math.round((prop - prev) * 100) / 100,
+    };
+
+    setRevForm(nextRev);
+
+    if (editingRevIdx !== null) {
+      // Live-sync edits into draft.revisions so summary table & Current Estimated Tax update immediately
+      const nextRevisions = draft.revisions.map((r, i) => (i === editingRevIdx ? nextRev : r));
+      setDraft({ ...draft, revisions: nextRevisions });
+    } else {
+      setRevFormDirty(true);
+    }
+  };
+
+  const handleCommitRevisionForm = () => {
+    if (!draft || isReadOnly) return;
+    const prev = safeNum(revForm.previousEstimatedTax);
+    const prop = safeNum(revForm.proposedEstimatedTax);
+    const finalRev: Cp204Revision = {
+      ...revForm,
+      revisionId:
+        revForm.revisionId ||
+        `REV-${revForm.revisionMonth}-${Date.now().toString(36).slice(-4).toUpperCase()}`,
+      previousEstimatedTax: prev,
+      proposedEstimatedTax: prop,
+      variance: Math.round((prop - prev) * 100) / 100,
+    };
+
+    if (editingRevIdx !== null) {
+      const nextRevisions = draft.revisions.map((r, i) => (i === editingRevIdx ? finalRev : r));
+      const nextDraft = { ...draft, revisions: nextRevisions };
+      setDraft(nextDraft);
+      handleResetToNewRevision(nextDraft);
+      setSuccessMsg(
+        `Updated ${finalRev.revisionMonth}th Month revision. Click "Save CP204 Changes" to persist.`
+      );
+    } else {
+      const nextRevisions = [...draft.revisions, finalRev];
+      const nextDraft = { ...draft, revisions: nextRevisions };
+      setDraft(nextDraft);
+      handleResetToNewRevision(nextDraft);
+      setSuccessMsg(
+        `Added ${finalRev.revisionMonth}th Month revision. Click "Save CP204 Changes" to persist.`
+      );
+    }
   };
 
   const removeRevision = (idx: number) => {
     if (!draft || isReadOnly) return;
-    setDraft({ ...draft, revisions: draft.revisions.filter((_, i) => i !== idx) });
+    const nextRevisions = draft.revisions.filter((_, i) => i !== idx);
+    const nextDraft = { ...draft, revisions: nextRevisions };
+    setDraft(nextDraft);
+    if (editingRevIdx === idx) {
+      handleResetToNewRevision(nextDraft);
+    } else if (editingRevIdx !== null && editingRevIdx > idx) {
+      setEditingRevIdx(editingRevIdx - 1);
+    }
   };
 
   // Instalment helpers
@@ -541,52 +789,86 @@ export const Cp204AdvancedModal: React.FC<Cp204AdvancedModalProps> = ({
           {/* TAB 1: Client / Year Listing & Bulk Creator */}
           {tab === 'bulk' && (
             <div className="space-y-5">
-              <div className="grid grid-cols-1 lg:grid-cols-12 gap-4 items-end p-4 rounded-lg border border-slate-200 bg-slate-50/70">
-                <div className="lg:col-span-5">
-                  <ClientSelectorField
-                    clients={clients}
-                    value={bulkClientId}
-                    onSelectClient={(c) => setBulkClientId(c?.clientId ?? '')}
-                    label="Corporate Client"
-                    required
-                    filterClients={(c) => c.category === 'Corporate' || c.category === 'Other'}
-                  />
+              <div className="p-4 rounded-lg border border-slate-200 bg-slate-50/70 space-y-3">
+                <div className="grid grid-cols-1 lg:grid-cols-12 gap-3 items-end">
+                  <div className="lg:col-span-5">
+                    <ClientSelectorField
+                      clients={clients}
+                      value={bulkClientId}
+                      onSelectClient={(c) => setBulkClientId(c?.clientId ?? '')}
+                      label="Corporate Client"
+                      required
+                      filterClients={(c) => c.category === 'Corporate' || c.category === 'Other'}
+                    />
+                  </div>
+
+                  <div className="lg:col-span-2">
+                    <label className={labelCls}>YA From</label>
+                    <input
+                      type="number"
+                      min={1990}
+                      max={2100}
+                      disabled={isReadOnly}
+                      value={yaFrom}
+                      onChange={(e) => setYaFrom(e.target.value)}
+                      className={`${inputCls} font-mono`}
+                    />
+                  </div>
+
+                  <div className="lg:col-span-2">
+                    <label className={labelCls}>YA To (Max 21 yrs)</label>
+                    <input
+                      type="number"
+                      min={1990}
+                      max={2100}
+                      disabled={isReadOnly}
+                      value={yaTo}
+                      onChange={(e) => setYaTo(e.target.value)}
+                      className={`${inputCls} font-mono`}
+                    />
+                  </div>
+
+                  <div className="lg:col-span-3">
+                    <label className={labelCls}>Default Status</label>
+                    <select
+                      disabled={isReadOnly}
+                      value={bulkStatus}
+                      onChange={(e) => setBulkStatus(e.target.value as Cp204Status)}
+                      className={inputCls}
+                    >
+                      {bulkStatusOptions.map((opt) => (
+                        <option key={opt.value} value={opt.value}>
+                          {opt.label}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
                 </div>
 
-                <div className="lg:col-span-2">
-                  <label className={labelCls}>YA From</label>
-                  <input
-                    type="number"
-                    min={1990}
-                    max={2100}
-                    disabled={isReadOnly}
-                    value={yaFrom}
-                    onChange={(e) => setYaFrom(e.target.value)}
-                    className={`${inputCls} font-mono`}
-                  />
-                </div>
-
-                <div className="lg:col-span-2">
-                  <label className={labelCls}>YA To (Max 21 yrs)</label>
-                  <input
-                    type="number"
-                    min={1990}
-                    max={2100}
-                    disabled={isReadOnly}
-                    value={yaTo}
-                    onChange={(e) => setYaTo(e.target.value)}
-                    className={`${inputCls} font-mono`}
-                  />
-                </div>
-
-                <div className="lg:col-span-3">
+                <div className="flex flex-wrap items-center justify-between gap-3 pt-2 border-t border-slate-200/80">
+                  <div className="text-[11px] text-slate-600">
+                    {bulkPlan.error ? (
+                      <span className="text-rose-700 font-medium">{bulkPlan.error}</span>
+                    ) : selectedBulkClient ? (
+                      <span>
+                        Will create{' '}
+                        <strong className="text-teal-700">{bulkPlan.missing.length}</strong> missing
+                        YA(s) with status{' '}
+                        <strong className="text-slate-900">{bulkStatus}</strong>;{' '}
+                        <strong className="text-slate-700">{bulkPlan.existing.length}</strong>{' '}
+                        existing preserved untouched.
+                      </span>
+                    ) : (
+                      <span>Select a corporate client to preview missing YA records.</span>
+                    )}
+                  </div>
                   <button
                     type="button"
                     disabled={
                       isReadOnly || saving || !bulkPlan.valid || bulkPlan.missing.length === 0
                     }
                     onClick={() => void handleBulkCreate()}
-                    className="w-full inline-flex items-center justify-center gap-1.5 px-3 py-2 text-xs font-semibold text-white bg-teal-700 hover:bg-teal-800 rounded-md disabled:opacity-50 whitespace-nowrap"
+                    className="inline-flex items-center justify-center gap-1.5 px-3.5 py-2 text-xs font-semibold text-white bg-teal-700 hover:bg-teal-800 rounded-md disabled:opacity-50 whitespace-nowrap"
                   >
                     <Layers className="w-3.5 h-3.5" />
                     {saving
@@ -674,10 +956,15 @@ export const Cp204AdvancedModal: React.FC<Cp204AdvancedModalProps> = ({
                             {formatCurrencyRM(rec.originalEstimatedTax)}
                           </td>
                           <td className="px-3 py-2 font-mono text-right font-semibold text-slate-900">
-                            {formatCurrencyRM(rec.currentEstimatedTax)}
+                            {formatCurrencyRM(
+                              computeCp204CurrentEstimatedTax(
+                                rec.originalEstimatedTax,
+                                rec.revisions
+                              )
+                            )}
                           </td>
                           <td className="px-3 py-2">
-                            <StatusPill group="CP204_STATUS" value={rec.status} />
+                            <StatusPill group="CP204 SUBMISSION STATUS" value={rec.status} />
                           </td>
                           <td className="px-3 py-2 text-right whitespace-nowrap">
                             <button
@@ -847,6 +1134,9 @@ export const Cp204AdvancedModal: React.FC<Cp204AdvancedModalProps> = ({
                       <div className="px-2.5 py-1.5 text-xs font-mono font-bold text-teal-900 bg-teal-50 border border-teal-200 rounded-md text-right">
                         {formatCurrencyRM(liveCurrentTax)}
                       </div>
+                      <p className="mt-1 text-[10px] text-slate-500">
+                        (Updates from Submitted or Self-submit by Client revisions)
+                      </p>
                     </div>
                     <div>
                       <label className={labelCls}>Status</label>
@@ -858,9 +1148,9 @@ export const Cp204AdvancedModal: React.FC<Cp204AdvancedModalProps> = ({
                         }
                         className={inputCls}
                       >
-                        {CP204_STATUS_OPTIONS.map((st) => (
-                          <option key={st} value={st}>
-                            {st}
+                        {initialStatusOptions.map((opt) => (
+                          <option key={opt.value} value={opt.value}>
+                            {opt.label}
                           </option>
                         ))}
                       </select>
@@ -877,7 +1167,7 @@ export const Cp204AdvancedModal: React.FC<Cp204AdvancedModalProps> = ({
                         }}
                         className={inputCls}
                       >
-                        {staffOptions.map((opt) => (
+                        {initialPicOptions.map((opt) => (
                           <option key={opt.value || '__blank__'} value={opt.value}>
                             {opt.label}
                           </option>
@@ -897,7 +1187,7 @@ export const Cp204AdvancedModal: React.FC<Cp204AdvancedModalProps> = ({
                         onChange={(e) => setDraft({ ...draft, reviewer: e.target.value })}
                         className={inputCls}
                       >
-                        {staffOptions.map((opt) => (
+                        {initialReviewerOptions.map((opt) => (
                           <option key={opt.value || '__blank__'} value={opt.value}>
                             {opt.label}
                           </option>
@@ -958,241 +1248,483 @@ export const Cp204AdvancedModal: React.FC<Cp204AdvancedModalProps> = ({
                 </div>
               ) : (
                 <div className="space-y-4">
+                  {/* Estimate Summary Banner */}
                   <div className="flex flex-wrap items-center justify-between gap-2 p-3 rounded-lg bg-slate-50 border border-slate-200">
-                    <div className="text-xs text-slate-700 space-x-3">
+                    <div className="text-xs text-slate-700 flex flex-wrap items-center gap-x-3 gap-y-1">
                       <span>
                         Original Estimate:{' '}
                         <strong className="font-mono">
                           {formatCurrencyRM(draft.originalEstimatedTax)}
                         </strong>
                       </span>
-                      <span>·</span>
+                      <span className="text-slate-300">·</span>
                       <span>
-                        Current Estimated Tax:{' '}
+                        Current Estimated Tax (Auto-derived):{' '}
                         <strong className="font-mono text-teal-800">
                           {formatCurrencyRM(liveCurrentTax)}
                         </strong>
                       </span>
                       <span className="text-[11px] text-slate-500">
-                        (Updates only from Approved or Submitted revisions)
+                        (Updates from Submitted or Self-submit by Client revisions)
                       </span>
                     </div>
                     {!isReadOnly && (
                       <button
                         type="button"
-                        onClick={addRevisionRow}
+                        onClick={() => handleResetToNewRevision()}
                         className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold text-white bg-teal-700 hover:bg-teal-800 rounded-md whitespace-nowrap"
                       >
                         <Plus className="w-3.5 h-3.5" />
-                        Add Revision Row
+                        New Revision
                       </button>
                     )}
                   </div>
 
-                  {draft.revisions.length === 0 ? (
-                    <div className="py-10 text-center border border-dashed border-slate-300 rounded-lg text-xs text-slate-500">
-                      No CP204A revisions recorded for {draft.clientName} (YA {draft.ya}).
+                  {/* TOP: Compact Summary Table */}
+                  <div className="border border-slate-200 rounded-lg overflow-hidden bg-white">
+                    <div className="px-3.5 py-2 bg-slate-100/90 border-b border-slate-200 flex items-center justify-between gap-2">
+                      <span className="text-xs font-semibold text-slate-800">
+                        CP204A Revision Records — 6th, 9th &amp; 11th Month ({draft.revisions.length})
+                      </span>
+                      <span className="text-[11px] text-slate-500 font-mono">
+                        {draft.clientName} · YA {draft.ya}
+                      </span>
                     </div>
-                  ) : (
-                    <div className="space-y-3">
-                      {draft.revisions.map((rev, idx) => (
-                        <div
-                          key={rev.revisionId || idx}
-                          className="p-3.5 rounded-lg border border-slate-200 bg-white space-y-3"
+                    <div className="overflow-x-auto">
+                      <table className="w-full text-xs border-collapse">
+                        <thead className="bg-slate-50 border-b border-slate-200 text-slate-600">
+                          <tr>
+                            <th className="px-3 py-2 text-left font-semibold whitespace-nowrap">
+                              Month
+                            </th>
+                            <th className="px-3 py-2 text-right font-semibold whitespace-nowrap">
+                              Previous Estimate (RM)
+                            </th>
+                            <th className="px-3 py-2 text-right font-semibold whitespace-nowrap">
+                              Proposed Estimate (RM)
+                            </th>
+                            <th className="px-3 py-2 text-right font-semibold whitespace-nowrap">
+                              Variance (RM)
+                            </th>
+                            <th className="px-3 py-2 text-left font-semibold whitespace-nowrap">
+                              Submission Status
+                            </th>
+                            <th className="px-3 py-2 text-left font-semibold whitespace-nowrap">
+                              Submission Date
+                            </th>
+                            <th className="px-3 py-2 text-left font-semibold whitespace-nowrap">
+                              PIC
+                            </th>
+                            <th className="px-3 py-2 text-right font-semibold whitespace-nowrap">
+                              Action
+                            </th>
+                          </tr>
+                        </thead>
+                        <tbody className="divide-y divide-slate-100">
+                          {draft.revisions.length === 0 ? (
+                            <tr>
+                              <td
+                                colSpan={8}
+                                className="px-4 py-7 text-center text-xs text-slate-500"
+                              >
+                                No CP204A revisions recorded yet for {draft.clientName} (YA{' '}
+                                {draft.ya}). Use the form below to add a 6th, 9th, or 11th month
+                                revision.
+                              </td>
+                            </tr>
+                          ) : (
+                            draft.revisions
+                              .map((rev, idx) => ({ rev, idx }))
+                              .sort(
+                                (a, b) => Number(a.rev.revisionMonth) - Number(b.rev.revisionMonth)
+                              )
+                              .map(({ rev, idx }) => {
+                                const isActiveEdit = editingRevIdx === idx;
+                                const varianceVal =
+                                  Math.round(
+                                    (safeNum(rev.proposedEstimatedTax) -
+                                      safeNum(rev.previousEstimatedTax)) *
+                                      100
+                                  ) / 100;
+                                return (
+                                  <tr
+                                    key={rev.revisionId || idx}
+                                    className={`transition-colors ${
+                                      isActiveEdit
+                                        ? 'bg-teal-50/70'
+                                        : 'hover:bg-slate-50'
+                                    }`}
+                                  >
+                                    <td className="px-3 py-2 font-mono font-semibold text-slate-900 whitespace-nowrap">
+                                      <div className="flex items-center gap-1.5">
+                                        <span>{rev.revisionMonth}th Month</span>
+                                        {isActiveEdit && (
+                                          <span className="px-1.5 py-0.5 rounded bg-teal-700 text-white text-[10px] font-sans font-semibold">
+                                            Editing
+                                          </span>
+                                        )}
+                                      </div>
+                                    </td>
+                                    <td className="px-3 py-2 font-mono tabular-nums text-right text-slate-700 whitespace-nowrap">
+                                      {formatCurrencyRM(rev.previousEstimatedTax)}
+                                    </td>
+                                    <td className="px-3 py-2 font-mono tabular-nums text-right font-semibold text-slate-900 whitespace-nowrap">
+                                      {formatCurrencyRM(rev.proposedEstimatedTax)}
+                                    </td>
+                                    <td
+                                      className={`px-3 py-2 font-mono tabular-nums text-right font-medium whitespace-nowrap ${
+                                        varianceVal > 0
+                                          ? 'text-amber-700'
+                                          : varianceVal < 0
+                                          ? 'text-emerald-700'
+                                          : 'text-slate-500'
+                                      }`}
+                                    >
+                                      {varianceVal > 0 ? '+' : ''}
+                                      {formatCurrencyRM(varianceVal)}
+                                    </td>
+                                    <td className="px-3 py-2 whitespace-nowrap">
+                                      <StatusPill
+                                        group="CP204A REVISIONS SUBMISSION STATUS"
+                                        value={rev.reviewStatus}
+                                      />
+                                    </td>
+                                    <td className="px-3 py-2 font-mono tabular-nums text-slate-700 whitespace-nowrap">
+                                      {rev.submissionDate
+                                        ? formatDateDDMMYYYY(rev.submissionDate)
+                                        : '—'}
+                                    </td>
+                                    <td className="px-3 py-2 text-slate-700 whitespace-nowrap">
+                                      {rev.pic || draft.pic || '—'}
+                                    </td>
+                                    <td className="px-3 py-2 text-right whitespace-nowrap">
+                                      <div className="inline-flex items-center gap-1.5">
+                                        <button
+                                          type="button"
+                                          onClick={() => handleEditRevisionRow(idx)}
+                                          className={`inline-flex items-center gap-1 px-2 py-0.5 rounded text-[11px] font-semibold border transition-colors ${
+                                            isActiveEdit
+                                              ? 'bg-teal-700 text-white border-teal-700'
+                                              : 'bg-white text-teal-800 border-teal-200 hover:bg-teal-50'
+                                          }`}
+                                          title="Load revision into form below"
+                                        >
+                                          <Pencil className="w-3 h-3" />
+                                          {isReadOnly ? 'View' : 'Edit'}
+                                        </button>
+                                        {!isReadOnly && (
+                                          <button
+                                            type="button"
+                                            onClick={() => removeRevision(idx)}
+                                            className="p-1 rounded text-slate-400 hover:text-rose-700 hover:bg-rose-50"
+                                            title="Remove revision"
+                                          >
+                                            <Trash2 className="w-3.5 h-3.5" />
+                                          </button>
+                                        )}
+                                      </div>
+                                    </td>
+                                  </tr>
+                                );
+                              })
+                          )}
+                        </tbody>
+                      </table>
+                    </div>
+                  </div>
+
+                  {/* BOTTOM: Single Compact 3-Column Add / Edit Form */}
+                  <div className="border border-slate-200 rounded-lg bg-white overflow-hidden">
+                    <div className="px-4 py-2.5 bg-slate-50 border-b border-slate-200 flex flex-wrap items-center justify-between gap-2">
+                      <div className="flex items-center gap-2">
+                        <h4 className="text-xs font-semibold text-slate-900">
+                          {editingRevIdx !== null
+                            ? `Edit CP204A Revision — ${revForm.revisionMonth}th Month`
+                            : 'Add / Edit CP204A Revision'}
+                        </h4>
+                        {editingRevIdx !== null ? (
+                          <span className="px-2 py-0.5 rounded-full text-[10px] font-semibold bg-teal-50 text-teal-800 border border-teal-200">
+                            Editing Existing ({revForm.revisionId})
+                          </span>
+                        ) : (
+                          <span className="px-2 py-0.5 rounded-full text-[10px] font-medium bg-slate-100 text-slate-600 border border-slate-200">
+                            New Revision Entry
+                          </span>
+                        )}
+                      </div>
+                      {!isReadOnly && (
+                        <button
+                          type="button"
+                          onClick={() => handleResetToNewRevision()}
+                          className="inline-flex items-center gap-1 px-2.5 py-1 text-[11px] font-semibold text-teal-800 bg-white border border-teal-200 hover:bg-teal-50 rounded-md whitespace-nowrap"
                         >
-                          <div className="flex flex-wrap items-center justify-between gap-2 pb-2 border-b border-slate-100">
-                            <div className="flex items-center gap-2">
-                              <span className="font-mono text-xs font-bold text-slate-800">
-                                {rev.revisionMonth}th Month Revision
-                              </span>
-                              <span className="font-mono text-[11px] text-slate-400">
-                                ({rev.revisionId})
-                              </span>
-                              <StatusPill group="CP204_STATUS" value={rev.reviewStatus} />
-                            </div>
-                            {!isReadOnly && (
+                          <RotateCcw className="w-3 h-3" />+ New Revision
+                        </button>
+                      )}
+                    </div>
+
+                    <div className="p-4 space-y-3">
+                      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
+                        {/* Row 1: Month, Previous Estimate (RM), Proposed Estimate (RM) */}
+                        <div>
+                          <label className={labelCls}>Month</label>
+                          <select
+                            disabled={isReadOnly}
+                            value={revForm.revisionMonth}
+                            onChange={(e) =>
+                              handlePatchRevForm(
+                                { revisionMonth: e.target.value as Cp204RevisionMonth },
+                                { monthChanged: true }
+                              )
+                            }
+                            className={inputCls}
+                          >
+                            {CP204_REVISION_MONTHS.map((m) => (
+                              <option key={m} value={m}>
+                                {m}th Month
+                              </option>
+                            ))}
+                          </select>
+                        </div>
+
+                        <div>
+                          <label className={labelCls}>Previous Estimate (RM)</label>
+                          <input
+                            type="number"
+                            step="0.01"
+                            disabled={isReadOnly}
+                            value={revForm.previousEstimatedTax}
+                            onChange={(e) =>
+                              handlePatchRevForm({
+                                previousEstimatedTax: safeNum(e.target.value),
+                              })
+                            }
+                            className={`${inputCls} font-mono text-right`}
+                          />
+                        </div>
+
+                        <div>
+                          <div className="flex items-center justify-between gap-2 mb-1">
+                            <label className="text-[11px] font-medium text-slate-600">
+                              Proposed Estimate (RM)
+                            </label>
+                            <span
+                              className={`font-mono text-[10px] font-semibold tabular-nums ${
+                                revForm.variance > 0
+                                  ? 'text-amber-700'
+                                  : revForm.variance < 0
+                                  ? 'text-emerald-700'
+                                  : 'text-slate-400'
+                              }`}
+                            >
+                              Var: {revForm.variance > 0 ? '+' : ''}
+                              {formatCurrencyRM(revForm.variance)}
+                            </span>
+                          </div>
+                          <input
+                            type="number"
+                            step="0.01"
+                            disabled={isReadOnly}
+                            value={revForm.proposedEstimatedTax}
+                            onChange={(e) =>
+                              handlePatchRevForm({
+                                proposedEstimatedTax: safeNum(e.target.value),
+                              })
+                            }
+                            className={`${inputCls} font-mono text-right`}
+                          />
+                        </div>
+
+                        {/* Row 2: Submission Status, Submission Date, Submission Deadline */}
+                        <div>
+                          <label className={labelCls}>Submission Status</label>
+                          <select
+                            disabled={isReadOnly}
+                            value={revForm.reviewStatus}
+                            onChange={(e) =>
+                              handlePatchRevForm({
+                                reviewStatus: e.target.value as Cp204RevisionStatus,
+                              })
+                            }
+                            className={inputCls}
+                          >
+                            {revisionStatusOptions.map((opt) => (
+                              <option key={opt.value} value={opt.value}>
+                                {opt.label}
+                              </option>
+                            ))}
+                          </select>
+                        </div>
+
+                        <div>
+                          <label className={labelCls}>Submission Date</label>
+                          <input
+                            type="date"
+                            disabled={isReadOnly}
+                            value={revForm.submissionDate}
+                            onChange={(e) =>
+                              handlePatchRevForm({ submissionDate: e.target.value })
+                            }
+                            className={`${inputCls} font-mono`}
+                          />
+                        </div>
+
+                        <div>
+                          <label className={labelCls}>Submission Deadline</label>
+                          <input
+                            type="date"
+                            disabled={isReadOnly}
+                            value={revForm.submissionDeadline}
+                            onChange={(e) =>
+                              handlePatchRevForm({ submissionDeadline: e.target.value })
+                            }
+                            className={`${inputCls} font-mono`}
+                          />
+                        </div>
+
+                        {/* Row 3: PIC, Reviewer, Ack URL */}
+                        <div>
+                          <label className={labelCls}>PIC</label>
+                          <select
+                            disabled={isReadOnly}
+                            value={revForm.pic}
+                            onChange={(e) =>
+                              handlePatchRevForm(
+                                { pic: e.target.value },
+                                { manualPic: true }
+                              )
+                            }
+                            className={inputCls}
+                          >
+                            {revPicOptions.map((opt) => (
+                              <option key={opt.value || '__blank__'} value={opt.value}>
+                                {opt.label}
+                              </option>
+                            ))}
+                          </select>
+                          {revPicInherited && (
+                            <p className="mt-1 text-[10px] font-medium text-teal-700">
+                              Inherited from Client Master
+                            </p>
+                          )}
+                        </div>
+
+                        <div>
+                          <label className={labelCls}>Reviewer</label>
+                          <select
+                            disabled={isReadOnly}
+                            value={revForm.reviewer}
+                            onChange={(e) => handlePatchRevForm({ reviewer: e.target.value })}
+                            className={inputCls}
+                          >
+                            {revReviewerOptions.map((opt) => (
+                              <option key={opt.value || '__blank__'} value={opt.value}>
+                                {opt.label}
+                              </option>
+                            ))}
+                          </select>
+                        </div>
+
+                        <div>
+                          <label className={labelCls}>Ack URL</label>
+                          <div className="flex items-center gap-1.5">
+                            <input
+                              type="url"
+                              disabled={isReadOnly}
+                              value={revForm.acknowledgementUrl}
+                              onChange={(e) =>
+                                handlePatchRevForm({ acknowledgementUrl: e.target.value })
+                              }
+                              placeholder="https://..."
+                              className={inputCls}
+                            />
+                            {revForm.acknowledgementUrl && (
+                              <a
+                                href={revForm.acknowledgementUrl}
+                                target="_blank"
+                                rel="noreferrer"
+                                className="p-1.5 rounded border border-slate-200 text-teal-700 hover:bg-teal-50 shrink-0"
+                                title="Open acknowledgement"
+                              >
+                                <ExternalLink className="w-3.5 h-3.5" />
+                              </a>
+                            )}
+                          </div>
+                        </div>
+
+                        {/* Row 4: Reason & Remarks */}
+                        <div>
+                          <label className={labelCls}>Reason</label>
+                          <input
+                            maxLength={500}
+                            disabled={isReadOnly}
+                            value={revForm.reason}
+                            onChange={(e) => handlePatchRevForm({ reason: e.target.value })}
+                            placeholder="e.g. Revised profit forecast / client self-filed"
+                            className={inputCls}
+                          />
+                        </div>
+
+                        <div className="sm:col-span-2">
+                          <label className={labelCls}>Remarks</label>
+                          <input
+                            maxLength={1000}
+                            disabled={isReadOnly}
+                            value={revForm.remarks}
+                            onChange={(e) => handlePatchRevForm({ remarks: e.target.value })}
+                            placeholder="Optional internal remarks or LHDN filing notes..."
+                            className={inputCls}
+                          />
+                        </div>
+                      </div>
+
+                      {/* Form Action Bar */}
+                      {!isReadOnly && (
+                        <div className="pt-2.5 border-t border-slate-100 flex flex-wrap items-center justify-between gap-2">
+                          <span className="text-[11px] text-slate-500">
+                            {isEffectiveRevisionStatus(revForm.reviewStatus) ? (
+                              <>
+                                Status{' '}
+                                <strong className="text-teal-800">{revForm.reviewStatus}</strong>{' '}
+                                updates Current Estimated Tax to{' '}
+                                <strong className="font-mono text-teal-900">
+                                  {formatCurrencyRM(revForm.proposedEstimatedTax)}
+                                </strong>
+                                .
+                              </>
+                            ) : (
+                              <>
+                                Status <strong>{revForm.reviewStatus}</strong> will not alter
+                                Current Estimated Tax (Updates from Submitted or Self-submit by
+                                Client revisions).
+                              </>
+                            )}
+                          </span>
+                          <div className="flex items-center gap-2">
+                            {editingRevIdx !== null && (
                               <button
                                 type="button"
-                                onClick={() => removeRevision(idx)}
-                                className="inline-flex items-center gap-1 text-[11px] font-medium text-rose-700 hover:underline"
+                                onClick={() => handleResetToNewRevision()}
+                                className="px-3 py-1.5 text-xs font-medium text-slate-700 bg-white border border-slate-200 hover:bg-slate-50 rounded-md"
                               >
-                                <Trash2 className="w-3.5 h-3.5" />
-                                Remove
+                                Done Editing
+                              </button>
+                            )}
+                            {editingRevIdx === null && (
+                              <button
+                                type="button"
+                                onClick={handleCommitRevisionForm}
+                                className="inline-flex items-center gap-1.5 px-3.5 py-1.5 text-xs font-semibold text-white bg-teal-700 hover:bg-teal-800 rounded-md"
+                              >
+                                <Plus className="w-3.5 h-3.5" />
+                                Add Revision to List
                               </button>
                             )}
                           </div>
-
-                          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-3">
-                            <div>
-                              <label className={labelCls}>Month</label>
-                              <select
-                                disabled={isReadOnly}
-                                value={rev.revisionMonth}
-                                onChange={(e) => {
-                                  const m = e.target.value as Cp204RevisionMonth;
-                                  updateRevision(idx, {
-                                    revisionMonth: m,
-                                    submissionDeadline:
-                                      rev.submissionDeadline ||
-                                      computeRevisionDeadline(draft.basisPeriodStart, m),
-                                  });
-                                }}
-                                className={inputCls}
-                              >
-                                {CP204_REVISION_MONTHS.map((m) => (
-                                  <option key={m} value={m}>
-                                    {m}th Month
-                                  </option>
-                                ))}
-                              </select>
-                            </div>
-                            <div>
-                              <label className={labelCls}>Previous Est. (RM)</label>
-                              <input
-                                type="number"
-                                step="0.01"
-                                disabled={isReadOnly}
-                                value={rev.previousEstimatedTax}
-                                onChange={(e) =>
-                                  updateRevision(idx, {
-                                    previousEstimatedTax: safeNum(e.target.value),
-                                  })
-                                }
-                                className={`${inputCls} font-mono text-right`}
-                              />
-                            </div>
-                            <div>
-                              <label className={labelCls}>Proposed Est. (RM)</label>
-                              <input
-                                type="number"
-                                step="0.01"
-                                disabled={isReadOnly}
-                                value={rev.proposedEstimatedTax}
-                                onChange={(e) =>
-                                  updateRevision(idx, {
-                                    proposedEstimatedTax: safeNum(e.target.value),
-                                  })
-                                }
-                                className={`${inputCls} font-mono text-right`}
-                              />
-                            </div>
-                            <div>
-                              <label className={labelCls}>Variance (RM)</label>
-                              <div className="px-2.5 py-1.5 text-xs font-mono font-semibold bg-slate-50 border border-slate-200 rounded-md text-right text-slate-800">
-                                {rev.variance > 0 ? '+' : ''}
-                                {formatCurrencyRM(rev.variance)}
-                              </div>
-                            </div>
-                            <div>
-                              <label className={labelCls}>Review Status</label>
-                              <select
-                                disabled={isReadOnly}
-                                value={rev.reviewStatus}
-                                onChange={(e) =>
-                                  updateRevision(idx, {
-                                    reviewStatus: e.target.value as Cp204RevisionStatus,
-                                  })
-                                }
-                                className={inputCls}
-                              >
-                                {CP204_REVISION_STATUS_OPTIONS.map((st) => (
-                                  <option key={st} value={st}>
-                                    {st}
-                                  </option>
-                                ))}
-                              </select>
-                            </div>
-
-                            <div>
-                              <label className={labelCls}>Submission Deadline</label>
-                              <input
-                                type="date"
-                                disabled={isReadOnly}
-                                value={rev.submissionDeadline}
-                                onChange={(e) =>
-                                  updateRevision(idx, { submissionDeadline: e.target.value })
-                                }
-                                className={`${inputCls} font-mono`}
-                              />
-                            </div>
-                            <div>
-                              <label className={labelCls}>Submission Date</label>
-                              <input
-                                type="date"
-                                disabled={isReadOnly}
-                                value={rev.submissionDate}
-                                onChange={(e) =>
-                                  updateRevision(idx, { submissionDate: e.target.value })
-                                }
-                                className={`${inputCls} font-mono`}
-                              />
-                            </div>
-                            <div>
-                              <label className={labelCls}>PIC</label>
-                              <select
-                                disabled={isReadOnly}
-                                value={rev.pic}
-                                onChange={(e) => updateRevision(idx, { pic: e.target.value })}
-                                className={inputCls}
-                              >
-                                {staffOptions.map((opt) => (
-                                  <option key={opt.value || '__blank__'} value={opt.value}>
-                                    {opt.label}
-                                  </option>
-                                ))}
-                              </select>
-                            </div>
-                            <div>
-                              <label className={labelCls}>Reviewer</label>
-                              <select
-                                disabled={isReadOnly}
-                                value={rev.reviewer}
-                                onChange={(e) => updateRevision(idx, { reviewer: e.target.value })}
-                                className={inputCls}
-                              >
-                                {staffOptions.map((opt) => (
-                                  <option key={opt.value || '__blank__'} value={opt.value}>
-                                    {opt.label}
-                                  </option>
-                                ))}
-                              </select>
-                            </div>
-                            <div>
-                              <label className={labelCls}>Ack URL</label>
-                              <input
-                                type="url"
-                                disabled={isReadOnly}
-                                value={rev.acknowledgementUrl}
-                                onChange={(e) =>
-                                  updateRevision(idx, { acknowledgementUrl: e.target.value })
-                                }
-                                placeholder="https://..."
-                                className={inputCls}
-                              />
-                            </div>
-                            <div className="sm:col-span-2 lg:col-span-3">
-                              <label className={labelCls}>Reason</label>
-                              <input
-                                disabled={isReadOnly}
-                                value={rev.reason}
-                                onChange={(e) => updateRevision(idx, { reason: e.target.value })}
-                                className={inputCls}
-                              />
-                            </div>
-                            <div className="sm:col-span-2">
-                              <label className={labelCls}>Remarks</label>
-                              <input
-                                disabled={isReadOnly}
-                                value={rev.remarks}
-                                onChange={(e) => updateRevision(idx, { remarks: e.target.value })}
-                                className={inputCls}
-                              />
-                            </div>
-                          </div>
                         </div>
-                      ))}
+                      )}
                     </div>
-                  )}
+                  </div>
                 </div>
               )}
             </>

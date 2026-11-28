@@ -3,8 +3,6 @@ import { X, Save, AlertCircle, Search } from 'lucide-react';
 import {
   ClientRecord,
   CP204_REVISION_MONTHS,
-  CP204_REVISION_STATUS_OPTIONS,
-  CP204_STATUS_OPTIONS,
   Cp204Record,
   Cp204Revision,
   Cp204RevisionMonth,
@@ -18,11 +16,16 @@ import { useAuth } from '../../context/AuthContext';
 import { useData } from '../../context/DataContext';
 import { ClientSelectorField } from '../../components/ClientSelectorField';
 import { findClientRecordForRow, normalizeFyeMonthString } from '../../lib/jobUtils';
+import {
+  buildCp204aRevisionStatusOptions,
+  buildCp204SubmissionStatusOptions,
+} from '../../lib/settingsDropdown';
 import { useStaffOptions } from '../../hooks/useStaffOptions';
 import {
   computeCp204BasisDates,
   computeCp204CurrentEstimatedTax,
   computeRevisionDeadline,
+  isEffectiveRevisionStatus,
 } from './cp204Utils';
 
 const inputCls =
@@ -46,7 +49,7 @@ export const Cp204InitialQuickModal: React.FC<Cp204InitialQuickModalProps> = ({
   onClose,
 }) => {
   const { isReadOnly } = useAuth();
-  const { clients, staff, saveCp204 } = useData();
+  const { clients, saveCp204, getSettingsByGroup } = useData();
 
   const [clientId, setClientId] = useState('');
   const [clientName, setClientName] = useState('');
@@ -69,7 +72,12 @@ export const Cp204InitialQuickModal: React.FC<Cp204InitialQuickModalProps> = ({
     fye: false,
   });
 
-  const staffOptions = useStaffOptions([pic, reviewer]);
+  const picOptions = useStaffOptions(pic);
+  const reviewerOptions = useStaffOptions(reviewer);
+  const statusOptions = useMemo(
+    () => buildCp204SubmissionStatusOptions(getSettingsByGroup, status),
+    [getSettingsByGroup, status]
+  );
 
   useEffect(() => {
     if (!open) return;
@@ -272,9 +280,9 @@ export const Cp204InitialQuickModal: React.FC<Cp204InitialQuickModalProps> = ({
                 onChange={(e) => setStatus(e.target.value as Cp204Status)}
                 className={inputCls}
               >
-                {CP204_STATUS_OPTIONS.map((st) => (
-                  <option key={st} value={st}>
-                    {st}
+                {statusOptions.map((opt) => (
+                  <option key={opt.value} value={opt.value}>
+                    {opt.label}
                   </option>
                 ))}
               </select>
@@ -351,7 +359,7 @@ export const Cp204InitialQuickModal: React.FC<Cp204InitialQuickModalProps> = ({
                 }}
                 className={inputCls}
               >
-                {staffOptions.map((opt) => (
+                {picOptions.map((opt) => (
                   <option key={opt.value || '__blank__'} value={opt.value}>
                     {opt.label}
                   </option>
@@ -371,7 +379,7 @@ export const Cp204InitialQuickModal: React.FC<Cp204InitialQuickModalProps> = ({
                 onChange={(e) => setReviewer(e.target.value)}
                 className={inputCls}
               >
-                {staffOptions.map((opt) => (
+                {reviewerOptions.map((opt) => (
                   <option key={opt.value || '__blank__'} value={opt.value}>
                     {opt.label}
                   </option>
@@ -445,7 +453,7 @@ export const Cp204RevisionQuickModal: React.FC<Cp204RevisionQuickModalProps> = (
   onClose,
 }) => {
   const { isReadOnly } = useAuth();
-  const { clients, cp204Records, saveCp204 } = useData();
+  const { clients, cp204Records, saveCp204, getSettingsByGroup } = useData();
 
   const [recordSearch, setRecordSearch] = useState('');
   const [selectedRecordId, setSelectedRecordId] = useState('');
@@ -476,7 +484,12 @@ export const Cp204RevisionQuickModal: React.FC<Cp204RevisionQuickModalProps> = (
     );
   }, [cp204Records, recordSearch]);
 
-  const staffOptions = useStaffOptions([pic, reviewer]);
+  const picOptions = useStaffOptions(pic);
+  const reviewerOptions = useStaffOptions(reviewer);
+  const revisionStatusOptions = useMemo(
+    () => buildCp204aRevisionStatusOptions(getSettingsByGroup, reviewStatus),
+    [getSettingsByGroup, reviewStatus]
+  );
 
   const parentRecord: Cp204Record | undefined = useMemo(
     () => cp204Records.find((r) => r.id === selectedRecordId),
@@ -488,8 +501,8 @@ export const Cp204RevisionQuickModal: React.FC<Cp204RevisionQuickModalProps> = (
       setInheritedPic(false);
       return;
     }
-    const prevTax =
-      rec.currentEstimatedTax > 0 ? rec.currentEstimatedTax : rec.originalEstimatedTax;
+    const derivedCurr = computeCp204CurrentEstimatedTax(rec.originalEstimatedTax, rec.revisions);
+    const prevTax = derivedCurr > 0 ? derivedCurr : rec.originalEstimatedTax;
     const matchedClient = findClientRecordForRow(clients, {
       clientId: rec.clientId,
       clientName: rec.clientName,
@@ -497,12 +510,17 @@ export const Cp204RevisionQuickModal: React.FC<Cp204RevisionQuickModalProps> = (
     const recPic = (rec.pic || '').trim();
     const clientPic = (matchedClient?.taxPic || '').trim();
     const resolvedPic = recPic || clientPic;
+    const resolvedFyeRaw = (rec.fye || '').trim() || (matchedClient?.fye || '').trim();
+    const resolvedFye = normalizeFyeMonthString(resolvedFyeRaw) || resolvedFyeRaw;
+    const effectiveBasisStart =
+      rec.basisPeriodStart ||
+      (resolvedFye ? computeCp204BasisDates(rec.ya, resolvedFye).basisPeriodStart : '');
     setPreviousEstimatedTax(String(prevTax));
     setProposedEstimatedTax(String(prevTax));
     setPic(resolvedPic);
     setInheritedPic(!recPic && Boolean(clientPic));
     setReviewer(rec.reviewer || '');
-    setSubmissionDeadline(computeRevisionDeadline(rec.basisPeriodStart, month));
+    setSubmissionDeadline(computeRevisionDeadline(effectiveBasisStart, month));
   };
 
   useEffect(() => {
@@ -533,7 +551,7 @@ export const Cp204RevisionQuickModal: React.FC<Cp204RevisionQuickModalProps> = (
   if (!open) return null;
 
   const variance = Math.round((safeNum(proposedEstimatedTax) - safeNum(previousEstimatedTax)) * 100) / 100;
-  const willUpdateMasterCurrentTax = reviewStatus === 'Approved' || reviewStatus === 'Submitted';
+  const willUpdateMasterCurrentTax = isEffectiveRevisionStatus(reviewStatus);
 
   const handleSelectParent = (recId: string) => {
     setSelectedRecordId(recId);
@@ -630,7 +648,7 @@ export const Cp204RevisionQuickModal: React.FC<Cp204RevisionQuickModalProps> = (
               Add CP204A Revision (6th / 9th / 11th Month)
             </h3>
             <p className="text-[11px] text-slate-500">
-              Previous Estimated Tax auto-fills from the parent CP204 record; master Current Estimated Tax updates only when Approved or Submitted
+              Previous Estimated Tax auto-fills from the parent CP204 record; Current Estimated Tax updates from Submitted or Self-submit by Client revisions
             </p>
           </div>
           <button
@@ -697,16 +715,16 @@ export const Cp204RevisionQuickModal: React.FC<Cp204RevisionQuickModalProps> = (
               </select>
             </div>
             <div>
-              <label className={labelCls}>Review Status *</label>
+              <label className={labelCls}>Submission Status *</label>
               <select
                 disabled={isReadOnly}
                 value={reviewStatus}
                 onChange={(e) => setReviewStatus(e.target.value as Cp204RevisionStatus)}
                 className={inputCls}
               >
-                {CP204_REVISION_STATUS_OPTIONS.map((st) => (
-                  <option key={st} value={st}>
-                    {st}
+                {revisionStatusOptions.map((opt) => (
+                  <option key={opt.value} value={opt.value}>
+                    {opt.label}
                   </option>
                 ))}
               </select>
@@ -763,10 +781,10 @@ export const Cp204RevisionQuickModal: React.FC<Cp204RevisionQuickModalProps> = (
             }`}
           >
             {willUpdateMasterCurrentTax
-              ? `Because Review Status is "${reviewStatus}", saving will automatically update the parent CP204 Current Estimated Tax to ${formatCurrencyRM(
+              ? `Because Submission Status is "${reviewStatus}", saving will automatically update the parent CP204 Current Estimated Tax to ${formatCurrencyRM(
                   safeNum(proposedEstimatedTax)
                 )}.`
-              : `Review Status is "${reviewStatus}" — parent Current Estimated Tax will remain unchanged until status is Approved or Submitted.`}
+              : `Submission Status is "${reviewStatus}" — parent Current Estimated Tax will remain unchanged (Updates from Submitted or Self-submit by Client revisions).`}
           </div>
 
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
@@ -801,7 +819,7 @@ export const Cp204RevisionQuickModal: React.FC<Cp204RevisionQuickModalProps> = (
                 }}
                 className={inputCls}
               >
-                {staffOptions.map((opt) => (
+                {picOptions.map((opt) => (
                   <option key={opt.value || '__blank__'} value={opt.value}>
                     {opt.label}
                   </option>
@@ -821,7 +839,7 @@ export const Cp204RevisionQuickModal: React.FC<Cp204RevisionQuickModalProps> = (
                 onChange={(e) => setReviewer(e.target.value)}
                 className={inputCls}
               >
-                {staffOptions.map((opt) => (
+                {reviewerOptions.map((opt) => (
                   <option key={opt.value || '__blank__'} value={opt.value}>
                     {opt.label}
                   </option>

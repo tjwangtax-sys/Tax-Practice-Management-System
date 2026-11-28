@@ -17,7 +17,11 @@ import {
   isIsoDateString,
   normalizeClientIdKey,
 } from '../../lib/jobUtils';
-import { computeCp204CurrentEstimatedTax, normalizeCp204Revisions } from '../CP204/cp204Utils';
+import {
+  computeCp204CurrentEstimatedTax,
+  isEffectiveRevisionStatus,
+  normalizeCp204Revisions,
+} from '../CP204/cp204Utils';
 import { printHtml } from '../../lib/exportUtils';
 
 export interface ConsolidatedYaRow {
@@ -89,7 +93,7 @@ function parseOptionalMoney(raw?: string | number | null): number | null {
 function getLatestApprovedRevisionLabel(rec: Cp204Record): string {
   const revs = normalizeCp204Revisions(rec.revisions);
   const effectiveRevs = revs
-    .filter((r) => r.reviewStatus === 'Approved' || r.reviewStatus === 'Submitted')
+    .filter((r) => isEffectiveRevisionStatus(r.reviewStatus))
     .sort((a, b) => Number(b.revisionMonth) - Number(a.revisionMonth));
   if (effectiveRevs.length > 0) {
     const m = effectiveRevs[0].revisionMonth;

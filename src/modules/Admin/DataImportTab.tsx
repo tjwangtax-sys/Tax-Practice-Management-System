@@ -25,13 +25,18 @@ import { useData } from '../../context/DataContext';
 import { exportMultiSheetExcel, MultiSheetExportTab } from '../../lib/exportUtils';
 import { showToast } from '../../lib/toast';
 import {
+  ClientRecord,
   Cp204Instalment,
+  Cp204Record,
   Cp204Revision,
   StaffMember,
   StaffRole,
   WorkDoneFeeAllocation,
 } from '../../types/tpms';
+import { normalizeClientIdKey } from '../../lib/jobUtils';
+import { computeCp204CurrentEstimatedTax, generateNextSequentialId } from '../CP204/cp204Utils';
 import {
+  buildCp204ClientYaKey,
   detectImportTargetFromFilename,
   downloadBlankTemplate,
   downloadFullCombinedBlankTemplate,
@@ -110,8 +115,19 @@ interface CollectionRunResult {
 
 interface RuntimeParentCp204 {
   id: string;
+  cp204Id: string;
+  originalEstimatedTax: number;
   revisions: Cp204Revision[];
   instalments: Cp204Instalment[];
+}
+
+interface ResolvedCp204ParentRef {
+  docId: string;
+  cp204Id: string;
+  clientId: string;
+  clientName: string;
+  ya: string;
+  revisions: Cp204Revision[];
 }
 
 interface RuntimeParentWorkDone {
@@ -189,14 +205,38 @@ export const DataImportTab: React.FC = () => {
     history,
   ]);
 
-  // Existing parent maps for child-merge validation
-  const existingCp204Ids = useMemo(() => {
-    const set = new Set<string>();
-    for (const rec of cp204Records) {
-      set.add(rec.id);
-      set.add(sanitizeDocId(rec.cp204Id, 'CP204'));
+  // Existing Client lookup by normalized Client ID (for auto-filling Client Name on new CP204 rows)
+  const existingClientByNormId = useMemo(() => {
+    const map = new Map<string, ClientRecord>();
+    for (const c of clients) {
+      const key = normalizeClientIdKey(c.clientId);
+      if (key && !map.has(key)) map.set(key, c);
     }
-    return set;
+    return map;
+  }, [clients]);
+
+  // Existing CP204 lookup maps: match by CP204 ID first, then fall back to normalized Client ID + YA
+  const { existingCp204ByDocOrId, existingCp204ByClientYa, existingCp204IdsList } = useMemo(() => {
+    const byDocOrId = new Map<string, Cp204Record>();
+    const byClientYa = new Map<string, Cp204Record>();
+    const idsList: string[] = [];
+    for (const rec of cp204Records) {
+      byDocOrId.set(rec.id, rec);
+      if (rec.cp204Id) {
+        idsList.push(rec.cp204Id);
+        byDocOrId.set(sanitizeDocId(rec.cp204Id, 'CP204'), rec);
+        byDocOrId.set(rec.cp204Id.trim().toUpperCase(), rec);
+      }
+      const key = buildCp204ClientYaKey(rec.clientId, rec.ya);
+      if (key && !byClientYa.has(key)) {
+        byClientYa.set(key, rec);
+      }
+    }
+    return {
+      existingCp204ByDocOrId: byDocOrId,
+      existingCp204ByClientYa: byClientYa,
+      existingCp204IdsList: idsList,
+    };
   }, [cp204Records]);
 
   const existingWorkDoneIds = useMemo(() => {
@@ -278,6 +318,374 @@ export const DataImportTab: React.FC = () => {
     };
   }, [existingStaffByStaffId, existingStaffByEmail]);
 
+  // Reconciles CP204 Master rows: matches existing Firestore records by CP204 ID first,
+  // then falls back to normalized Client ID + YA (and deduplicates within the same upload)
+  // so re-uploading an original Excel sheet updates rows in place and never creates duplicates.
+  const reconcileCp204SheetRows = useMemo(() => {
+    return (
+      rawRows: Record<string, unknown>[],
+      sharedByDocOrId?: Map<string, ResolvedCp204ParentRef>,
+      sharedByClientYa?: Map<string, ResolvedCp204ParentRef>,
+      sharedAllocatedIds?: string[]
+    ): ParsedImportRow[] => {
+      const allocatedIds = sharedAllocatedIds ?? [...existingCp204IdsList];
+      const inFileByClientYa = new Map<string, ResolvedCp204ParentRef>();
+
+      const registerParentRef = (ref: ResolvedCp204ParentRef, clientYaKey: string) => {
+        if (clientYaKey) inFileByClientYa.set(clientYaKey, ref);
+        if (sharedByDocOrId) {
+          sharedByDocOrId.set(ref.docId, ref);
+          sharedByDocOrId.set(sanitizeDocId(ref.cp204Id, 'CP204'), ref);
+          sharedByDocOrId.set(ref.cp204Id.trim().toUpperCase(), ref);
+        }
+        if (sharedByClientYa && clientYaKey) {
+          sharedByClientYa.set(clientYaKey, ref);
+        }
+      };
+
+      return rawRows.map((raw, idx) => {
+        const parsed = parseAndValidateRow('cp204', raw, idx + 1);
+        if (!parsed.valid) return parsed;
+
+        const rawCp204Id = String(parsed.payload.cp204Id ?? '').trim();
+        const rawClientId = String(parsed.payload.clientId ?? '').trim();
+        const rawClientName = String(parsed.payload.clientName ?? '').trim();
+        const rawYa = String(parsed.payload.ya ?? '').trim();
+        const clientYaKey =
+          parsed.matchMeta?.clientYaKey || buildCp204ClientYaKey(rawClientId, rawYa);
+        const present = new Set(parsed.matchMeta?.presentFields ?? []);
+
+        // 1. Match existing Firestore CP204 record by CP204 ID first
+        let matchedExisting: Cp204Record | undefined;
+        let matchedByFallback = false;
+        if (rawCp204Id) {
+          matchedExisting =
+            existingCp204ByDocOrId.get(sanitizeDocId(rawCp204Id, 'CP204')) ??
+            existingCp204ByDocOrId.get(rawCp204Id.toUpperCase()) ??
+            existingCp204ByDocOrId.get(rawCp204Id);
+        }
+
+        // 2. Fallback to normalized Client ID + YA (if CP204 ID is blank or didn't match)
+        if (!matchedExisting && clientYaKey) {
+          matchedExisting = existingCp204ByClientYa.get(clientYaKey);
+          if (matchedExisting) matchedByFallback = true;
+        }
+
+        if (matchedExisting) {
+          const resolvedDocId = matchedExisting.id;
+          const resolvedCp204Id = matchedExisting.cp204Id || matchedExisting.id;
+          const resolvedClientId = rawClientId || matchedExisting.clientId;
+          const resolvedClientName = rawClientName || matchedExisting.clientName;
+          const resolvedYa = rawYa || matchedExisting.ya;
+
+          const finalOrigEst = present.has('originalEstimatedTax')
+            ? Number(parsed.payload.originalEstimatedTax ?? 0) || 0
+            : matchedExisting.originalEstimatedTax ?? 0;
+
+          const effectiveRevisions = Array.isArray(parsed.payload.revisions)
+            ? (parsed.payload.revisions as Cp204Revision[])
+            : matchedExisting.revisions ?? [];
+
+          const finalCurrEst = present.has('currentEstimatedTax')
+            ? Number(parsed.payload.currentEstimatedTax ?? 0) || 0
+            : computeCp204CurrentEstimatedTax(finalOrigEst, effectiveRevisions);
+
+          const finalStatus = present.has('status')
+            ? String(parsed.payload.status ?? 'In Progress')
+            : matchedExisting.status || 'In Progress';
+
+          const mergedPayload: Record<string, unknown> = {
+            ...parsed.payload,
+            cp204Id: resolvedCp204Id,
+            clientId: resolvedClientId,
+            clientName: resolvedClientName,
+            ya: resolvedYa,
+            fye: present.has('fye')
+              ? parsed.payload.fye
+              : matchedExisting.fye || '',
+            basisPeriodStart: present.has('basisPeriodStart')
+              ? parsed.payload.basisPeriodStart
+              : matchedExisting.basisPeriodStart || '',
+            basisPeriodEnd: present.has('basisPeriodEnd')
+              ? parsed.payload.basisPeriodEnd
+              : matchedExisting.basisPeriodEnd || '',
+            originalEstimatedTax: finalOrigEst,
+            originalSubmissionDate: present.has('originalSubmissionDate')
+              ? parsed.payload.originalSubmissionDate
+              : matchedExisting.originalSubmissionDate || '',
+            currentEstimatedTax: finalCurrEst,
+            statutoryCp204DueDate: present.has('statutoryCp204DueDate')
+              ? parsed.payload.statutoryCp204DueDate
+              : matchedExisting.statutoryCp204DueDate || '',
+            pic: present.has('pic') ? parsed.payload.pic : matchedExisting.pic || '',
+            reviewer: present.has('reviewer')
+              ? parsed.payload.reviewer
+              : matchedExisting.reviewer || '',
+            status: finalStatus,
+            acknowledgementUrl: present.has('acknowledgementUrl')
+              ? parsed.payload.acknowledgementUrl
+              : matchedExisting.acknowledgementUrl || '',
+            remarks: present.has('remarks')
+              ? parsed.payload.remarks
+              : matchedExisting.remarks || '',
+          };
+
+          const resolvedKey =
+            buildCp204ClientYaKey(resolvedClientId, resolvedYa) || clientYaKey;
+          registerParentRef(
+            {
+              docId: resolvedDocId,
+              cp204Id: resolvedCp204Id,
+              clientId: resolvedClientId,
+              clientName: resolvedClientName,
+              ya: resolvedYa,
+              revisions: effectiveRevisions,
+            },
+            resolvedKey
+          );
+
+          const note = matchedByFallback
+            ? !rawCp204Id
+              ? `Matched existing by Client ID + YA → ${resolvedCp204Id}`
+              : `Matched existing ${resolvedCp204Id} by Client ID + YA (prevents duplicate)`
+            : `Updates existing ${resolvedCp204Id}`;
+
+          return {
+            ...parsed,
+            docId: resolvedDocId,
+            note,
+            payload: mergedPayload,
+            preview: {
+              ...parsed.preview,
+              cp204Id: resolvedCp204Id,
+              clientName: resolvedClientName,
+              ya: resolvedYa,
+              originalEstimatedTax: finalOrigEst,
+              currentEstimatedTax: finalCurrEst,
+              status: finalStatus,
+            },
+          };
+        }
+
+        // 3. New CP204 record (not yet in Firestore) — also deduplicate within the same upload by Client ID + YA
+        const priorInFile = clientYaKey ? inFileByClientYa.get(clientYaKey) : undefined;
+        const matchedClient = rawClientId
+          ? existingClientByNormId.get(normalizeClientIdKey(rawClientId))
+          : undefined;
+        const resolvedClientName =
+          rawClientName || priorInFile?.clientName || matchedClient?.clientName || '';
+
+        if (!rawClientId || !resolvedClientName || !rawYa) {
+          return {
+            ...parsed,
+            valid: false,
+            reason:
+              'New CP204 record requires Client ID, Client Name (or matching Client Master ID), and YA',
+          };
+        }
+
+        let resolvedCp204Id: string;
+        let resolvedDocId: string;
+        let note: string | undefined;
+
+        if (priorInFile) {
+          resolvedCp204Id = priorInFile.cp204Id;
+          resolvedDocId = priorInFile.docId;
+          note = `Deduplicated with earlier row in file (${resolvedCp204Id})`;
+        } else if (rawCp204Id) {
+          resolvedCp204Id = rawCp204Id;
+          resolvedDocId = sanitizeDocId(rawCp204Id, 'CP204');
+          allocatedIds.push(resolvedCp204Id);
+        } else {
+          resolvedCp204Id = generateNextSequentialId('CP204', allocatedIds);
+          resolvedDocId = sanitizeDocId(resolvedCp204Id, 'CP204');
+          allocatedIds.push(resolvedCp204Id);
+          note = `New Company + YA → auto-assigned ${resolvedCp204Id}`;
+        }
+
+        registerParentRef(
+          {
+            docId: resolvedDocId,
+            cp204Id: resolvedCp204Id,
+            clientId: rawClientId,
+            clientName: resolvedClientName,
+            ya: rawYa,
+            revisions: Array.isArray(parsed.payload.revisions)
+              ? (parsed.payload.revisions as Cp204Revision[])
+              : [],
+          },
+          clientYaKey
+        );
+
+        return {
+          ...parsed,
+          docId: resolvedDocId,
+          note,
+          payload: {
+            ...parsed.payload,
+            cp204Id: resolvedCp204Id,
+            clientName: resolvedClientName,
+          },
+          preview: {
+            ...parsed.preview,
+            cp204Id: resolvedCp204Id,
+            clientName: resolvedClientName,
+          },
+        };
+      });
+    };
+  }, [
+    existingCp204ByDocOrId,
+    existingCp204ByClientYa,
+    existingCp204IdsList,
+    existingClientByNormId,
+  ]);
+
+  // Reconciles CP204A Revisions and CP204 Instalments rows against parent CP204 records:
+  // matches by CP204 ID first, then falls back to normalized Client ID + YA (and Month for CP204A).
+  const reconcileCp204ChildRow = useMemo(() => {
+    return (
+      targetKey: 'cp204_revisions' | 'cp204_instalments',
+      parsed: ParsedImportRow,
+      parentByDocOrId: Map<string, ResolvedCp204ParentRef>,
+      parentByClientYa: Map<string, ResolvedCp204ParentRef>
+    ): ParsedImportRow => {
+      if (!parsed.valid) return parsed;
+
+      const rawCp204Id = String(parsed.payload.cp204Id ?? '').trim();
+      const rawClientId = String(parsed.payload.clientId ?? '').trim();
+      const rawYa = String(parsed.payload.ya ?? '').trim();
+      const clientYaKey =
+        parsed.matchMeta?.clientYaKey || buildCp204ClientYaKey(rawClientId, rawYa);
+
+      let matchedParent: ResolvedCp204ParentRef | undefined;
+      let matchedByFallback = false;
+
+      // 1. Match parent by CP204 ID first
+      if (rawCp204Id) {
+        matchedParent =
+          parentByDocOrId.get(sanitizeDocId(rawCp204Id, 'CP204')) ??
+          parentByDocOrId.get(rawCp204Id.toUpperCase()) ??
+          parentByDocOrId.get(rawCp204Id);
+      }
+
+      // 2. Fallback to normalized Client ID + YA when CP204 ID is blank or unmatched
+      if (!matchedParent && clientYaKey) {
+        matchedParent = parentByClientYa.get(clientYaKey);
+        if (matchedParent) matchedByFallback = true;
+      }
+
+      if (!matchedParent) {
+        const refLabel = rawCp204Id
+          ? `CP204 ID "${rawCp204Id}"`
+          : `Client ID "${rawClientId || '—'}" + YA "${rawYa || '—'}"`;
+        return {
+          ...parsed,
+          valid: false,
+          reason: `Parent CP204 record (${refLabel}) not found — import CP204 Master first`,
+        };
+      }
+
+      if (targetKey === 'cp204_revisions') {
+        const importedRev = parsed.payload.revision as Cp204Revision;
+        const present = new Set(parsed.matchMeta?.presentFields ?? []);
+        const existingMonthRev = matchedParent.revisions.find(
+          (r) => r.revisionMonth === importedRev.revisionMonth
+        );
+
+        const finalPrev = present.has('previousEstimatedTax')
+          ? importedRev.previousEstimatedTax
+          : existingMonthRev?.previousEstimatedTax ?? importedRev.previousEstimatedTax;
+        const finalProp = present.has('proposedEstimatedTax')
+          ? importedRev.proposedEstimatedTax
+          : existingMonthRev?.proposedEstimatedTax ?? importedRev.proposedEstimatedTax;
+
+        const mergedRev: Cp204Revision = {
+          revisionId: parsed.matchMeta?.hasExplicitRevisionId
+            ? importedRev.revisionId
+            : existingMonthRev?.revisionId || `${matchedParent.docId}-R${importedRev.revisionMonth}`,
+          revisionMonth: importedRev.revisionMonth,
+          previousEstimatedTax: finalPrev,
+          proposedEstimatedTax: finalProp,
+          variance: Math.round((finalProp - finalPrev) * 100) / 100,
+          reason: present.has('reason') ? importedRev.reason : existingMonthRev?.reason ?? '',
+          reviewStatus: present.has('reviewStatus')
+            ? importedRev.reviewStatus
+            : existingMonthRev?.reviewStatus ?? importedRev.reviewStatus,
+          pic: present.has('pic') ? importedRev.pic : existingMonthRev?.pic ?? '',
+          reviewer: present.has('reviewer')
+            ? importedRev.reviewer
+            : existingMonthRev?.reviewer ?? '',
+          submissionDeadline: present.has('submissionDeadline')
+            ? importedRev.submissionDeadline
+            : existingMonthRev?.submissionDeadline ?? '',
+          submissionDate: present.has('submissionDate')
+            ? importedRev.submissionDate
+            : existingMonthRev?.submissionDate ?? '',
+          acknowledgementUrl: present.has('acknowledgementUrl')
+            ? importedRev.acknowledgementUrl
+            : existingMonthRev?.acknowledgementUrl ?? '',
+          remarks: present.has('remarks') ? importedRev.remarks : existingMonthRev?.remarks ?? '',
+        };
+
+        const actionLabel = existingMonthRev
+          ? `updates ${mergedRev.revisionMonth}th Month`
+          : `adds ${mergedRev.revisionMonth}th Month`;
+        const note = matchedByFallback
+          ? `Matched ${matchedParent.cp204Id} by Client ID + YA · ${actionLabel}`
+          : existingMonthRev
+          ? `Updates existing ${mergedRev.revisionMonth}th Month on ${matchedParent.cp204Id}`
+          : undefined;
+
+        return {
+          ...parsed,
+          docId: `${matchedParent.docId}_M${mergedRev.revisionMonth}`,
+          parentDocId: matchedParent.docId,
+          note,
+          payload: {
+            ...parsed.payload,
+            cp204Id: matchedParent.cp204Id,
+            revision: mergedRev,
+          },
+          preview: {
+            ...parsed.preview,
+            cp204Id: matchedParent.cp204Id,
+            proposedEstimatedTax: mergedRev.proposedEstimatedTax,
+            submissionDate: mergedRev.submissionDate || '—',
+            reviewStatus: mergedRev.reviewStatus,
+          },
+        };
+      }
+
+      // cp204_instalments
+      const inst = parsed.payload.instalment as Cp204Instalment;
+      const note = matchedByFallback
+        ? `Matched ${matchedParent.cp204Id} by Client ID + YA`
+        : undefined;
+      return {
+        ...parsed,
+        docId: `${matchedParent.docId}_I${inst.instalmentNo}`,
+        parentDocId: matchedParent.docId,
+        note,
+        payload: {
+          ...parsed.payload,
+          cp204Id: matchedParent.cp204Id,
+          instalment: {
+            ...inst,
+            instalmentId:
+              inst.instalmentId && !inst.instalmentId.startsWith('CP204-I')
+                ? inst.instalmentId
+                : `${matchedParent.docId}-I${String(inst.instalmentNo).padStart(2, '0')}`,
+          },
+        },
+        preview: {
+          ...parsed.preview,
+          cp204Id: matchedParent.cp204Id,
+        },
+      };
+    };
+  }, []);
+
   // Resolve effective target for each uploaded sheet
   const resolvedSheets = useMemo(() => {
     return uploadedSheets.map((sheet) => {
@@ -308,16 +716,43 @@ export const DataImportTab: React.FC = () => {
   const combinedPlans = useMemo<ValidatedSheetPlan[]>(() => {
     if (mode !== 'full_combined' || resolvedSheets.length === 0) return [];
 
-    // First pass: collect pending parent docIds from cp204 & workDone sheets in the SAME upload
-    const pendingCp204Ids = new Set<string>(existingCp204Ids);
-    const pendingWorkDoneIds = new Set<string>(existingWorkDoneIds);
+    // Seed parent CP204 lookup maps from live Firestore records
+    const pendingCp204ByDocOrId = new Map<string, ResolvedCp204ParentRef>();
+    const pendingCp204ByClientYa = new Map<string, ResolvedCp204ParentRef>();
+    for (const rec of cp204Records) {
+      const ref: ResolvedCp204ParentRef = {
+        docId: rec.id,
+        cp204Id: rec.cp204Id || rec.id,
+        clientId: rec.clientId,
+        clientName: rec.clientName,
+        ya: rec.ya,
+        revisions: rec.revisions ?? [],
+      };
+      pendingCp204ByDocOrId.set(rec.id, ref);
+      if (rec.cp204Id) {
+        pendingCp204ByDocOrId.set(sanitizeDocId(rec.cp204Id, 'CP204'), ref);
+        pendingCp204ByDocOrId.set(rec.cp204Id.trim().toUpperCase(), ref);
+      }
+      const key = buildCp204ClientYaKey(rec.clientId, rec.ya);
+      if (key && !pendingCp204ByClientYa.has(key)) {
+        pendingCp204ByClientYa.set(key, ref);
+      }
+    }
 
+    const pendingWorkDoneIds = new Set<string>(existingWorkDoneIds);
+    const preReconciledCp204Sheets = new Map<string, ParsedImportRow[]>();
+    const sharedAllocatedCp204Ids = [...existingCp204IdsList];
+
+    // First pass: reconcile CP204 Master & collect Work Done parent IDs from the SAME upload
     for (const s of resolvedSheets) {
       if (s.target === 'cp204') {
-        s.rows.forEach((raw, idx) => {
-          const parsed = parseAndValidateRow('cp204', raw, idx + 1);
-          if (parsed.valid && parsed.docId) pendingCp204Ids.add(parsed.docId);
-        });
+        const reconciled = reconcileCp204SheetRows(
+          s.rows,
+          pendingCp204ByDocOrId,
+          pendingCp204ByClientYa,
+          sharedAllocatedCp204Ids
+        );
+        preReconciledCp204Sheets.set(s.sourceName, reconciled);
       } else if (s.target === 'workDone') {
         s.rows.forEach((raw, idx) => {
           const parsed = parseAndValidateRow('workDone', raw, idx + 1);
@@ -346,38 +781,40 @@ export const DataImportTab: React.FC = () => {
       const def = getTargetDefinition(targetKey);
       const existingSet = existingDocIdsByCollection[def.collection] ?? new Set<string>();
 
-      const validatedRows = sheet.rows.map((raw, idx) => {
-        let parsed = parseAndValidateRow(targetKey, raw, idx + 1);
-        if (!parsed.valid) return parsed;
+      const validatedRows =
+        targetKey === 'cp204' && preReconciledCp204Sheets.has(sheet.sourceName)
+          ? preReconciledCp204Sheets.get(sheet.sourceName)!
+          : sheet.rows.map((raw, idx) => {
+              let parsed = parseAndValidateRow(targetKey, raw, idx + 1);
+              if (!parsed.valid) return parsed;
 
-        if (targetKey === 'staff') {
-          parsed = reconcileStaffRow(parsed);
-        } else if (targetKey === 'cp204_revisions' || targetKey === 'cp204_instalments') {
-          if (!parsed.parentDocId || !pendingCp204Ids.has(parsed.parentDocId)) {
-            return {
-              ...parsed,
-              valid: false,
-              reason: `Parent CP204 record "${String(parsed.payload.cp204Id || '')}" not found in Firestore or in this file`,
-            };
-          }
-        } else if (targetKey === 'workDone_allocations') {
-          if (!parsed.parentDocId || !pendingWorkDoneIds.has(parsed.parentDocId)) {
-            return {
-              ...parsed,
-              valid: false,
-              reason: `Parent Work Done record "${String(parsed.payload.workDoneId || '')}" not found in Firestore or in this file`,
-            };
-          }
-        } else if (targetKey === 'history' && existingSet.has(parsed.docId)) {
-          return {
-            ...parsed,
-            valid: false,
-            reason: `History ID "${parsed.docId}" already exists (immutable audit log)`,
-          };
-        }
+              if (targetKey === 'staff') {
+                parsed = reconcileStaffRow(parsed);
+              } else if (targetKey === 'cp204_revisions' || targetKey === 'cp204_instalments') {
+                parsed = reconcileCp204ChildRow(
+                  targetKey,
+                  parsed,
+                  pendingCp204ByDocOrId,
+                  pendingCp204ByClientYa
+                );
+              } else if (targetKey === 'workDone_allocations') {
+                if (!parsed.parentDocId || !pendingWorkDoneIds.has(parsed.parentDocId)) {
+                  return {
+                    ...parsed,
+                    valid: false,
+                    reason: `Parent Work Done record "${String(parsed.payload.workDoneId || '')}" not found in Firestore or in this file`,
+                  };
+                }
+              } else if (targetKey === 'history' && existingSet.has(parsed.docId)) {
+                return {
+                  ...parsed,
+                  valid: false,
+                  reason: `History ID "${parsed.docId}" already exists (immutable audit log)`,
+                };
+              }
 
-        return parsed;
-      });
+              return parsed;
+            });
 
       const validRows = validatedRows.filter((r) => r.valid);
       const invalidRows = validatedRows.filter((r) => !r.valid);
@@ -413,10 +850,13 @@ export const DataImportTab: React.FC = () => {
   }, [
     mode,
     resolvedSheets,
-    existingCp204Ids,
+    cp204Records,
+    existingCp204IdsList,
     existingWorkDoneIds,
     existingDocIdsByCollection,
     reconcileStaffRow,
+    reconcileCp204SheetRows,
+    reconcileCp204ChildRow,
   ]);
 
   // Build validated plan for Single-Collection mode
@@ -426,38 +866,61 @@ export const DataImportTab: React.FC = () => {
     const def = getTargetDefinition(targetKey);
     const existingSet = existingDocIdsByCollection[def.collection] ?? new Set<string>();
 
-    const validatedRows = activeSingleSheet.rows.map((raw, idx) => {
-      let parsed = parseAndValidateRow(targetKey, raw, idx + 1);
-      if (!parsed.valid) return parsed;
-
-      if (targetKey === 'staff') {
-        parsed = reconcileStaffRow(parsed);
-      } else if (targetKey === 'cp204_revisions' || targetKey === 'cp204_instalments') {
-        if (!parsed.parentDocId || !existingCp204Ids.has(parsed.parentDocId)) {
-          return {
-            ...parsed,
-            valid: false,
-            reason: `Parent CP204 record "${String(parsed.payload.cp204Id || '')}" not found — import CP204 Master first`,
+    let validatedRows: ParsedImportRow[];
+    if (targetKey === 'cp204') {
+      validatedRows = reconcileCp204SheetRows(activeSingleSheet.rows);
+    } else {
+      const parentByDocOrId = new Map<string, ResolvedCp204ParentRef>();
+      const parentByClientYa = new Map<string, ResolvedCp204ParentRef>();
+      if (targetKey === 'cp204_revisions' || targetKey === 'cp204_instalments') {
+        for (const rec of cp204Records) {
+          const ref: ResolvedCp204ParentRef = {
+            docId: rec.id,
+            cp204Id: rec.cp204Id || rec.id,
+            clientId: rec.clientId,
+            clientName: rec.clientName,
+            ya: rec.ya,
+            revisions: rec.revisions ?? [],
           };
+          parentByDocOrId.set(rec.id, ref);
+          if (rec.cp204Id) {
+            parentByDocOrId.set(sanitizeDocId(rec.cp204Id, 'CP204'), ref);
+            parentByDocOrId.set(rec.cp204Id.trim().toUpperCase(), ref);
+          }
+          const key = buildCp204ClientYaKey(rec.clientId, rec.ya);
+          if (key && !parentByClientYa.has(key)) {
+            parentByClientYa.set(key, ref);
+          }
         }
-      } else if (targetKey === 'workDone_allocations') {
-        if (!parsed.parentDocId || !existingWorkDoneIds.has(parsed.parentDocId)) {
-          return {
-            ...parsed,
-            valid: false,
-            reason: `Parent Work Done record "${String(parsed.payload.workDoneId || '')}" not found — import Work Done first`,
-          };
-        }
-      } else if (targetKey === 'history' && existingSet.has(parsed.docId)) {
-        return {
-          ...parsed,
-          valid: false,
-          reason: `History ID "${parsed.docId}" already exists (immutable audit log)`,
-        };
       }
 
-      return parsed;
-    });
+      validatedRows = activeSingleSheet.rows.map((raw, idx) => {
+        let parsed = parseAndValidateRow(targetKey, raw, idx + 1);
+        if (!parsed.valid) return parsed;
+
+        if (targetKey === 'staff') {
+          parsed = reconcileStaffRow(parsed);
+        } else if (targetKey === 'cp204_revisions' || targetKey === 'cp204_instalments') {
+          parsed = reconcileCp204ChildRow(targetKey, parsed, parentByDocOrId, parentByClientYa);
+        } else if (targetKey === 'workDone_allocations') {
+          if (!parsed.parentDocId || !existingWorkDoneIds.has(parsed.parentDocId)) {
+            return {
+              ...parsed,
+              valid: false,
+              reason: `Parent Work Done record "${String(parsed.payload.workDoneId || '')}" not found — import Work Done first`,
+            };
+          }
+        } else if (targetKey === 'history' && existingSet.has(parsed.docId)) {
+          return {
+            ...parsed,
+            valid: false,
+            reason: `History ID "${parsed.docId}" already exists (immutable audit log)`,
+          };
+        }
+
+        return parsed;
+      });
+    }
 
     const validRows = validatedRows.filter((r) => r.valid);
     const invalidRows = validatedRows.filter((r) => !r.valid);
@@ -490,10 +953,12 @@ export const DataImportTab: React.FC = () => {
   }, [
     mode,
     activeSingleSheet,
-    existingCp204Ids,
+    cp204Records,
     existingWorkDoneIds,
     existingDocIdsByCollection,
     reconcileStaffRow,
+    reconcileCp204SheetRows,
+    reconcileCp204ChildRow,
   ]);
 
   // Combined totals across all active mapped sheets
@@ -701,11 +1166,15 @@ export const DataImportTab: React.FC = () => {
     for (const rec of cp204Records) {
       const entry: RuntimeParentCp204 = {
         id: rec.id,
+        cp204Id: rec.cp204Id || rec.id,
+        originalEstimatedTax: rec.originalEstimatedTax ?? 0,
         revisions: [...(rec.revisions ?? [])],
         instalments: [...(rec.instalments ?? [])],
       };
       runtimeCp204.set(rec.id, entry);
-      runtimeCp204.set(sanitizeDocId(rec.cp204Id, 'CP204'), entry);
+      if (rec.cp204Id) {
+        runtimeCp204.set(sanitizeDocId(rec.cp204Id, 'CP204'), entry);
+      }
     }
 
     const runtimeWorkDone = new Map<string, RuntimeParentWorkDone>();
@@ -786,14 +1255,17 @@ export const DataImportTab: React.FC = () => {
             .sort((a, b) => order.indexOf(a.revisionMonth) - order.indexOf(b.revisionMonth))
             .slice(0, 20);
           parent.revisions = merged;
-          const latestRev = [...merged].reverse().find((r) => r.proposedEstimatedTax > 0);
+          const computedCurrentTax = computeCp204CurrentEstimatedTax(
+            parent.originalEstimatedTax,
+            merged
+          );
           ops.push({
             docId: parentId,
             rowNumber: firstRowByParent.get(parentId) ?? 0,
             isUpdate: true,
             data: sanitizeFirestorePayload({
               revisions: merged,
-              ...(latestRev ? { currentEstimatedTax: latestRev.proposedEstimatedTax } : {}),
+              currentEstimatedTax: computedCurrentTax,
               updatedBy: actorEmail,
               updatedAt: serverTimestamp(),
             }),
@@ -926,17 +1398,23 @@ export const DataImportTab: React.FC = () => {
         else res.created += 1;
 
         runtimeExisting[colName]?.add(op.docId);
-        if (plan.target === 'cp204' && !runtimeCp204.has(op.docId)) {
-          const newParent: RuntimeParentCp204 = {
+        if (plan.target === 'cp204') {
+          const prevParent = runtimeCp204.get(op.docId);
+          const resolvedCp204Id = String(op.data.cp204Id ?? prevParent?.cp204Id ?? op.docId);
+          const updatedParent: RuntimeParentCp204 = {
             id: op.docId,
+            cp204Id: resolvedCp204Id,
+            originalEstimatedTax:
+              Number(op.data.originalEstimatedTax ?? prevParent?.originalEstimatedTax ?? 0) || 0,
             revisions: Array.isArray(op.data.revisions)
               ? (op.data.revisions as Cp204Revision[])
-              : [],
+              : prevParent?.revisions ?? [],
             instalments: Array.isArray(op.data.instalments)
               ? (op.data.instalments as Cp204Instalment[])
-              : [],
+              : prevParent?.instalments ?? [],
           };
-          runtimeCp204.set(op.docId, newParent);
+          runtimeCp204.set(op.docId, updatedParent);
+          runtimeCp204.set(sanitizeDocId(resolvedCp204Id, 'CP204'), updatedParent);
         } else if (plan.target === 'workDone' && !runtimeWorkDone.has(op.docId)) {
           const newParent: RuntimeParentWorkDone = {
             id: op.docId,
@@ -1266,11 +1744,13 @@ export const DataImportTab: React.FC = () => {
       const cp204RevisionRows: Record<string, unknown>[] = cp204Records.flatMap((r) =>
         (r.revisions || []).map((rev) => ({
           'CP204 ID': r.cp204Id || r.id,
+          'Client ID': r.clientId || '',
+          YA: r.ya || '',
           'Revision Month': rev.revisionMonth,
           'Previous Estimated Tax': rev.previousEstimatedTax ?? 0,
           'Proposed Estimated Tax': rev.proposedEstimatedTax ?? 0,
           Reason: rev.reason || '',
-          'Review Status': rev.reviewStatus || '',
+          'Submission Status': rev.reviewStatus || '',
           PIC: rev.pic || '',
           Reviewer: rev.reviewer || '',
           'Submission Deadline': rev.submissionDeadline || '',
@@ -1283,6 +1763,8 @@ export const DataImportTab: React.FC = () => {
       const cp204InstalmentRows: Record<string, unknown>[] = cp204Records.flatMap((r) =>
         (r.instalments || []).map((inst) => ({
           'CP204 ID': r.cp204Id || r.id,
+          'Client ID': r.clientId || '',
+          YA: r.ya || '',
           'Instalment No': inst.instalmentNo,
           'Due Date': inst.dueDate || '',
           'Amount Due': inst.amountDue ?? 0,

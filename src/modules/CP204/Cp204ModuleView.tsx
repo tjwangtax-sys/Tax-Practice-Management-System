@@ -34,17 +34,24 @@ import { extractFyeMonth, formatDateDDMMYYYY } from '../../lib/deadlineUtils';
 import {
   ACTIVE_COMPLIANCE_STATUS_FILTER,
   findClientRecordForRow,
+  getYaSequencePillClasses,
   isExcludedComplianceClientStatus,
   matchesClientStatusFilterValue,
   normalizeClientIdKey,
 } from '../../lib/jobUtils';
 import { showToast } from '../../lib/toast';
+import {
+  buildCp204aRevisionStatusOptions,
+  buildCp204SubmissionStatusOptions,
+} from '../../lib/settingsDropdown';
 import { ClientModal } from '../ClientMaster/ClientModal';
 import {
+  buildCorporateJobYaSequenceMap,
   classifyCp204SubmissionStatus,
+  computeCp204CurrentEstimatedTax,
   CP204_SUBMISSION_FILTERS,
-  Cp204SubmissionFilter,
   getRevisionForMonth,
+  resolveCp204YaSequence,
 } from './cp204Utils';
 import { Cp204InitialQuickModal, Cp204RevisionQuickModal } from './Cp204QuickModals';
 import { Cp204AdvancedModal, Cp204AdvancedTab } from './Cp204AdvancedModal';
@@ -69,7 +76,7 @@ const CP204_COLUMNS: ColumnDef[] = [
 
 const CP204_COL_WIDTHS: Record<string, string> = {
   client: 'w-[210px] min-w-[185px] max-w-[235px]',
-  fye: 'w-[50px] min-w-[46px]',
+  fye: 'w-[58px] min-w-[52px]',
   ya: 'w-[56px] min-w-[52px]',
   initialEstimate: 'w-[122px] min-w-[112px]',
   rev6: 'w-[108px] min-w-[98px]',
@@ -86,7 +93,7 @@ const CP204_COL_WIDTHS: Record<string, string> = {
 
 const CP204_COL_FALLBACK_WIDTHS: Record<string, number> = {
   client: 210,
-  fye: 50,
+  fye: 58,
   ya: 56,
   initialEstimate: 122,
   rev6: 108,
@@ -132,7 +139,8 @@ interface Cp204ModuleViewProps {
 
 export const Cp204ModuleView: React.FC<Cp204ModuleViewProps> = ({ initialFilter }) => {
   const { isReadOnly, isManagerOrAdmin } = useAuth();
-  const { clients, cp204Records, deleteCp204, refreshAll, refreshing } = useData();
+  const { clients, jobs, cp204Records, deleteCp204, refreshAll, refreshing, getSettingsByGroup } =
+    useData();
   const [profileClient, setProfileClient] = useState<ClientRecord | null>(null);
 
   const handleOpenClientProfile = (ref: { clientId?: string; clientName?: string }, directClient?: ClientRecord) => {
@@ -149,7 +157,7 @@ export const Cp204ModuleView: React.FC<Cp204ModuleViewProps> = ({ initialFilter 
   const [fyeFilter, setFyeFilter] = useState('');
   const [picFilter, setPicFilter] = useState('');
   const [clientStatusFilter, setClientStatusFilter] = useState('');
-  const [submissionFilter, setSubmissionFilter] = useState<'' | Cp204SubmissionFilter>('');
+  const [submissionFilter, setSubmissionFilter] = useState<string>('');
   const [showSpecialRemarks, setShowSpecialRemarks] = useState(false);
 
   const {
@@ -230,6 +238,14 @@ export const Cp204ModuleView: React.FC<Cp204ModuleViewProps> = ({ initialFilter 
     return (client?.taxPic || '').trim();
   };
 
+  const corporateJobYaSeqMap = useMemo(() => buildCorporateJobYaSequenceMap(jobs), [jobs]);
+
+  const resolveRowYaSequence = (
+    clientId: string,
+    ya: string,
+    matchedClient?: ClientRecord
+  ) => resolveCp204YaSequence(ya, matchedClient, corporateJobYaSeqMap, clientId);
+
   const distinctYas = useMemo(() => {
     const set = new Set<string>([currentYearStr]);
     if (yaFilter) set.add(yaFilter);
@@ -253,6 +269,28 @@ export const Cp204ModuleView: React.FC<Cp204ModuleViewProps> = ({ initialFilter 
     return Array.from(set).sort((a, b) => a.localeCompare(b));
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [cp204Records, clients, clientByIdMap]);
+
+  // All CP204 SUBMISSION STATUS options (Controlled Values + any distinct stored status)
+  const cp204SubmissionStatusOptions = useMemo(() => {
+    const base = buildCp204SubmissionStatusOptions(getSettingsByGroup);
+    const seen = new Set(base.map((o) => o.value.trim().toLowerCase()));
+    const extra: Array<{ value: string; label: string }> = [];
+    for (const r of cp204Records) {
+      const st = (r.status || '').trim();
+      if (!st) continue;
+      const key = st.toLowerCase();
+      if (seen.has(key)) continue;
+      seen.add(key);
+      extra.push({ value: st, label: st });
+    }
+    return [...base, ...extra];
+  }, [getSettingsByGroup, cp204Records]);
+
+  // All CP204A REVISIONS SUBMISSION STATUS options (Controlled Values + fallback)
+  const cp204aRevisionStatusOptions = useMemo(
+    () => buildCp204aRevisionStatusOptions(getSettingsByGroup),
+    [getSettingsByGroup]
+  );
 
   const isMissingMode = submissionFilter === 'CP204 record missing';
   const targetMissingYa = yaFilter || currentYearStr;
@@ -315,8 +353,14 @@ export const Cp204ModuleView: React.FC<Cp204ModuleViewProps> = ({ initialFilter 
         return false;
       }
       if (submissionFilter) {
-        const bucket = classifyCp204SubmissionStatus(rec, todayStr);
-        if (bucket !== submissionFilter) return false;
+        if ((CP204_SUBMISSION_FILTERS as readonly string[]).includes(submissionFilter)) {
+          const bucket = classifyCp204SubmissionStatus(rec, todayStr);
+          if (bucket !== submissionFilter) return false;
+        } else {
+          if ((rec.status || '').trim().toLowerCase() !== submissionFilter.trim().toLowerCase()) {
+            return false;
+          }
+        }
       }
       if (q) {
         const hay = `${rec.cp204Id} ${rec.clientName} ${rec.clientId} ${rec.ya} ${effectivePic} ${rec.reviewer} ${rec.status} ${rec.remarks} ${client?.specialRemarks || ''}`.toLowerCase();
@@ -369,7 +413,8 @@ export const Cp204ModuleView: React.FC<Cp204ModuleViewProps> = ({ initialFilter 
         const rev = getRevisionForMonth(rec, '11');
         return rev ? (rev.reviewStatus || 'Pending Review').trim() : 'No CP204A revision';
       },
-      currentEstimatedTax: (rec: Cp204Record) => rec.currentEstimatedTax,
+      currentEstimatedTax: (rec: Cp204Record) =>
+        computeCp204CurrentEstimatedTax(rec.originalEstimatedTax, rec.revisions),
       instalmentsSummary: (rec: Cp204Record) => {
         const paid = rec.instalments.filter(
           (i) => i.outstandingAmount === 0 && i.amountDue > 0
@@ -402,9 +447,43 @@ export const Cp204ModuleView: React.FC<Cp204ModuleViewProps> = ({ initialFilter 
   const displayedRecords = excel.rows;
   const displayedMissing = excelMissing.rows;
 
+  const getColumnFilterValues = (colKey: string): string[] => {
+    const baseValues = excel.getColumnValues(colKey);
+    if (colKey === 'initialEstimate') {
+      const merged: string[] = [];
+      const seen = new Set<string>();
+      for (const v of [...cp204SubmissionStatusOptions.map((o) => o.value), ...baseValues]) {
+        const clean = (v || '').trim();
+        if (!clean) continue;
+        const key = clean.toLowerCase();
+        if (seen.has(key)) continue;
+        seen.add(key);
+        merged.push(clean);
+      }
+      return merged;
+    }
+    if (colKey === 'rev6' || colKey === 'rev9' || colKey === 'rev11') {
+      const merged: string[] = [];
+      const seen = new Set<string>();
+      for (const v of [...cp204aRevisionStatusOptions.map((o) => o.value), ...baseValues]) {
+        const clean = (v || '').trim();
+        if (!clean) continue;
+        const key = clean.toLowerCase();
+        if (seen.has(key)) continue;
+        seen.add(key);
+        merged.push(clean);
+      }
+      return merged;
+    }
+    return baseValues;
+  };
+
   const totals = useMemo(() => {
     const initialSum = displayedRecords.reduce((s, r) => s + (r.originalEstimatedTax || 0), 0);
-    const currentSum = displayedRecords.reduce((s, r) => s + (r.currentEstimatedTax || 0), 0);
+    const currentSum = displayedRecords.reduce(
+      (s, r) => s + computeCp204CurrentEstimatedTax(r.originalEstimatedTax, r.revisions),
+      0
+    );
     const followUpCount = cp204Records.filter(
       (r) => classifyCp204SubmissionStatus(r, todayStr) === 'Follow-up required'
     ).length;
@@ -443,14 +522,19 @@ export const Cp204ModuleView: React.FC<Cp204ModuleViewProps> = ({ initialFilter 
         { key: 'pic', label: 'Default PIC' },
         { key: 'specialRemarks', label: 'Special Remarks' },
       ];
-      const rows = displayedMissing.map((c) => ({
-        clientName: c.clientName,
-        clientId: c.clientId,
-        fye: c.fye ? Number(c.fye) : '—',
-        ya: targetMissingYa,
-        pic: c.taxPic || '—',
-        specialRemarks: c.specialRemarks || '',
-      }));
+      const rows = displayedMissing.map((c) => {
+        const fyeNum = c.fye ? String(Number(c.fye)) : '';
+        const yaSeq = resolveRowYaSequence(c.clientId, targetMissingYa, c);
+        const fyeExport = fyeNum ? (yaSeq ? `${fyeNum} (${yaSeq})` : fyeNum) : yaSeq || '—';
+        return {
+          clientName: c.clientName,
+          clientId: c.clientId,
+          fye: fyeExport,
+          ya: targetMissingYa,
+          pic: c.taxPic || '—',
+          specialRemarks: c.specialRemarks || '',
+        };
+      });
       return { cols, rows, subtitle: `Corporate Clients Missing CP204 Record for YA ${targetMissingYa}` };
     }
 
@@ -459,18 +543,25 @@ export const Cp204ModuleView: React.FC<Cp204ModuleViewProps> = ({ initialFilter 
       label: c.label,
     }));
     const rows = displayedRecords.map((rec) => {
+      const client = resolveMatchedClient(rec);
       const rev6 = getRevisionForMonth(rec, '6');
       const rev9 = getRevisionForMonth(rec, '9');
       const rev11 = getRevisionForMonth(rec, '11');
       const instPaid = rec.instalments.filter((i) => i.outstandingAmount === 0 && i.amountDue > 0).length;
       const displayFye = resolveDisplayFye(rec);
+      const yaSeq = resolveRowYaSequence(rec.clientId, rec.ya, client);
+      const fyeExport = displayFye
+        ? yaSeq
+          ? `${displayFye} (${yaSeq})`
+          : displayFye
+        : yaSeq || '—';
       const displayPic = resolveDisplayPic(rec);
       const subDate = rec.originalSubmissionDate
         ? ` · ${formatDateDDMMYYYY(rec.originalSubmissionDate)}`
         : '';
       return {
         client: `${rec.clientName} (${rec.clientId})`,
-        fye: displayFye || '—',
+        fye: fyeExport,
         ya: rec.ya,
         pic: displayPic || '—',
         initialEstimate: `${formatCurrencyRM(rec.originalEstimatedTax)} (${rec.status}${subDate})`,
@@ -478,7 +569,9 @@ export const Cp204ModuleView: React.FC<Cp204ModuleViewProps> = ({ initialFilter 
         rev6: formatRevisionExport(rev6),
         rev9: formatRevisionExport(rev9),
         rev11: formatRevisionExport(rev11),
-        currentEstimatedTax: formatCurrencyRM(rec.currentEstimatedTax),
+        currentEstimatedTax: formatCurrencyRM(
+          computeCp204CurrentEstimatedTax(rec.originalEstimatedTax, rec.revisions)
+        ),
         instalmentsSummary: `${instPaid}/${rec.instalments.length} settled`,
         reviewer: rec.reviewer || '—',
         statutoryDueDate: formatDateDDMMYYYY(rec.statutoryCp204DueDate),
@@ -543,7 +636,7 @@ export const Cp204ModuleView: React.FC<Cp204ModuleViewProps> = ({ initialFilter 
         <span className="font-mono tabular-nums text-[11px] font-medium text-slate-900">
           {formatCurrencyRM(rev.proposedEstimatedTax)}
         </span>
-        <StatusPill group="CP204_STATUS" value={rev.reviewStatus} />
+        <StatusPill group="CP204A REVISIONS SUBMISSION STATUS" value={rev.reviewStatus} />
       </div>
     );
   };
@@ -732,15 +825,24 @@ export const Cp204ModuleView: React.FC<Cp204ModuleViewProps> = ({ initialFilter 
 
             <select
               value={submissionFilter}
-              onChange={(e) => setSubmissionFilter(e.target.value as '' | Cp204SubmissionFilter)}
+              onChange={(e) => setSubmissionFilter(e.target.value)}
               className="px-2.5 py-1.5 text-xs bg-white border border-slate-200 rounded-md text-slate-700"
             >
               <option value="">All Submission Statuses</option>
-              {CP204_SUBMISSION_FILTERS.map((f) => (
-                <option key={f} value={f}>
-                  {f}
-                </option>
-              ))}
+              <optgroup label="CP204 Submission Status">
+                {cp204SubmissionStatusOptions.map((opt) => (
+                  <option key={opt.value} value={opt.value}>
+                    {opt.label}
+                  </option>
+                ))}
+              </optgroup>
+              <optgroup label="Follow-Up Views">
+                {CP204_SUBMISSION_FILTERS.map((f) => (
+                  <option key={f} value={f}>
+                    {f}
+                  </option>
+                ))}
+              </optgroup>
             </select>
           </>
         }
@@ -850,8 +952,30 @@ export const Cp204ModuleView: React.FC<Cp204ModuleViewProps> = ({ initialFilter 
                             </div>
                           )}
                         </td>
-                        <td className="px-2.5 py-2 text-center font-mono text-slate-700 whitespace-nowrap">
-                          {client.fye ? Number(client.fye) : '—'}
+                        <td className="px-2.5 py-2 text-center whitespace-nowrap">
+                          {(() => {
+                            const missingYaSeq = resolveRowYaSequence(
+                              client.clientId,
+                              targetMissingYa,
+                              client
+                            );
+                            return (
+                              <div className="flex flex-col items-center gap-0.5">
+                                <span className="font-mono text-slate-700 leading-tight">
+                                  {client.fye ? Number(client.fye) : '—'}
+                                </span>
+                                {missingYaSeq && (
+                                  <span
+                                    className={`inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-semibold leading-none ${getYaSequencePillClasses(
+                                      missingYaSeq
+                                    )}`}
+                                  >
+                                    {missingYaSeq}
+                                  </span>
+                                )}
+                              </div>
+                            );
+                          })()}
                         </td>
                         <td className="px-2.5 py-2 text-center font-mono font-semibold text-slate-900 whitespace-nowrap">
                           {targetMissingYa}
@@ -908,7 +1032,7 @@ export const Cp204ModuleView: React.FC<Cp204ModuleViewProps> = ({ initialFilter 
                         <ExcelColumnFilter
                           columnKey={col.key}
                           title={col.label}
-                          values={excel.getColumnValues(col.key)}
+                          values={getColumnFilterValues(col.key)}
                           selectedValues={excel.columnFilters[col.key]}
                           onChangeSelected={(next) => excel.setColumnFilter(col.key, next)}
                           sortDirection={
@@ -938,6 +1062,7 @@ export const Cp204ModuleView: React.FC<Cp204ModuleViewProps> = ({ initialFilter 
                   displayedRecords.map((rec: Cp204Record) => {
                     const client = resolveMatchedClient(rec);
                     const displayFye = resolveDisplayFye(rec);
+                    const yaSeq = resolveRowYaSequence(rec.clientId, rec.ya, client);
                     const displayPic = resolveDisplayPic(rec);
                     const rev6 = getRevisionForMonth(rec, '6');
                     const rev9 = getRevisionForMonth(rec, '9');
@@ -1012,8 +1137,21 @@ export const Cp204ModuleView: React.FC<Cp204ModuleViewProps> = ({ initialFilter 
                               );
                             case 'fye':
                               return wrapTd(
-                                'px-2.5 py-2 text-center font-mono text-slate-700 whitespace-nowrap',
-                                displayFye || '—'
+                                'px-2.5 py-2 text-center whitespace-nowrap',
+                                <div className="flex flex-col items-center gap-0.5">
+                                  <span className="font-mono text-slate-700 leading-tight">
+                                    {displayFye || '—'}
+                                  </span>
+                                  {yaSeq && (
+                                    <span
+                                      className={`inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-semibold leading-none ${getYaSequencePillClasses(
+                                        yaSeq
+                                      )}`}
+                                    >
+                                      {yaSeq}
+                                    </span>
+                                  )}
+                                </div>
                               );
                             case 'ya':
                               return wrapTd(
@@ -1027,7 +1165,7 @@ export const Cp204ModuleView: React.FC<Cp204ModuleViewProps> = ({ initialFilter 
                                   <span className="font-mono tabular-nums text-[11px] font-medium text-slate-900">
                                     {formatCurrencyRM(rec.originalEstimatedTax)}
                                   </span>
-                                  <StatusPill group="CP204_STATUS" value={rec.status} />
+                                  <StatusPill group="CP204 SUBMISSION STATUS" value={rec.status} />
                                   {rec.originalSubmissionDate && (
                                     <span className="text-[10px] font-mono text-slate-400 leading-none">
                                       {formatDateDDMMYYYY(rec.originalSubmissionDate)}
@@ -1071,7 +1209,12 @@ export const Cp204ModuleView: React.FC<Cp204ModuleViewProps> = ({ initialFilter 
                               return wrapTd(
                                 'px-2.5 py-2 text-right whitespace-nowrap',
                                 <span className="font-mono tabular-nums font-bold text-teal-900">
-                                  {formatCurrencyRM(rec.currentEstimatedTax)}
+                                  {formatCurrencyRM(
+                                    computeCp204CurrentEstimatedTax(
+                                      rec.originalEstimatedTax,
+                                      rec.revisions
+                                    )
+                                  )}
                                 </span>
                               );
                             case 'instalmentsSummary':
